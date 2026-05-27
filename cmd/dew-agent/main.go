@@ -16,7 +16,11 @@ import (
 	protocol "github.com/solcreek/dew/internal/vsock"
 )
 
+var authToken string
+
 func main() {
+	authToken = os.Getenv("DEW_TOKEN")
+
 	port := uint32(protocol.DefaultPort)
 	if p := os.Getenv("DEW_VSOCK_PORT"); p != "" {
 		n, err := strconv.ParseUint(p, 10, 32)
@@ -50,6 +54,12 @@ func handleConn(conn net.Conn) {
 	for {
 		var req protocol.ExecRequest
 		if err := protocol.ReadJSON(conn, &req); err != nil {
+			return
+		}
+
+		if authToken != "" && req.Token != authToken {
+			resp := protocol.ExecResponse{ExitCode: -1, Error: "unauthorized"}
+			protocol.WriteJSON(conn, &resp)
 			return
 		}
 

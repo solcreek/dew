@@ -133,6 +133,15 @@ for share in $(cat /proc/cmdline | tr ' ' '\n' | grep '^dew.share='); do
     fi
 done
 
+# extract auth token from kernel cmdline
+DEW_TOKEN=""
+for param in $(cat /proc/cmdline); do
+    case "$param" in
+        dew.token=*) DEW_TOKEN="${param#dew.token=}" ;;
+    esac
+done
+export DEW_TOKEN
+
 # dew-agent (vsock exec channel)
 if [ -x /usr/local/bin/dew-agent ] && [ -e /dev/vsock ]; then
     /usr/local/bin/dew-agent >/dev/null 2>&1 &

@@ -13,6 +13,7 @@ const (
 )
 
 type ExecRequest struct {
+	Token   string   `json:"token"`
 	Command string   `json:"command"`
 	Args    []string `json:"args,omitempty"`
 	Dir     string   `json:"dir,omitempty"`

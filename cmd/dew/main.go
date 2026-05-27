@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -232,6 +234,10 @@ func cmdRun(args []string) error {
 		cfg.VsockPort = 1024
 	}
 
+	// Generate auth token and pass via kernel cmdline
+	token := generateToken()
+	cfg.CmdLine += " dew.token=" + token
+
 	console, hostReader, hostWriter, err := vm.NewConsolePipe()
 	if err != nil {
 		return fmt.Errorf("console pipe: %w", err)
@@ -264,7 +270,7 @@ func cmdRun(args []string) error {
 
 	// Try vsock exec (clean channel), fall back to serial
 	cmd := strings.Join(cmdArgs, " ")
-	result, err := execCommand(d, cfg.VsockPort, sExec, cmd)
+	result, err := execCommand(d, cfg.VsockPort, token, sExec, cmd)
 	if err != nil {
 		d.Stop(context.Background())
 		return fmt.Errorf("exec: %w", err)
@@ -301,11 +307,17 @@ type RunResult struct {
 	Stderr   string `json:"stderr,omitempty"`
 }
 
-func execCommand(v vm.VM, port uint32, sExec *serialexec.Exec, cmd string) (*RunResult, error) {
+func generateToken() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func execCommand(v vm.VM, port uint32, token string, sExec *serialexec.Exec, cmd string) (*RunResult, error) {
 	conn, err := connectVsock(v, port)
 	if err == nil {
 		defer conn.Close()
-		req := vsockProto.ExecRequest{Command: "/bin/sh", Args: []string{"-c", cmd}}
+		req := vsockProto.ExecRequest{Token: token, Command: "/bin/sh", Args: []string{"-c", cmd}}
 		if err := vsockProto.WriteJSON(conn, &req); err != nil {
 			return nil, err
 		}
