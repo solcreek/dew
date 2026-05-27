@@ -167,6 +167,89 @@ func TestDetect_SvelteKit(t *testing.T) {
 	}
 }
 
+func TestDetect_InstallCmd(t *testing.T) {
+	tests := []struct {
+		mgr  string
+		want string
+	}{
+		{"npm", "npm install --legacy-peer-deps"},
+		{"yarn", "yarn install"},
+		{"pnpm", "pnpm install"},
+		{"bun", "bun install"},
+	}
+	for _, tt := range tests {
+		got := buildInstallCmd(tt.mgr)
+		if got != tt.want {
+			t.Errorf("buildInstallCmd(%q) = %q, want %q", tt.mgr, got, tt.want)
+		}
+	}
+}
+
+func TestDetect_DefaultPort(t *testing.T) {
+	tests := []struct {
+		framework string
+		want      int
+	}{
+		{"vite", 5173},
+		{"nextjs", 3000},
+		{"astro", 4321},
+		{"nuxt", 3000},
+		{"sveltekit", 5173},
+		{"node", 3000},
+		{"unknown", 3000},
+	}
+	for _, tt := range tests {
+		got := defaultPort(tt.framework)
+		if got != tt.want {
+			t.Errorf("defaultPort(%q) = %d, want %d", tt.framework, got, tt.want)
+		}
+	}
+}
+
+func TestDetect_Profile(t *testing.T) {
+	dir := setupProject(t, map[string]string{
+		"package.json": `{"dependencies":{"react":"^18"}}`,
+		"vite.config.js": `export default {}`,
+	})
+	p, err := Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Profile != "node" {
+		t.Errorf("Profile = %q, want node", p.Profile)
+	}
+	if p.Runtime != "node" {
+		t.Errorf("Runtime = %q, want node", p.Runtime)
+	}
+}
+
+func TestDetect_NuxtWithYarn(t *testing.T) {
+	dir := setupProject(t, map[string]string{
+		"package.json":  `{"dependencies":{"nuxt":"^3"}}`,
+		"nuxt.config.ts": `export default {}`,
+		"yarn.lock":     ``,
+	})
+	p, err := Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Framework != "nuxt" {
+		t.Errorf("Framework = %q", p.Framework)
+	}
+	if p.PackageMgr != "yarn" {
+		t.Errorf("PackageMgr = %q", p.PackageMgr)
+	}
+	if p.Port != 3000 {
+		t.Errorf("Port = %d", p.Port)
+	}
+	if p.DevCmd != "yarn dev" {
+		t.Errorf("DevCmd = %q", p.DevCmd)
+	}
+	if p.InstallCmd != "yarn install" {
+		t.Errorf("InstallCmd = %q", p.InstallCmd)
+	}
+}
+
 func TestDetect_ViteFromDeps(t *testing.T) {
 	dir := setupProject(t, map[string]string{
 		"package.json": `{"devDependencies":{"vite":"^5","react":"^18"}}`,
