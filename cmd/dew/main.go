@@ -54,7 +54,7 @@ func resolveAssets(cfg *vm.Config) error {
 		}
 		if cfg.DiskPath == "" {
 			cfg.DiskPath = filepath.Join(dataDir, "node.img")
-			cfg.DiskGB = 2
+			cfg.DiskGB = 4
 		}
 	case "standard":
 		if cfg.MemoryMB == 512 {

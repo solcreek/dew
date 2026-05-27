@@ -198,6 +198,81 @@ func TestParseForward(t *testing.T) {
 	}
 }
 
+func TestParseFlags_Profile(t *testing.T) {
+	flagProfile = ""
+	_, _, err := parseFlags([]string{"--kernel", "/k", "--profile", "node"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flagProfile != "node" {
+		t.Errorf("flagProfile = %q, want %q", flagProfile, "node")
+	}
+	flagProfile = ""
+}
+
+func TestResolveAssets_NodeDefaults(t *testing.T) {
+	flagProfile = "node"
+	defer func() { flagProfile = "" }()
+
+	cfg := vm.Config{CPUs: 1, MemoryMB: 512, Kernel: "/dev/null", Initrd: "/dev/null"}
+	resolveAssets(&cfg)
+
+	if cfg.MemoryMB != 1024 {
+		t.Errorf("node MemoryMB = %d, want 1024", cfg.MemoryMB)
+	}
+	if cfg.DiskGB != 4 {
+		t.Errorf("node DiskGB = %d, want 4", cfg.DiskGB)
+	}
+	if cfg.DiskPath == "" {
+		t.Error("node DiskPath should be auto-set")
+	}
+}
+
+func TestResolveAssets_StandardDefaults(t *testing.T) {
+	flagProfile = "standard"
+	defer func() { flagProfile = "" }()
+
+	cfg := vm.Config{CPUs: 1, MemoryMB: 512, Kernel: "/dev/null", Initrd: "/dev/null"}
+	resolveAssets(&cfg)
+
+	if cfg.MemoryMB != 2048 {
+		t.Errorf("standard MemoryMB = %d, want 2048", cfg.MemoryMB)
+	}
+	if cfg.DiskGB != 10 {
+		t.Errorf("standard DiskGB = %d, want 10", cfg.DiskGB)
+	}
+}
+
+func TestResolveAssets_MinimalNoAutoDefaults(t *testing.T) {
+	flagProfile = "minimal"
+	defer func() { flagProfile = "" }()
+
+	cfg := vm.Config{CPUs: 1, MemoryMB: 512, Kernel: "/dev/null", Initrd: "/dev/null"}
+	resolveAssets(&cfg)
+
+	if cfg.MemoryMB != 512 {
+		t.Errorf("minimal MemoryMB = %d, want 512 (unchanged)", cfg.MemoryMB)
+	}
+	if cfg.DiskPath != "" {
+		t.Errorf("minimal DiskPath = %q, want empty", cfg.DiskPath)
+	}
+}
+
+func TestResolveAssets_ExplicitOverridesProfile(t *testing.T) {
+	flagProfile = "node"
+	defer func() { flagProfile = "" }()
+
+	cfg := vm.Config{CPUs: 1, MemoryMB: 4096, DiskPath: "/custom.img", Kernel: "/dev/null", Initrd: "/dev/null"}
+	resolveAssets(&cfg)
+
+	if cfg.MemoryMB != 4096 {
+		t.Errorf("explicit MemoryMB = %d, want 4096 (not overridden)", cfg.MemoryMB)
+	}
+	if cfg.DiskPath != "/custom.img" {
+		t.Errorf("explicit DiskPath = %q, want /custom.img", cfg.DiskPath)
+	}
+}
+
 func TestBase64Encode(t *testing.T) {
 	tests := []struct {
 		input string
