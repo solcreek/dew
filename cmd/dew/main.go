@@ -32,6 +32,7 @@ const version = "0.1.0-dev"
 var flagJSON bool
 var flagStream bool
 var flagEvents bool
+var flagProfile string
 
 func dewDataDir() string {
 	home, _ := os.UserHomeDir()
@@ -44,7 +45,15 @@ func resolveAssets(cfg *vm.Config) error {
 		cfg.Kernel = filepath.Join(dataDir, "vmlinuz")
 	}
 	if cfg.Initrd == "" {
-		cfg.Initrd = filepath.Join(dataDir, "initramfs.cpio.gz")
+		profile := flagProfile
+		if profile == "" {
+			profile = "standard"
+		}
+		cfg.Initrd = filepath.Join(dataDir, "initramfs-"+profile+".cpio.gz")
+		// Fallback to generic name
+		if _, err := os.Stat(cfg.Initrd); err != nil {
+			cfg.Initrd = filepath.Join(dataDir, "initramfs.cpio.gz")
+		}
 	}
 	if _, err := os.Stat(cfg.Kernel); err != nil {
 		return fmt.Errorf("kernel not found at %s — run: dew assets pull", cfg.Kernel)
@@ -111,6 +120,7 @@ Flags:
   --network            Enable NAT networking
   --vsock <port>       Enable vsock on this port
   --share <tag:path>   Share host directory (read-only; tag:hostpath[:rw])
+  --profile <name>      VM profile: standard (default) or minimal
   --disk <path>         Persistent disk image (created if absent, default 10GB)
   --forward <h:g>      Forward host port to guest (e.g. 3000:3000)
   --stream             Stream stdout/stderr in real time
@@ -195,6 +205,12 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, err
 			}
 			cfg.SharedDirs = append(cfg.SharedDirs, sd)
+		case "--profile":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--profile requires a name")
+			}
+			flagProfile = args[i]
 		case "--disk":
 			i++
 			if i >= len(args) {
@@ -239,8 +255,9 @@ func cmdStart(args []string) error {
 		return err
 	}
 
-	if len(cfg.Forwards) > 0 && cfg.VsockPort == 0 {
-		cfg.VsockPort = vsockProto.DefaultPort
+	// Always enable vsock (needed for daemon exec + port forwarding)
+	if cfg.VsockPort == 0 {
+		cfg.VsockPort = uint32(vsockProto.DefaultPort)
 	}
 
 	token := generateToken()
@@ -267,11 +284,6 @@ func cmdStart(args []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "dew: VM running (%s)\n", time.Since(start).Round(time.Millisecond))
-
-	// Always enable vsock for daemon
-	if cfg.VsockPort == 0 {
-		cfg.VsockPort = uint32(vsockProto.DefaultPort)
-	}
 
 	time.Sleep(500 * time.Millisecond)
 	if err := sendToken(d, cfg.VsockPort, token); err != nil {
