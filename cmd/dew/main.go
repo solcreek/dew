@@ -29,6 +29,7 @@ import (
 const version = "0.1.0-dev"
 
 var flagJSON bool
+var flagStream bool
 
 func dewDataDir() string {
 	home, _ := os.UserHomeDir()
@@ -107,6 +108,7 @@ Flags:
   --share <tag:path>   Share host directory (read-only; tag:hostpath[:rw])
   --disk <path>         Persistent disk image (created if absent, default 10GB)
   --forward <h:g>      Forward host port to guest (e.g. 3000:3000)
+  --stream             Stream stdout/stderr in real time
   --json               Machine-readable JSON output (run command)
 `)
 }
@@ -203,6 +205,8 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, err
 			}
 			cfg.Forwards = append(cfg.Forwards, fwd)
+		case "--stream":
+			flagStream = true
 		case "--json":
 			flagJSON = true
 		default:
@@ -346,6 +350,20 @@ func cmdRun(args []string) error {
 	if tokenSent {
 		conn, err := connectVsock(d, cfg.VsockPort)
 		if err == nil {
+			if flagStream {
+				exitCode, serr := execVsockStream(conn, token, cmd)
+				conn.Close()
+				d.Stop(context.Background())
+				hostReader.Close()
+				hostWriter.Close()
+				if serr != nil {
+					return fmt.Errorf("exec: %w", serr)
+				}
+				if exitCode != 0 {
+					os.Exit(exitCode)
+				}
+				return nil
+			}
 			result, err = execVsockConn(conn, token, cmd)
 			conn.Close()
 		}
@@ -409,6 +427,45 @@ func generateToken() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func execVsockStream(conn net.Conn, token string, cmd string) (int, error) {
+	req := vsockProto.ExecRequest{
+		Type: vsockProto.TypeExec, Token: token, Stream: true,
+		Command: "/bin/sh", Args: []string{"-c", cmd},
+	}
+	if err := vsockProto.WriteJSON(conn, &req); err != nil {
+		return -1, err
+	}
+	for {
+		header := make([]byte, 4)
+		if _, err := io.ReadFull(conn, header); err != nil {
+			return -1, err
+		}
+		length := uint32(header[0])<<24 | uint32(header[1])<<16 | uint32(header[2])<<8 | uint32(header[3])
+		data := make([]byte, length)
+		if _, err := io.ReadFull(conn, data); err != nil {
+			return -1, err
+		}
+		// Try ExecDone first
+		var done vsockProto.ExecDone
+		if json.Unmarshal(data, &done); done.ExitCode != 0 || done.Error != "" || len(data) < 50 {
+			// Check if this is actually a done message
+			var check struct{ Stream string `json:"stream"` }
+			json.Unmarshal(data, &check)
+			if check.Stream == "" {
+				return done.ExitCode, nil
+			}
+		}
+		var chunk vsockProto.OutputChunk
+		json.Unmarshal(data, &chunk)
+		switch chunk.Stream {
+		case "stderr":
+			fmt.Fprint(os.Stderr, chunk.Data)
+		default:
+			fmt.Print(chunk.Data)
+		}
+	}
 }
 
 func execVsockConn(conn net.Conn, token string, cmd string) (*RunResult, error) {
