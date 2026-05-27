@@ -5,12 +5,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
 	"time"
 
-	"github.com/Code-Hex/vz/v3"
 	"github.com/solcreek/dew/internal/serialexec"
 	"github.com/solcreek/dew/internal/vm"
 	"github.com/solcreek/dew/internal/vm/darwin"
@@ -256,12 +256,11 @@ func cmdRun(args []string) error {
 	return nil
 }
 
-func execViaVsock(d *darwin.DarwinVM, port uint32, cmd string) (string, int, error) {
-	// Retry vsock connect — agent may not be listening yet
-	var conn *vz.VirtioSocketConnection
+func execViaVsock(v vm.VM, port uint32, cmd string) (string, int, error) {
+	var conn net.Conn
 	var err error
 	for i := 0; i < 20; i++ {
-		conn, err = d.VsockConnect(port)
+		conn, err = v.VsockConnect(port)
 		if err == nil {
 			break
 		}

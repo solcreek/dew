@@ -5,6 +5,7 @@ package darwin
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -222,9 +223,7 @@ func (d *DarwinVM) State() vm.State {
 	return d.state
 }
 
-// VsockConnect connects to a vsock port inside the guest. The VM must
-// have been started with VsockPort > 0.
-func (d *DarwinVM) VsockConnect(port uint32) (*vz.VirtioSocketConnection, error) {
+func (d *DarwinVM) VsockConnect(port uint32) (net.Conn, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 

@@ -8,6 +8,7 @@ package vm
 import (
 	"context"
 	"io"
+	"net"
 	"os"
 )
 
@@ -110,4 +111,8 @@ type VM interface {
 	// WaitForState blocks until the VM enters the target state or
 	// the context is cancelled.
 	WaitForState(ctx context.Context, target State) error
+
+	// VsockConnect opens a vsock connection to the guest on the given
+	// port. Returns net.Conn for platform-agnostic usage.
+	VsockConnect(port uint32) (net.Conn, error)
 }
