@@ -63,7 +63,6 @@ func Create(cfg vm.Config) (*Session, error) {
 	if cfg.VsockPort == 0 {
 		cfg.VsockPort = vsockProto.DefaultPort
 	}
-	cfg.CmdLine += " dew.token=" + s.Token
 
 	console, hostReader, hostWriter, err := vm.NewConsolePipe()
 	if err != nil {
@@ -98,6 +97,7 @@ func Create(cfg vm.Config) (*Session, error) {
 }
 
 func (s *Session) waitReady(ctx context.Context) error {
+	// Wait for vsock to become available
 	for {
 		select {
 		case <-ctx.Done():
@@ -109,21 +109,21 @@ func (s *Session) waitReady(ctx context.Context) error {
 			time.Sleep(10 * time.Millisecond)
 			continue
 		}
-		// Ping to confirm agent is functional
-		req := vsockProto.ExecRequest{Token: s.Token, Command: "ping"}
-		if err := vsockProto.WriteJSON(conn, &req); err != nil {
+		// Inject auth token via vsock handshake (not kernel cmdline)
+		tokenReq := vsockProto.SetTokenRequest{Type: vsockProto.TypeSetToken, Token: s.Token}
+		if err := vsockProto.WriteJSON(conn, &tokenReq); err != nil {
 			conn.Close()
 			time.Sleep(10 * time.Millisecond)
 			continue
 		}
-		var resp vsockProto.ExecResponse
-		if err := vsockProto.ReadJSON(conn, &resp); err != nil {
+		var tokenResp vsockProto.ConnectResponse
+		if err := vsockProto.ReadJSON(conn, &tokenResp); err != nil {
 			conn.Close()
 			time.Sleep(10 * time.Millisecond)
 			continue
 		}
 		conn.Close()
-		if resp.Stdout == "pong" {
+		if tokenResp.OK {
 			return nil
 		}
 	}

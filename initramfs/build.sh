@@ -163,20 +163,17 @@ for share in $(cat /proc/cmdline | tr ' ' '\n' | grep '^dew.share='); do
     fi
 done
 
-# extract params from kernel cmdline
-DEW_TOKEN=""
+# extract params from kernel cmdline (token is injected via vsock, not here)
 DEW_CPU_QUOTA=""
 DEW_MEM_LIMIT=""
 DEW_CMD=""
 for param in $(cat /proc/cmdline); do
     case "$param" in
-        dew.token=*)     DEW_TOKEN="${param#dew.token=}" ;;
         dew.cpu_quota=*) DEW_CPU_QUOTA="${param#dew.cpu_quota=}" ;;
         dew.mem_limit=*) DEW_MEM_LIMIT="${param#dew.mem_limit=}" ;;
         dew.cmd=*)       DEW_CMD="${param#dew.cmd=}" ;;
     esac
 done
-export DEW_TOKEN
 
 # cgroup v2 resource limits for workloads
 if [ -d /sys/fs/cgroup ] && grep -q cgroup2 /proc/filesystems 2>/dev/null; then
@@ -193,10 +190,9 @@ fi
 # unprivileged user for exec workloads
 adduser -D -s /bin/sh dew 2>/dev/null || true
 
-# dew-agent needs vsock device access, runs as root but executes
-# workloads as unprivileged 'dew' user via the exec protocol
+# dew-agent: auth token injected via vsock post-boot (not cmdline)
 if [ -x /usr/local/bin/dew-agent ] && [ -e /dev/vsock ]; then
-    DEW_TOKEN=$DEW_TOKEN DEW_EXEC_USER=dew /usr/local/bin/dew-agent >/dev/null 2>&1 &
+    DEW_EXEC_USER=dew /usr/local/bin/dew-agent >/dev/null 2>&1 &
     echo "dew-agent: vsock ready"
 fi
 

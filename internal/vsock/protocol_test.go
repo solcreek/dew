@@ -262,3 +262,21 @@ func TestExecRequestWithToken(t *testing.T) {
 		t.Errorf("Token = %q", got.Token)
 	}
 }
+
+func TestSetTokenRequest(t *testing.T) {
+	req := SetTokenRequest{Type: TypeSetToken, Token: "my-secret-token"}
+	var buf bytes.Buffer
+	if err := WriteJSON(&buf, &req); err != nil {
+		t.Fatal(err)
+	}
+	var got SetTokenRequest
+	if err := ReadJSON(&buf, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != TypeSetToken {
+		t.Errorf("Type = %q, want %q", got.Type, TypeSetToken)
+	}
+	if got.Token != "my-secret-token" {
+		t.Errorf("Token = %q", got.Token)
+	}
+}

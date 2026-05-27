@@ -14,9 +14,17 @@ const (
 
 // Message types for the vsock protocol.
 const (
-	TypeExec    = "exec"
-	TypeConnect = "connect"
+	TypeExec     = "exec"
+	TypeConnect  = "connect"
+	TypeSetToken = "set_token"
 )
+
+// SetTokenRequest is sent once after boot to inject the auth token
+// via vsock instead of kernel cmdline (avoids /proc/cmdline leak).
+type SetTokenRequest struct {
+	Type  string `json:"type"`
+	Token string `json:"token"`
+}
 
 type ExecRequest struct {
 	Type      string   `json:"type"`

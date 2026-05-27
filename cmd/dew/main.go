@@ -224,9 +224,6 @@ func cmdStart(args []string) error {
 	}
 
 	token := generateToken()
-	if cfg.VsockPort > 0 {
-		cfg.CmdLine += " dew.token=" + token
-	}
 
 	if len(cmdArgs) > 0 {
 		raw := strings.Join(cmdArgs, " ")
@@ -251,8 +248,11 @@ func cmdStart(args []string) error {
 
 	fmt.Fprintf(os.Stderr, "dew: VM running (%s)\n", time.Since(start).Round(time.Millisecond))
 
-	if len(cfg.Forwards) > 0 {
+	if len(cfg.Forwards) > 0 || cfg.VsockPort > 0 {
 		time.Sleep(500 * time.Millisecond)
+		if err := sendToken(d, uint32(vsockProto.DefaultPort), token); err != nil {
+			fmt.Fprintf(os.Stderr, "dew: token handshake failed: %v\n", err)
+		}
 		startPortForwards(d, token, cfg.Forwards)
 	}
 
@@ -279,9 +279,7 @@ func cmdRun(args []string) error {
 		cfg.VsockPort = 1024
 	}
 
-	// Generate auth token and pass via kernel cmdline
 	token := generateToken()
-	cfg.CmdLine += " dew.token=" + token
 
 	console, hostReader, hostWriter, err := vm.NewConsolePipe()
 	if err != nil {
@@ -307,7 +305,7 @@ func cmdRun(args []string) error {
 
 	sExec := serialexec.New(hostReader, hostWriter)
 
-	// Race vsock connect against serial ready — use whichever wins
+	// Race vsock connect against serial ready
 	vsockCh := make(chan net.Conn, 1)
 	go func() {
 		conn, err := connectVsock(d, cfg.VsockPort)
@@ -320,16 +318,30 @@ func cmdRun(args []string) error {
 		sExec.WaitReady(15 * time.Second)
 	}()
 
-	cmd := strings.Join(cmdArgs, " ")
-	var result *RunResult
-
+	// Inject auth token via vsock (not kernel cmdline)
+	var tokenSent bool
 	select {
 	case conn := <-vsockCh:
 		if conn != nil {
+			req := vsockProto.SetTokenRequest{Type: vsockProto.TypeSetToken, Token: token}
+			vsockProto.WriteJSON(conn, &req)
+			var resp vsockProto.ConnectResponse
+			vsockProto.ReadJSON(conn, &resp)
+			conn.Close()
+			tokenSent = resp.OK
+		}
+	case <-time.After(10 * time.Second):
+	}
+
+	cmd := strings.Join(cmdArgs, " ")
+	var result *RunResult
+
+	if tokenSent {
+		conn, err := connectVsock(d, cfg.VsockPort)
+		if err == nil {
 			result, err = execVsockConn(conn, token, cmd)
 			conn.Close()
 		}
-	case <-time.After(10 * time.Second):
 	}
 
 	if result == nil {
@@ -406,6 +418,26 @@ func execVsockConn(conn net.Conn, token string, cmd string) (*RunResult, error) 
 		Stdout:   resp.Stdout,
 		Stderr:   resp.Stderr,
 	}, nil
+}
+
+func sendToken(v vm.VM, port uint32, token string) error {
+	conn, err := connectVsock(v, port)
+	if err != nil {
+		return fmt.Errorf("vsock connect for token: %w", err)
+	}
+	defer conn.Close()
+	req := vsockProto.SetTokenRequest{Type: vsockProto.TypeSetToken, Token: token}
+	if err := vsockProto.WriteJSON(conn, &req); err != nil {
+		return fmt.Errorf("send token: %w", err)
+	}
+	var resp vsockProto.ConnectResponse
+	if err := vsockProto.ReadJSON(conn, &resp); err != nil {
+		return fmt.Errorf("token response: %w", err)
+	}
+	if !resp.OK {
+		return fmt.Errorf("token rejected: %s", resp.Error)
+	}
+	return nil
 }
 
 func connectVsock(v vm.VM, port uint32) (net.Conn, error) {

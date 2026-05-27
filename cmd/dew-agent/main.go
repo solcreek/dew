@@ -25,10 +25,11 @@ import (
 )
 
 var authToken string
+var tokenSet bool
 var execUser string
 
 func main() {
-	authToken = os.Getenv("DEW_TOKEN")
+	// Token is now injected via vsock handshake, not env/cmdline
 	execUser = os.Getenv("DEW_EXEC_USER")
 
 	port := uint32(protocol.DefaultPort)
@@ -84,10 +85,22 @@ func handleConn(conn net.Conn) {
 		json.Unmarshal(data, &env)
 
 		switch env.Type {
+		case protocol.TypeSetToken:
+			var req protocol.SetTokenRequest
+			json.Unmarshal(data, &req)
+			if !tokenSet {
+				authToken = req.Token
+				tokenSet = true
+				protocol.WriteJSON(conn, &protocol.ConnectResponse{OK: true})
+			} else {
+				protocol.WriteJSON(conn, &protocol.ConnectResponse{Error: "token already set"})
+			}
+			return
+
 		case protocol.TypeConnect:
 			var req protocol.ConnectRequest
 			json.Unmarshal(data, &req)
-			if authToken != "" && req.Token != authToken {
+			if tokenSet && req.Token != authToken {
 				protocol.WriteJSON(conn, &protocol.ConnectResponse{Error: "unauthorized"})
 				return
 			}
@@ -97,7 +110,7 @@ func handleConn(conn net.Conn) {
 		default:
 			var req protocol.ExecRequest
 			json.Unmarshal(data, &req)
-			if authToken != "" && req.Token != authToken {
+			if tokenSet && req.Token != authToken {
 				protocol.WriteJSON(conn, &protocol.ExecResponse{ExitCode: -1, Error: "unauthorized"})
 				return
 			}
