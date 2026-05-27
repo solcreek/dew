@@ -12,7 +12,7 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
+	"net/http"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -566,16 +566,32 @@ func cmdUp(args []string) error {
 		return fmt.Errorf("no supported project detected in %s", dir)
 	}
 
-	fmt.Fprintf(os.Stderr, "\n")
-	fmt.Fprintf(os.Stderr, "  detected: %s", proj.Framework)
-	if proj.PackageMgr != "" {
-		fmt.Fprintf(os.Stderr, " (%s)", proj.PackageMgr)
+	emit := func(data map[string]interface{}) {
+		if flagEvents || flagJSON {
+			line, _ := json.Marshal(data)
+			fmt.Println(string(line))
+		}
 	}
-	fmt.Fprintf(os.Stderr, "\n")
-	fmt.Fprintf(os.Stderr, "  profile:  %s\n", proj.Profile)
-	fmt.Fprintf(os.Stderr, "  port:     %d\n", proj.Port)
-	fmt.Fprintf(os.Stderr, "\n")
 
+	emit(map[string]interface{}{
+		"type": "detect", "framework": proj.Framework,
+		"pkg_mgr": proj.PackageMgr, "port": proj.Port,
+		"dev_cmd": proj.DevCmd, "install_cmd": proj.InstallCmd,
+	})
+
+	if !flagJSON && !flagEvents {
+		fmt.Fprintf(os.Stderr, "\n")
+		fmt.Fprintf(os.Stderr, "  detected: %s", proj.Framework)
+		if proj.PackageMgr != "" {
+			fmt.Fprintf(os.Stderr, " (%s)", proj.PackageMgr)
+		}
+		fmt.Fprintf(os.Stderr, "\n")
+		fmt.Fprintf(os.Stderr, "  profile:  %s\n", proj.Profile)
+		fmt.Fprintf(os.Stderr, "  port:     %d\n", proj.Port)
+		fmt.Fprintf(os.Stderr, "\n")
+	}
+
+	absDir, _ := filepath.Abs(dir)
 	flagProfile = proj.Profile
 	cfg := vm.Config{
 		CPUs:     1,
@@ -583,11 +599,15 @@ func cmdUp(args []string) error {
 		CmdLine:  "console=hvc0",
 		Network:  true,
 		Forwards: []vm.PortForward{{HostPort: proj.Port, GuestPort: proj.Port}},
+		SharedDirs: []vm.SharedDir{
+			{Tag: "project", HostPath: absDir, ReadOnly: false},
+		},
 	}
 	if err := resolveAssets(&cfg); err != nil {
 		return err
 	}
 	cfg.VsockPort = uint32(vsockProto.DefaultPort)
+	cfg.CmdLine += " dew.share=project:/app"
 
 	token := generateToken()
 
@@ -599,16 +619,24 @@ func cmdUp(args []string) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "  booting...")
+	emit(map[string]interface{}{"type": "boot", "status": "starting"})
+	if !flagJSON && !flagEvents {
+		fmt.Fprintf(os.Stderr, "  booting...")
+	}
 	start := time.Now()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
 	if err := d.Start(ctx); err != nil {
+		emit(map[string]interface{}{"type": "boot", "status": "failed", "error": err.Error()})
 		return err
 	}
-	fmt.Fprintf(os.Stderr, " %s\n", time.Since(start).Round(time.Millisecond))
+	bootMs := time.Since(start).Milliseconds()
+	emit(map[string]interface{}{"type": "boot", "status": "ready", "elapsed_ms": bootMs})
+	if !flagJSON && !flagEvents {
+		fmt.Fprintf(os.Stderr, " %dms\n", bootMs)
+	}
 
 	// Wait for agent + inject token
 	tokenSent := false
@@ -620,7 +648,10 @@ func cmdUp(args []string) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if !tokenSent {
-		fmt.Fprintf(os.Stderr, "  warning: agent not ready\n")
+		emit(map[string]interface{}{"type": "agent", "status": "failed", "error": "token handshake timeout"})
+		if !flagJSON && !flagEvents {
+			fmt.Fprintf(os.Stderr, "  warning: agent not ready\n")
+		}
 	}
 
 	startPortForwards(d, token, cfg.Forwards)
@@ -631,48 +662,103 @@ func cmdUp(args []string) error {
 	}
 	dmn.Start()
 
-	// Copy project files into VM
-	fmt.Fprintf(os.Stderr, "  copying project...\n")
-	execInVM := func(cmd string) {
+	execInVM := func(cmd string) (*RunResult, error) {
 		conn, err := connectVsock(d, cfg.VsockPort)
 		if err != nil {
-			return
+			return nil, err
 		}
 		defer conn.Close()
-		execVsockConn(conn, token, cmd)
+		return execVsockConn(conn, token, cmd)
 	}
 
-	execInVM("mkdir -p /app")
-	// Use tar to copy the entire project directory
-	absDir, _ := filepath.Abs(dir)
-	tarCmd := fmt.Sprintf("cd %s && tar cf - --exclude=node_modules --exclude=.git . | base64", absDir)
-	tarOut, err := exec.Command("sh", "-c", tarCmd).Output()
-	if err == nil && len(tarOut) > 0 {
-		// Send in chunks to avoid vsock message size limits
-		encoded := strings.TrimSpace(string(tarOut))
-		execInVM(fmt.Sprintf("echo '%s' | base64 -d | tar xf - -C /app", encoded))
-	}
-
-	// Install dependencies
+	// Project is mounted via virtiofs at /app (live sync from host)
+	// node_modules on VM tmpfs (not on host via virtiofs)
 	if proj.InstallCmd != "" {
-		fmt.Fprintf(os.Stderr, "  installing deps...\n")
-		conn, err := connectVsock(d, cfg.VsockPort)
-		if err == nil {
-			execVsockConn(conn, token, "cd /app && "+proj.InstallCmd)
-			conn.Close()
+		emit(map[string]interface{}{"type": "install", "status": "starting", "cmd": proj.InstallCmd})
+		if !flagJSON && !flagEvents {
+			fmt.Fprintf(os.Stderr, "  installing deps...\n")
+		}
+		t := time.Now()
+		result, err := execInVM("mkdir -p /tmp/nm && cd /app && ln -sf /tmp/nm node_modules && " + proj.InstallCmd)
+		installMs := time.Since(t).Milliseconds()
+		if err != nil || (result != nil && result.ExitCode != 0) {
+			errMsg := ""
+			suggestion := ""
+			if result != nil {
+				errMsg = result.Stderr
+				if strings.Contains(errMsg, "peer dep") || strings.Contains(errMsg, "ERESOLVE") {
+					suggestion = "try adding --legacy-peer-deps to install command"
+				}
+			}
+			emit(map[string]interface{}{
+				"type": "install", "status": "failed",
+				"elapsed_ms": installMs, "error": errMsg, "suggestion": suggestion,
+			})
+			if !flagJSON && !flagEvents {
+				fmt.Fprintf(os.Stderr, "  install failed (%dms)\n", installMs)
+			}
+		} else {
+			emit(map[string]interface{}{"type": "install", "status": "done", "elapsed_ms": installMs})
+			if !flagJSON && !flagEvents {
+				fmt.Fprintf(os.Stderr, "  deps installed (%dms)\n", installMs)
+			}
 		}
 	}
 
 	// Start dev server
-	fmt.Fprintf(os.Stderr, "  starting dev server...\n")
+	emit(map[string]interface{}{"type": "serve", "status": "starting", "cmd": proj.DevCmd})
+	if !flagJSON && !flagEvents {
+		fmt.Fprintf(os.Stderr, "  starting dev server...\n")
+	}
 	execInVM("cd /app && " + proj.DevCmd + " &")
-	time.Sleep(2 * time.Second)
 
-	fmt.Fprintf(os.Stderr, "\n")
-	fmt.Fprintf(os.Stderr, "  ✓ http://localhost:%d\n", proj.Port)
-	fmt.Fprintf(os.Stderr, "\n")
-	fmt.Fprintf(os.Stderr, "  Ctrl+C to stop\n")
-	fmt.Fprintf(os.Stderr, "\n")
+	// Health check — poll until dev server responds
+	if !flagJSON && !flagEvents {
+		fmt.Fprintf(os.Stderr, "  waiting for server...")
+	}
+	healthy := false
+	url := fmt.Sprintf("http://localhost:%d/", proj.Port)
+	for i := 0; i < 30; i++ {
+		time.Sleep(500 * time.Millisecond)
+		resp, err := http.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			healthy = true
+			break
+		}
+	}
+
+	totalMs := time.Since(start).Milliseconds()
+	if healthy {
+		emit(map[string]interface{}{
+			"type": "health", "status": "ok",
+			"url": url, "elapsed_ms": totalMs,
+		})
+		if flagJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.Encode(map[string]interface{}{
+				"status": "ready", "url": url, "port": proj.Port,
+				"framework": proj.Framework, "elapsed_ms": totalMs,
+			})
+		} else if !flagEvents {
+			fmt.Fprintf(os.Stderr, " ok\n\n  ✓ http://localhost:%d\n\n  Ctrl+C to stop\n\n", proj.Port)
+		}
+	} else {
+		emit(map[string]interface{}{
+			"type": "health", "status": "timeout",
+			"url": url, "elapsed_ms": totalMs,
+			"suggestion": "server may still be starting, try opening the URL manually",
+		})
+		if flagJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.Encode(map[string]interface{}{
+				"status": "timeout", "url": url, "port": proj.Port,
+				"framework": proj.Framework, "elapsed_ms": totalMs,
+			})
+		} else if !flagEvents {
+			fmt.Fprintf(os.Stderr, " timeout\n\n  ? http://localhost:%d (may still be starting)\n\n  Ctrl+C to stop\n\n", proj.Port)
+		}
+	}
 
 	<-ctx.Done()
 
