@@ -222,6 +222,22 @@ func (d *DarwinVM) State() vm.State {
 	return d.state
 }
 
+// VsockConnect connects to a vsock port inside the guest. The VM must
+// have been started with VsockPort > 0.
+func (d *DarwinVM) VsockConnect(port uint32) (*vz.VirtioSocketConnection, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if d.machine == nil {
+		return nil, fmt.Errorf("dew: VM not running")
+	}
+	devices := d.machine.SocketDevices()
+	if len(devices) == 0 {
+		return nil, fmt.Errorf("dew: VM has no vsock devices")
+	}
+	return devices[0].Connect(port)
+}
+
 func (d *DarwinVM) WaitForState(ctx context.Context, target vm.State) error {
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
