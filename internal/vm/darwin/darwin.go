@@ -80,7 +80,13 @@ func (d *DarwinVM) buildConfig() (*vz.VirtualMachineConfiguration, error) {
 }
 
 func (d *DarwinVM) configureSerial(config *vz.VirtualMachineConfiguration) error {
-	serialAttach, err := vz.NewFileHandleSerialPortAttachment(os.Stdin, os.Stdout)
+	readFile := os.Stdin
+	writeFile := os.Stdout
+	if d.cfg.Console != nil {
+		readFile = d.cfg.Console.In
+		writeFile = d.cfg.Console.Out
+	}
+	serialAttach, err := vz.NewFileHandleSerialPortAttachment(readFile, writeFile)
 	if err != nil {
 		return fmt.Errorf("serial attach: %w", err)
 	}

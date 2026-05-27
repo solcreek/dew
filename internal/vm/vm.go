@@ -5,7 +5,11 @@
 // Linux: no VM needed — containerd runs natively
 package vm
 
-import "context"
+import (
+	"context"
+	"io"
+	"os"
+)
 
 // State represents the VM lifecycle state.
 type State int
@@ -58,6 +62,38 @@ type Config struct {
 	VsockPort  uint32 // if >0, create a vsock device on this port
 	Network    bool   // if true, attach a NAT network device
 	SharedDirs []SharedDir
+
+	// Console overrides the serial console file handles.
+	// If nil, os.Stdin/os.Stdout are used (interactive mode).
+	Console *ConsoleFiles
+}
+
+// ConsoleFiles specifies explicit file handles for the serial console.
+type ConsoleFiles struct {
+	In  *os.File // host reads guest output from here
+	Out *os.File // host writes guest input here
+}
+
+// NewConsolePipe creates a pair of OS pipes for programmatic serial
+// console access. Returns (console for VM config, hostReader, hostWriter).
+func NewConsolePipe() (*ConsoleFiles, io.ReadCloser, io.WriteCloser, error) {
+	// guest stdout → host reads
+	guestOutR, guestOutW, err := os.Pipe()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	// host writes → guest stdin
+	guestInR, guestInW, err := os.Pipe()
+	if err != nil {
+		guestOutR.Close()
+		guestOutW.Close()
+		return nil, nil, nil, err
+	}
+	console := &ConsoleFiles{
+		In:  guestInR,  // VM reads input from this pipe
+		Out: guestOutW, // VM writes output to this pipe
+	}
+	return console, guestOutR, guestInW, nil
 }
 
 // VM is the platform-agnostic virtual machine handle.
