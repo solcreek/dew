@@ -158,12 +158,13 @@ if [ -d /sys/fs/cgroup ] && grep -q cgroup2 /proc/filesystems 2>/dev/null; then
     fi
 fi
 
-# unprivileged user for agent workloads
+# unprivileged user for exec workloads
 adduser -D -s /bin/sh dew 2>/dev/null || true
 
-# dew-agent (vsock exec channel, runs as unprivileged user)
+# dew-agent needs vsock device access, runs as root but executes
+# workloads as unprivileged 'dew' user via the exec protocol
 if [ -x /usr/local/bin/dew-agent ] && [ -e /dev/vsock ]; then
-    su -s /bin/sh dew -c "DEW_TOKEN=$DEW_TOKEN /usr/local/bin/dew-agent" >/dev/null 2>&1 &
+    DEW_TOKEN=$DEW_TOKEN DEW_EXEC_USER=dew /usr/local/bin/dew-agent >/dev/null 2>&1 &
     echo "dew-agent: vsock ready"
 fi
 

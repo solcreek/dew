@@ -13,8 +13,10 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/mdlayher/vsock"
@@ -22,9 +24,11 @@ import (
 )
 
 var authToken string
+var execUser string
 
 func main() {
 	authToken = os.Getenv("DEW_TOKEN")
+	execUser = os.Getenv("DEW_EXEC_USER")
 
 	port := uint32(protocol.DefaultPort)
 	if p := os.Getenv("DEW_VSOCK_PORT"); p != "" {
@@ -98,6 +102,7 @@ func executeCommand(req protocol.ExecRequest) protocol.ExecResponse {
 	if len(req.Env) > 0 {
 		cmd.Env = append(os.Environ(), req.Env...)
 	}
+	setExecUser(cmd)
 
 	stdout, err := cmd.Output()
 	resp := protocol.ExecResponse{
@@ -133,6 +138,7 @@ func executeStreaming(conn net.Conn, req protocol.ExecRequest) {
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
 	}
+	setExecUser(cmd)
 	if len(req.Env) > 0 {
 		cmd.Env = append(os.Environ(), req.Env...)
 	}
@@ -178,4 +184,22 @@ func executeStreaming(conn net.Conn, req protocol.ExecRequest) {
 	}
 
 	protocol.WriteJSON(conn, &protocol.ExecDone{ExitCode: exitCode, Error: errMsg})
+}
+
+func setExecUser(cmd *exec.Cmd) {
+	if execUser == "" {
+		return
+	}
+	u, err := user.Lookup(execUser)
+	if err != nil {
+		return
+	}
+	uid, _ := strconv.ParseUint(u.Uid, 10, 32)
+	gid, _ := strconv.ParseUint(u.Gid, 10, 32)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Credential: &syscall.Credential{
+			Uid: uint32(uid),
+			Gid: uint32(gid),
+		},
+	}
 }
