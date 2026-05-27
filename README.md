@@ -1,85 +1,110 @@
 # Dew
 
-Ultra-lightweight VM for macOS. Sub-second boot. Hardware-level isolation.
+Ultra-lightweight VM for macOS. Sub-second boot. Hardware-level isolation. Agent-native.
 
-Dew uses Apple Virtualization.framework to run Linux VMs in under a second. Designed for running untrusted code, AI agent sandboxes, and local development services.
+```
+$ dew up
+
+  detected: vite (npm)
+  profile:  node
+  port:     5173
+
+  booting... 1.2s
+  installing deps... 3.4s
+  waiting for server... ok
+
+  ✓ http://localhost:5173
+```
+
+No Node.js on your Mac. No Docker. No Homebrew. Everything runs inside a Linux VM that boots in under a second.
+
+### Why Dew
+
+- **850ms cold boot** — full Linux VM, faster than `docker run`
+- **50ms exec** — warm VM, faster than SSH
+- **Zero config** — `dew up` detects your project and starts everything
+- **VM isolation** — hardware boundary, not container namespaces
+- **Agent-native** — `--json` structured output, `--events` lifecycle stream, error fallback with suggestions. Built for LLM agents that generate and run code.
+- **Three network modes** — fully isolated (no NIC), host-only (vsock), or NAT
+- **Hot reload** — edit on macOS, Vite HMR fires inside the VM
+- **4.4MB binary** — no Docker Desktop (700MB), no background daemon
 
 ## Install
 
 ```bash
-# Download the latest release
-curl -fsSL https://github.com/solcreek/dew/releases/latest/download/dew-darwin-$(uname -m) -o /usr/local/bin/dew
-chmod +x /usr/local/bin/dew
+# Homebrew
+brew tap solcreek/dew && brew install dew
 
-# Sign with virtualization entitlement (required by macOS)
-codesign --entitlements <(echo '<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>com.apple.security.virtualization</key><true/>
-</dict></plist>') --force -s - /usr/local/bin/dew
+# npm
+npm install -g @solcreek/dew
 
-# Download VM assets (kernel + initramfs)
-dew assets pull
-```
-
-Or build from source:
-
-```bash
-git clone https://github.com/solcreek/dew.git && cd dew
-make sign
-bash initramfs/build.sh
+# Or download directly
+curl -fsSL https://github.com/solcreek/dew/releases/latest/download/install.sh | sh
 ```
 
 ## Quick Start
 
 ```bash
-# Boot a VM and run a command
+# Auto-detect project and start dev environment
+cd my-vite-app
+dew up
+
+# Or run a single command in an isolated VM
 dew run -- uname -a
 
-# Start a persistent VM with port forwarding
-dew start --network --disk ./dev.img --forward 5432:5432
-
-# From another terminal, exec into the running VM
+# Or start a persistent VM with services
+dew start --network --forward 5432:5432
 dew exec "nerdctl run -d --net=host postgres:16"
-
-# Connect from your app
 psql -h localhost -p 5432
 ```
 
+## `dew up`
+
+Zero-config dev environment. Detects your project, boots a VM, installs dependencies, starts the dev server, and tells you the URL.
+
+```bash
+cd my-project
+dew up
+```
+
+Auto-detects:
+
+| Framework | Config file | Port | Package manager |
+|---|---|---|---|
+| Vite | `vite.config.*` | 5173 | npm / yarn / pnpm / bun |
+| Next.js | `next.config.*` | 3000 | (auto from lock file) |
+| Astro | `astro.config.*` | 4321 | |
+| Nuxt | `nuxt.config.*` | 3000 | |
+| SvelteKit | `svelte.config.*` | 5173 | |
+| Node.js | `package.json` | 3000 | |
+
+Hot reload: your project directory is mounted via virtiofs. Edit files on macOS, Vite HMR updates the browser instantly. `node_modules` stays inside the VM — your Mac stays clean.
+
 ## When to Use Dew
 
-- **AI agent sandbox** — run LLM-generated code with VM-level isolation, structured output, and network control
+- **AI agent sandbox** — run LLM-generated code with VM isolation, structured output, and network control
 - **Local dev services** — postgres, redis, or any Docker image without Docker Desktop
-- **CI/test isolation** — reproducible environments that match production, boot in under a second
-
-## Features
-
-**Fast.** 850ms cold boot (minimal profile). 50ms session exec. Boots a full Linux VM before most tools finish initializing.
-
-**Small.** 4.4MB binary. 5MB minimal profile. No Homebrew, no Docker Desktop, no background daemon when stopped.
-
-**Isolated.** Three network modes — fully isolated (no NIC), host-only (vsock), or NAT. The VM has no network device unless you ask for one.
-
-**Structured.** `--json` for machine-readable output. `--events` for NDJSON streaming. `--stream` for real-time stdout/stderr. Built for agents, not just humans.
-
-**Containers.** Standard profile includes containerd + nerdctl. `dew exec "nerdctl run postgres:16"` just works.
+- **Zero-setup onboarding** — `dew up` in any supported project, no dev tools required
+- **CI/test isolation** — reproducible environments that boot in under a second
 
 ## Profiles
 
-| Profile | What's inside | Size | Boot | Use case |
+| Profile | What's inside | Size | Default RAM | Default disk |
 |---|---|---|---|---|
-| **minimal** | Alpine + vsock agent | 5MB | ~850ms | Sandboxing, exec, scripts |
-| **standard** | + containerd, nerdctl, runc, CNI | 129MB | ~2.5s | Docker images, services |
+| **minimal** | Alpine + exec agent | 5MB | 512MB | none (tmpfs) |
+| **node** | + Node.js, npm, build-base | 31MB | 1GB | 4GB auto |
+| **standard** | + containerd, nerdctl, runc, CNI | 129MB | 2GB | 10GB auto |
 
-Standard is the default. Minimal is `--profile minimal`.
+`dew up` selects the right profile automatically. Node projects get `node`, Docker workflows get `standard`, sandboxing gets `minimal`.
 
 ## Commands
 
 ```
-dew start [flags]              Boot a VM (interactive, daemon socket)
+dew up [dir]                   Auto-detect and start dev environment
+dew start [flags]              Boot a VM (persistent, daemon socket)
 dew run [flags] [--] <cmd>     Boot, exec, exit (ephemeral)
-dew exec <cmd>                 Exec in a running VM (via daemon)
-dew session create [flags]     Persistent session (~50ms per exec)
+dew exec <cmd>                 Exec in a running VM (from any terminal)
+dew session create [flags]     In-process session (~50ms per exec)
 dew session exec <id> <cmd>    Exec in session
 dew session destroy <id>       Destroy session
 dew version                    Print version
@@ -88,61 +113,85 @@ dew version                    Print version
 ## Flags
 
 ```
---profile <name>     Profile: standard (default) or minimal
---kernel <path>      Custom kernel path
---initrd <path>      Custom initramfs path
+--profile <name>     Profile: minimal, node, or standard (default)
 --cpus <n>           vCPUs (default: 1)
---memory <mb>        Memory in MB (default: 512)
+--memory <mb>        Memory in MB (auto per profile)
 --network            Enable NAT networking
---disk <path>        Persistent disk (ext4, created if absent)
---forward <h:g>      Forward host port to guest (e.g. 3000:3000)
---share <tag:path>   Share host dir into guest (read-only by default, :rw for write)
+--disk <path>        Persistent disk (auto per profile)
+--forward <h:g>      Forward host port to guest (repeatable)
+--share <tag:path>   Share host dir (read-only default, :rw for write)
 --stream             Real-time stdout/stderr
---events             NDJSON event stream (for agents)
+--events             NDJSON lifecycle event stream
 --json               Structured JSON output
---vsock <port>       Custom vsock port
 ```
 
 ## Agent Integration
 
+### Structured output
+
 ```bash
-# Structured output
+dew up --json my-app/
+```
+```json
+{"status":"ready","url":"http://localhost:5173/","port":5173,"framework":"vite","elapsed_ms":15200}
+```
+
+### Lifecycle events
+
+```bash
+dew up --events my-app/
+```
+```json
+{"type":"detect","framework":"vite","pkg_mgr":"npm","port":5173}
+{"type":"boot","status":"ready","elapsed_ms":1200}
+{"type":"install","status":"done","elapsed_ms":12000}
+{"type":"health","status":"ok","url":"http://localhost:5173/","elapsed_ms":15200}
+```
+
+### Error fallback
+
+When a step fails, agents get structured errors with actionable suggestions:
+
+```json
+{"type":"install","status":"failed","error":"peer dep conflict","suggestion":"try --legacy-peer-deps"}
+```
+
+### Exec API
+
+```bash
 dew run --json -- "npm test"
-# {"exit_code":0,"stdout":"...","stderr":""}
+# {"exit_code":0,"stdout":"5 passing\n","stderr":""}
 
-# NDJSON event stream
-dew run --events -- "npm install"
-# {"type":"stdout","data":"added 150 packages\n"}
-# {"type":"exit","exit_code":0,"error":""}
-
-# Session workflow (boot once, exec many)
-ID=$(dew session create --json | jq -r .id)
-dew session exec $ID "npm install"
-dew session exec $ID "npm test"
-dew session destroy $ID
+# Boot once, exec many (50ms per exec)
+dew start --network --forward 3000:3000
+dew exec "npm install"
+dew exec "npm test"
+dew exec "npm run build"
 ```
 
 ## Network Isolation
 
-```bash
-# No network (default) — VM has no NIC at all
-dew run -- "curl google.com"  # fails: no network device
+Three modes — choose per VM:
 
-# NAT networking — guest can reach the internet
+```bash
+# Fully isolated (default) — no network device at all
+dew run -- "curl google.com"         # fails: no NIC
+
+# NAT — guest can reach the internet
 dew run --network -- "curl google.com"  # works
 
-# Host-only — vsock channel only, no IP stack
-dew start --vsock 1024  # exec works, no internet
+# Host-only — vsock channel, no IP stack
+dew start --vsock 1024               # exec works, no internet
 ```
 
 ## Port Forwarding
 
-Port forwarding works through vsock — no SSH tunnel, no NAT port mapping.
+Through vsock — no SSH tunnel, no NAT port mapping.
 
 ```bash
 dew start --network --forward 5432:5432 --forward 6379:6379
 
-# From any terminal on the host
+# From any terminal, any app
 psql -h localhost -p 5432
 redis-cli -p 6379
 ```
@@ -150,85 +199,70 @@ redis-cli -p 6379
 ## Persistent Data
 
 ```bash
-# First run: creates and formats a 10GB ext4 disk
-dew start --disk ./mydata.img
-
-# Data in /data persists across VM restarts
+dew start --disk ./dev.img
 dew exec "echo 'hello' > /data/greeting.txt"
 
-# Next boot: data is still there
-dew start --disk ./mydata.img
+# Restart — data is still there
+dew start --disk ./dev.img
 dew exec "cat /data/greeting.txt"  # hello
 ```
 
-## Hot Reload (Minimal Profile)
+Node and standard profiles create persistent disks automatically. npm cache, installed packages, and database files survive across VM restarts.
 
-Share your project directory into the VM with virtiofs. Changes on the host are immediately visible inside the VM.
+## Benchmarks
 
-```bash
-dew start --profile minimal --share src:/app -- "cd /app && node --watch server.js"
-```
+| | Cold boot → exec | Binary | Total footprint |
+|---|---|---|---|
+| **Dew minimal** | **850ms** | 4.4MB | 5MB |
+| **Dew node** | **~3s** | 4.4MB | 31MB + 4GB disk |
+| **Dew standard** | **~5s** (first boot) | 4.4MB | 129MB + 10GB disk |
+| Docker Desktop | 30s+ | — | 700MB + GB disk |
+| Lima | 33s | 33MB | 33MB + 8.7GB disk |
+
+Session exec (warm VM): **50ms**.
 
 ## Security
 
-- **VM isolation** — Apple Virtualization.framework hardware boundary, not container namespaces
-- **Auth token** — per-VM token injected via vsock handshake (not kernel cmdline)
-- **Unprivileged exec** — minimal profile runs commands as non-root user
+- **VM isolation** — Apple Virtualization.framework hardware boundary
+- **Auth token** — per-VM token injected via vsock handshake (never on disk or cmdline)
 - **Capability drop** — agent drops root capabilities after vsock bind
-- **Cgroup limits** — configurable CPU/memory limits via kernel cmdline
+- **Cgroup limits** — CPU/memory limits per VM
 - **Read-only shares** — `--share` defaults to read-only; explicit `:rw` required
 - **Per-exec timeout** — commands killed after deadline (default 30s)
+- **Network off by default** — VM has no NIC unless `--network` is passed
 
 ## Limitations
 
-- **macOS only** — requires Apple Virtualization.framework (Apple Silicon or Intel Mac with macOS 13+)
-- **No Windows or Linux host** — Linux doesn't need a VM (use containerd directly); Windows support is future work
-- **Standard profile requires --disk** — containerd needs ext4 filesystem, not tmpfs
-- **No docker-compose equivalent** — use multiple `dew exec "nerdctl run ..."` commands
-- **Hot reload** — works with minimal profile + `--share`; standard profile requires container rebuild for code changes
-
-## Building
-
-```bash
-# Build and sign (codesign required for Virtualization.framework)
-make sign
-
-# Build initramfs profiles
-bash initramfs/build.sh minimal    # 5MB
-bash initramfs/build.sh standard   # 129MB (default)
-
-# Run tests
-make test
-
-# Cross-compile guest agent
-make agent
-```
-
-Requires Go 1.23+ and macOS with Apple Virtualization.framework support.
+- **macOS only** — requires Apple Virtualization.framework (macOS 13+)
+- **No Windows or Linux host** — Linux doesn't need a VM; Windows is future work
+- **Hot reload** — works with `dew up` and minimal profile; standard profile containers need rebuild for code changes
+- **No docker-compose** — use multiple `dew exec "nerdctl run ..."` or `dew up` for single-app projects
 
 ## Architecture
 
 ```
-cmd/dew/           Host CLI (macOS)
-cmd/dew-agent/     Guest agent (Linux, static binary)
-internal/vm/       Platform-agnostic VM interface
-internal/vm/darwin/ Apple Virtualization.framework backend
-internal/vsock/    Length-prefixed JSON exec protocol
-internal/session/  Long-lived VM session management
-internal/daemon/   Unix socket for cross-process exec
-internal/serialexec/ Serial console fallback
-initramfs/         Build scripts for VM images
-kernel/            Turbo kernel build (Dockerfile)
+cmd/dew/             Host CLI (macOS)
+cmd/dew-agent/       Guest agent (Linux, static binary)
+internal/vm/         Platform-agnostic VM interface
+internal/vm/darwin/  Apple Virtualization.framework backend
+internal/vsock/      Length-prefixed JSON exec protocol
+internal/detect/     Project auto-detection (registry-based)
+internal/session/    Long-lived VM session management
+internal/daemon/     Unix socket for cross-process exec
+initramfs/           Profile build scripts
+kernel/              Custom kernel build (Dockerfile)
 ```
 
 ## How It Works
 
-1. `dew start` boots a Linux VM via Apple Virtualization.framework (~200ms)
-2. Custom init loads kernel modules, configures networking, starts containerd
-3. `dew-agent` inside the VM listens on vsock for exec requests
-4. Host connects via vsock, sends JSON exec requests, receives structured responses
-5. Port forwarding: host TCP listener → vsock → guest agent → guest TCP
-6. Standard profile: `switch_root` from initramfs to ext4 disk for overlayfs support
+1. `dew up` detects framework, package manager, and port from your project directory
+2. Boots a Linux VM via Apple Virtualization.framework (~200ms)
+3. Mounts your project via virtiofs (live bidirectional sync)
+4. Installs dependencies inside the VM (cached on persistent disk)
+5. Starts the dev server, forwards the port to your Mac
+6. Health-checks the server, prints the URL when ready
+
+For `dew start`: same VM boot, plus a daemon socket so `dew exec` works from any terminal.
 
 ## License
 
