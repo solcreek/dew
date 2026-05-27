@@ -125,6 +125,21 @@ func TestParseFlags_DoubleDash(t *testing.T) {
 	}
 }
 
+func TestParseFlags_NoDash(t *testing.T) {
+	cfg, remaining, err := parseFlags([]string{
+		"--kernel", "/k", "echo", "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Kernel != "/k" {
+		t.Errorf("Kernel = %q", cfg.Kernel)
+	}
+	if len(remaining) != 2 || remaining[0] != "echo" || remaining[1] != "hello" {
+		t.Errorf("remaining = %v, want [echo hello]", remaining)
+	}
+}
+
 func TestParseFlags_UnknownFlag(t *testing.T) {
 	_, _, err := parseFlags([]string{"--bogus"})
 	if err == nil {

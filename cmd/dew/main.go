@@ -172,7 +172,11 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 		case "--json":
 			flagJSON = true
 		default:
-			return cfg, nil, fmt.Errorf("unknown flag %q", args[i])
+			if strings.HasPrefix(args[i], "-") {
+				return cfg, nil, fmt.Errorf("unknown flag %q", args[i])
+			}
+			remaining = args[i:]
+			return cfg, remaining, nil
 		}
 	}
 
