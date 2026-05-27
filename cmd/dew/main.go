@@ -6,12 +6,15 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -102,6 +105,7 @@ Flags:
   --network            Enable NAT networking
   --vsock <port>       Enable vsock on this port
   --share <tag:path>   Share host directory (read-only; tag:hostpath[:rw])
+  --forward <h:g>      Forward host port to guest (e.g. 3000:3000)
   --json               Machine-readable JSON output (run command)
 `)
 }
@@ -182,6 +186,16 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, err
 			}
 			cfg.SharedDirs = append(cfg.SharedDirs, sd)
+		case "--forward":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--forward requires hostPort:guestPort")
+			}
+			fwd, err := parseForward(args[i])
+			if err != nil {
+				return cfg, nil, err
+			}
+			cfg.Forwards = append(cfg.Forwards, fwd)
 		case "--json":
 			flagJSON = true
 		default:
@@ -197,12 +211,27 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 }
 
 func cmdStart(args []string) error {
-	cfg, _, err := parseFlags(args)
+	cfg, cmdArgs, err := parseFlags(args)
 	if err != nil {
 		return err
 	}
 	if err := resolveAssets(&cfg); err != nil {
 		return err
+	}
+
+	if len(cfg.Forwards) > 0 && cfg.VsockPort == 0 {
+		cfg.VsockPort = vsockProto.DefaultPort
+	}
+
+	token := generateToken()
+	if cfg.VsockPort > 0 {
+		cfg.CmdLine += " dew.token=" + token
+	}
+
+	if len(cmdArgs) > 0 {
+		raw := strings.Join(cmdArgs, " ")
+		encoded := base64Encode(raw)
+		cfg.CmdLine += " dew.cmd=" + encoded
 	}
 
 	d, err := darwin.New(cfg)
@@ -221,6 +250,11 @@ func cmdStart(args []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "dew: VM running (%s)\n", time.Since(start).Round(time.Millisecond))
+
+	if len(cfg.Forwards) > 0 {
+		time.Sleep(500 * time.Millisecond)
+		startPortForwards(d, token, cfg.Forwards)
+	}
 
 	<-ctx.Done()
 
@@ -346,6 +380,10 @@ type RunResult struct {
 	ExitCode int    `json:"exit_code"`
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr,omitempty"`
+}
+
+func base64Encode(s string) string {
+	return base64.StdEncoding.EncodeToString([]byte(s))
 }
 
 func generateToken() string {
@@ -491,6 +529,72 @@ func cmdSessionDestroy(args []string) error {
 	}
 
 	return s.Destroy()
+}
+
+func parseForward(s string) (vm.PortForward, error) {
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) != 2 {
+		return vm.PortForward{}, fmt.Errorf("--forward: expected hostPort:guestPort, got %q", s)
+	}
+	host, err1 := strconv.Atoi(parts[0])
+	guest, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil || host < 1 || guest < 1 {
+		return vm.PortForward{}, fmt.Errorf("--forward: invalid ports %q", s)
+	}
+	return vm.PortForward{HostPort: host, GuestPort: guest}, nil
+}
+
+func startPortForwards(v vm.VM, token string, forwards []vm.PortForward) {
+	for _, fwd := range forwards {
+		go func(f vm.PortForward) {
+			ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", f.HostPort))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "dew: forward %d:%d listen failed: %v\n", f.HostPort, f.GuestPort, err)
+				return
+			}
+			fmt.Fprintf(os.Stderr, "dew: forwarding 127.0.0.1:%d → guest:%d\n", f.HostPort, f.GuestPort)
+			for {
+				tcpConn, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				go proxyToGuest(v, token, tcpConn, f.GuestPort)
+			}
+		}(fwd)
+	}
+}
+
+func proxyToGuest(v vm.VM, token string, tcpConn net.Conn, guestPort int) {
+	defer tcpConn.Close()
+
+	vsockConn, err := v.VsockConnect(uint32(vsockProto.DefaultPort))
+	if err != nil {
+		return
+	}
+	defer vsockConn.Close()
+
+	req := vsockProto.ConnectRequest{
+		Type:  vsockProto.TypeConnect,
+		Token: token,
+		Addr:  fmt.Sprintf("127.0.0.1:%d", guestPort),
+	}
+	if err := vsockProto.WriteJSON(vsockConn, &req); err != nil {
+		return
+	}
+
+	var resp vsockProto.ConnectResponse
+	if err := vsockProto.ReadJSON(vsockConn, &resp); err != nil {
+		return
+	}
+	if !resp.OK {
+		fmt.Fprintf(os.Stderr, "dew: forward connect failed: %s\n", resp.Error)
+		return
+	}
+
+	done := make(chan struct{})
+	go func() { io.Copy(vsockConn, tcpConn); close(done) }()
+	io.Copy(tcpConn, vsockConn)
+	<-done
 }
 
 func parseShare(s string) (vm.SharedDir, error) {

@@ -12,7 +12,14 @@ const (
 	DefaultPort = 1024
 )
 
+// Message types for the vsock protocol.
+const (
+	TypeExec    = "exec"
+	TypeConnect = "connect"
+)
+
 type ExecRequest struct {
+	Type      string   `json:"type"`
 	Token     string   `json:"token"`
 	Command   string   `json:"command"`
 	Args      []string `json:"args,omitempty"`
@@ -39,6 +46,20 @@ type OutputChunk struct {
 type ExecDone struct {
 	ExitCode int    `json:"exit_code"`
 	Error    string `json:"error,omitempty"`
+}
+
+// ConnectRequest asks the agent to dial a TCP address inside the guest
+// and bidirectionally proxy data over the vsock connection.
+type ConnectRequest struct {
+	Type  string `json:"type"`
+	Token string `json:"token"`
+	Addr  string `json:"addr"` // e.g. "127.0.0.1:3000"
+}
+
+// ConnectResponse is sent back before proxying starts.
+type ConnectResponse struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
 }
 
 type PingResponse struct {

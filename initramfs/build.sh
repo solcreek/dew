@@ -73,10 +73,18 @@ cp "$APK_EXTRACT/lib/modules/${KERNEL_VER}/kernel/net/vmw_vsock/vsock.ko.gz" \
    "$APK_EXTRACT/lib/modules/${KERNEL_VER}/kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko.gz" \
    "$MODDIR/kernel/net/vmw_vsock/"
 
-# Copy virtio_net for networking
-mkdir -p "$MODDIR/kernel/drivers/net"
+# Copy networking modules
+mkdir -p "$MODDIR/kernel/drivers/net" "$MODDIR/kernel/net/packet" "$MODDIR/kernel/net/core"
 cp "$APK_EXTRACT/lib/modules/${KERNEL_VER}/kernel/drivers/net/virtio_net.ko.gz" \
+   "$APK_EXTRACT/lib/modules/${KERNEL_VER}/kernel/drivers/net/net_failover.ko.gz" \
    "$MODDIR/kernel/drivers/net/" 2>/dev/null || true
+cp "$APK_EXTRACT/lib/modules/${KERNEL_VER}/kernel/net/packet/af_packet.ko.gz" \
+   "$MODDIR/kernel/net/packet/" 2>/dev/null || true
+cp "$APK_EXTRACT/lib/modules/${KERNEL_VER}/kernel/net/core/failover.ko.gz" \
+   "$MODDIR/kernel/net/core/" 2>/dev/null || true
+
+# Decompress .ko.gz → .ko for insmod compatibility
+find "$MODDIR" -name "*.ko.gz" -exec gunzip {} \;
 
 # Copy modules.dep and related files
 for f in modules.dep modules.dep.bin modules.alias modules.alias.bin modules.symbols modules.symbols.bin modules.builtin modules.order; do
@@ -84,6 +92,20 @@ for f in modules.dep modules.dep.bin modules.alias modules.alias.bin modules.sym
 done
 
 echo "Modules: $(du -sh "$MODDIR" | awk '{print $1}')"
+
+# Helper scripts
+mkdir -p "${WORK_DIR}/usr/local/bin"
+cat > "${WORK_DIR}/usr/local/bin/dew-httpd" << 'HTTPD_EOF'
+#!/bin/sh
+PORT="${1:-8080}"
+DIR="${2:-/tmp/www}"
+mkdir -p "$DIR"
+echo "<h1>Hello from Dew VM</h1><p>$(uname -a)</p>" > "$DIR/index.html"
+RESP="HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n$(cat "$DIR/index.html")"
+echo "dew-httpd: listening on :$PORT"
+while true; do echo -e "$RESP" | nc -l -p "$PORT" > /dev/null 2>&1; done
+HTTPD_EOF
+chmod 755 "${WORK_DIR}/usr/local/bin/dew-httpd"
 
 # --- Step 3: Build dew-agent ---
 echo "--- Step 3: Build dew-agent ---"
@@ -112,14 +134,22 @@ chmod 1777 /tmp
 hostname dew
 ip link set lo up
 
-# load vsock modules
-modprobe vsock 2>/dev/null
-modprobe vmw_vsock_virtio_transport 2>/dev/null
+# load kernel modules (depmod rebuilds dependency map for our subset)
+depmod -a 2>/dev/null || true
+modprobe af_packet 2>/dev/null || true
+modprobe virtio_net 2>/dev/null || true
+modprobe vsock 2>/dev/null || true
+modprobe vmw_vsock_virtio_transport 2>/dev/null || true
 
 # network (if eth0 exists = NAT mode)
 if ip link show eth0 >/dev/null 2>&1; then
     ip link set eth0 up
-    udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -n 2>/dev/null || true
+    # wait for link carrier (virtio_net needs a moment)
+    for i in 1 2 3 4 5; do
+        if [ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = "1" ]; then break; fi
+        sleep 0.1
+    done
+    udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -t 3 || true
 fi
 
 # virtiofs mounts (kernel cmdline: dew.share=tag:/mountpoint)
@@ -137,11 +167,13 @@ done
 DEW_TOKEN=""
 DEW_CPU_QUOTA=""
 DEW_MEM_LIMIT=""
+DEW_CMD=""
 for param in $(cat /proc/cmdline); do
     case "$param" in
         dew.token=*)     DEW_TOKEN="${param#dew.token=}" ;;
         dew.cpu_quota=*) DEW_CPU_QUOTA="${param#dew.cpu_quota=}" ;;
         dew.mem_limit=*) DEW_MEM_LIMIT="${param#dew.mem_limit=}" ;;
+        dew.cmd=*)       DEW_CMD="${param#dew.cmd=}" ;;
     esac
 done
 export DEW_TOKEN
@@ -166,6 +198,14 @@ adduser -D -s /bin/sh dew 2>/dev/null || true
 if [ -x /usr/local/bin/dew-agent ] && [ -e /dev/vsock ]; then
     DEW_TOKEN=$DEW_TOKEN DEW_EXEC_USER=dew /usr/local/bin/dew-agent >/dev/null 2>&1 &
     echo "dew-agent: vsock ready"
+fi
+
+# run startup command if specified (dew.cmd=base64encoded)
+if [ -n "$DEW_CMD" ]; then
+    DECODED=$(echo "$DEW_CMD" | base64 -d 2>/dev/null)
+    if [ -n "$DECODED" ]; then
+        PATH="/usr/local/bin:$PATH" sh -c "$DECODED" &
+    fi
 fi
 
 echo ""

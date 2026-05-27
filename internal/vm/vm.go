@@ -63,10 +63,17 @@ type Config struct {
 	VsockPort  uint32 // if >0, create a vsock device on this port
 	Network    bool   // if true, attach a NAT network device
 	SharedDirs []SharedDir
+	Forwards   []PortForward
 
 	// Console overrides the serial console file handles.
 	// If nil, os.Stdin/os.Stdout are used (interactive mode).
 	Console *ConsoleFiles
+}
+
+// PortForward maps a host TCP port to a guest TCP port via vsock.
+type PortForward struct {
+	HostPort  int
+	GuestPort int
 }
 
 // ConsoleFiles specifies explicit file handles for the serial console.

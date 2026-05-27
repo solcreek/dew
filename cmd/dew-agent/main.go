@@ -7,6 +7,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -57,27 +58,56 @@ func main() {
 	}
 }
 
+type envelope struct {
+	Type string `json:"type"`
+}
+
 func handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	for {
-		var req protocol.ExecRequest
-		if err := protocol.ReadJSON(conn, &req); err != nil {
+		// Read raw bytes to determine message type
+		header := make([]byte, 4)
+		if _, err := io.ReadFull(conn, header); err != nil {
+			return
+		}
+		length := uint32(header[0])<<24 | uint32(header[1])<<16 | uint32(header[2])<<8 | uint32(header[3])
+		if length > 10*1024*1024 {
+			return
+		}
+		data := make([]byte, length)
+		if _, err := io.ReadFull(conn, data); err != nil {
 			return
 		}
 
-		if authToken != "" && req.Token != authToken {
-			resp := protocol.ExecResponse{ExitCode: -1, Error: "unauthorized"}
-			protocol.WriteJSON(conn, &resp)
-			return
-		}
+		var env envelope
+		json.Unmarshal(data, &env)
 
-		if req.Stream {
-			executeStreaming(conn, req)
-		} else {
-			resp := executeCommand(req)
-			if err := protocol.WriteJSON(conn, &resp); err != nil {
+		switch env.Type {
+		case protocol.TypeConnect:
+			var req protocol.ConnectRequest
+			json.Unmarshal(data, &req)
+			if authToken != "" && req.Token != authToken {
+				protocol.WriteJSON(conn, &protocol.ConnectResponse{Error: "unauthorized"})
 				return
+			}
+			handleConnect(conn, req.Addr)
+			return
+
+		default:
+			var req protocol.ExecRequest
+			json.Unmarshal(data, &req)
+			if authToken != "" && req.Token != authToken {
+				protocol.WriteJSON(conn, &protocol.ExecResponse{ExitCode: -1, Error: "unauthorized"})
+				return
+			}
+			if req.Stream {
+				executeStreaming(conn, req)
+			} else {
+				resp := executeCommand(req)
+				if err := protocol.WriteJSON(conn, &resp); err != nil {
+					return
+				}
 			}
 		}
 	}
@@ -184,6 +214,29 @@ func executeStreaming(conn net.Conn, req protocol.ExecRequest) {
 	}
 
 	protocol.WriteJSON(conn, &protocol.ExecDone{ExitCode: exitCode, Error: errMsg})
+}
+
+func handleConnect(vsockConn net.Conn, addr string) {
+	tcpConn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		protocol.WriteJSON(vsockConn, &protocol.ConnectResponse{Error: err.Error()})
+		return
+	}
+	defer tcpConn.Close()
+
+	protocol.WriteJSON(vsockConn, &protocol.ConnectResponse{OK: true})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		io.Copy(tcpConn, vsockConn)
+	}()
+	go func() {
+		defer wg.Done()
+		io.Copy(vsockConn, tcpConn)
+	}()
+	wg.Wait()
 }
 
 func setExecUser(cmd *exec.Cmd) {
