@@ -17,7 +17,7 @@ echo "=== Building Dew turbo kernel ==="
 docker build -t "$IMAGE_TAG" "$SCRIPT_DIR"
 
 # Extract vmlinuz from the scratch image
-CONTAINER_ID=$(docker create "$IMAGE_TAG")
+CONTAINER_ID=$(docker create "$IMAGE_TAG" /bin/true 2>/dev/null || docker create --entrypoint "" "$IMAGE_TAG" true)
 docker cp "${CONTAINER_ID}:/vmlinuz-turbo" "$OUT"
 docker rm "$CONTAINER_ID" >/dev/null
 
