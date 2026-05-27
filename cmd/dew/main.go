@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/solcreek/dew/internal/daemon"
 	"github.com/solcreek/dew/internal/serialexec"
 	"github.com/solcreek/dew/internal/session"
 	"github.com/solcreek/dew/internal/vm"
@@ -66,6 +67,8 @@ func main() {
 		err = cmdStart(os.Args[2:])
 	case "run":
 		err = cmdRun(os.Args[2:])
+	case "exec":
+		err = cmdExec(os.Args[2:])
 	case "session":
 		if len(os.Args) < 3 {
 			fmt.Fprintf(os.Stderr, "usage: dew session <create|exec|destroy> [args]\n")
@@ -91,8 +94,9 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `dew — ultra-lightweight VM (Apple Virtualization.framework)
 
 Usage:
-  dew start [flags]              Boot a Linux VM (interactive)
+  dew start [flags]              Boot a Linux VM (interactive, daemon socket)
   dew run [flags] [--] <cmd>     Boot, execute command, exit
+  dew exec <cmd>                 Execute in a running VM (via daemon socket)
   dew session create [flags]     Create a persistent VM session
   dew session exec <id> <cmd>    Execute in an existing session
   dew session destroy <id>       Destroy a session
@@ -264,16 +268,33 @@ func cmdStart(args []string) error {
 
 	fmt.Fprintf(os.Stderr, "dew: VM running (%s)\n", time.Since(start).Round(time.Millisecond))
 
-	if len(cfg.Forwards) > 0 || cfg.VsockPort > 0 {
-		time.Sleep(500 * time.Millisecond)
-		if err := sendToken(d, uint32(vsockProto.DefaultPort), token); err != nil {
-			fmt.Fprintf(os.Stderr, "dew: token handshake failed: %v\n", err)
-		}
-		startPortForwards(d, token, cfg.Forwards)
+	// Always enable vsock for daemon
+	if cfg.VsockPort == 0 {
+		cfg.VsockPort = uint32(vsockProto.DefaultPort)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	if err := sendToken(d, cfg.VsockPort, token); err != nil {
+		fmt.Fprintf(os.Stderr, "dew: token handshake failed: %v\n", err)
+	}
+	startPortForwards(d, token, cfg.Forwards)
+
+	// Start daemon socket for cross-process exec
+	dmn := &daemon.State{
+		VM:         d,
+		Token:      token,
+		VsockPort:  cfg.VsockPort,
+		SocketPath: daemon.SocketPath(""),
+	}
+	if err := dmn.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "dew: daemon: %v\n", err)
+	} else {
+		fmt.Fprintf(os.Stderr, "dew: daemon socket %s\n", dmn.SocketPath)
 	}
 
 	<-ctx.Done()
 
+	dmn.Stop()
 	fmt.Fprintf(os.Stderr, "\ndew: stopping VM\n")
 	return d.Stop(context.Background())
 }
@@ -480,6 +501,44 @@ func execVsockStream(conn net.Conn, token string, cmd string) (int, error) {
 			}
 		}
 	}
+}
+
+func cmdExec(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: dew exec <cmd...>")
+	}
+	cmd := strings.Join(args, " ")
+
+	sockPath := daemon.SocketPath("")
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		return fmt.Errorf("no running VM (socket %s): %w", sockPath, err)
+	}
+	defer conn.Close()
+
+	req := daemon.ExecRequest{Command: cmd}
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
+		return fmt.Errorf("send: %w", err)
+	}
+
+	var resp vsockProto.ExecResponse
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		return fmt.Errorf("recv: %w", err)
+	}
+
+	if resp.Stdout != "" {
+		fmt.Print(resp.Stdout)
+	}
+	if resp.Stderr != "" {
+		fmt.Fprint(os.Stderr, resp.Stderr)
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	if resp.ExitCode != 0 {
+		os.Exit(resp.ExitCode)
+	}
+	return nil
 }
 
 func execVsockConn(conn net.Conn, token string, cmd string) (*RunResult, error) {
