@@ -10,9 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Code-Hex/vz/v3"
 	"github.com/solcreek/dew/internal/serialexec"
 	"github.com/solcreek/dew/internal/vm"
 	"github.com/solcreek/dew/internal/vm/darwin"
+	vsockProto "github.com/solcreek/dew/internal/vsock"
 )
 
 const version = "0.1.0-dev"
@@ -192,6 +194,11 @@ func cmdRun(args []string) error {
 		return fmt.Errorf("no command specified (use -- <cmd>)")
 	}
 
+	// Always enable vsock for run mode
+	if cfg.VsockPort == 0 {
+		cfg.VsockPort = 1024
+	}
+
 	console, hostReader, hostWriter, err := vm.NewConsolePipe()
 	if err != nil {
 		return fmt.Errorf("console pipe: %w", err)
@@ -214,18 +221,21 @@ func cmdRun(args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "dew: VM running (%s)\n", time.Since(start).Round(time.Millisecond))
 
-	exec := serialexec.New(hostReader, hostWriter)
-
-	fmt.Fprintf(os.Stderr, "dew: waiting for guest ready\n")
-	if err := exec.WaitReady(15 * time.Second); err != nil {
+	// Wait for guest init to complete (serial console)
+	sExec := serialexec.New(hostReader, hostWriter)
+	fmt.Fprintf(os.Stderr, "dew: waiting for guest\n")
+	if err := sExec.WaitReady(15 * time.Second); err != nil {
 		d.Stop(context.Background())
 		return fmt.Errorf("guest not ready: %w", err)
 	}
 
+	// Try vsock exec (clean channel), fall back to serial
 	cmd := strings.Join(cmdArgs, " ")
-	fmt.Fprintf(os.Stderr, "dew: exec %q\n", cmd)
-
-	output, exitCode, err := exec.Run(cmd)
+	output, exitCode, err := execViaVsock(d, cfg.VsockPort, cmd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dew: vsock unavailable, using serial\n")
+		output, exitCode, err = sExec.Run(cmd)
+	}
 	if err != nil {
 		d.Stop(context.Background())
 		return fmt.Errorf("exec: %w", err)
@@ -244,6 +254,39 @@ func cmdRun(args []string) error {
 		os.Exit(exitCode)
 	}
 	return nil
+}
+
+func execViaVsock(d *darwin.DarwinVM, port uint32, cmd string) (string, int, error) {
+	// Retry vsock connect — agent may not be listening yet
+	var conn *vz.VirtioSocketConnection
+	var err error
+	for i := 0; i < 20; i++ {
+		conn, err = d.VsockConnect(port)
+		if err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err != nil {
+		return "", -1, err
+	}
+	defer conn.Close()
+
+	req := vsockProto.ExecRequest{Command: "/bin/sh", Args: []string{"-c", cmd}}
+	if err := vsockProto.WriteJSON(conn, &req); err != nil {
+		return "", -1, err
+	}
+
+	var resp vsockProto.ExecResponse
+	if err := vsockProto.ReadJSON(conn, &resp); err != nil {
+		return "", -1, err
+	}
+
+	output := resp.Stdout
+	if resp.Stderr != "" {
+		output += resp.Stderr
+	}
+	return strings.TrimRight(output, "\n"), resp.ExitCode, nil
 }
 
 func parseShare(s string) (vm.SharedDir, error) {
