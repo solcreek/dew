@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"testing"
 
 	"github.com/solcreek/dew/internal/vm"
@@ -144,5 +145,77 @@ func TestParseFlags_UnknownFlag(t *testing.T) {
 	_, _, err := parseFlags([]string{"--bogus"})
 	if err == nil {
 		t.Fatal("expected error for unknown flag")
+	}
+}
+
+func TestParseFlags_Forward(t *testing.T) {
+	cfg, _, err := parseFlags([]string{
+		"--kernel", "/k", "--forward", "3000:8080", "--forward", "5432:5432",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Forwards) != 2 {
+		t.Fatalf("Forwards len = %d, want 2", len(cfg.Forwards))
+	}
+	if cfg.Forwards[0].HostPort != 3000 || cfg.Forwards[0].GuestPort != 8080 {
+		t.Errorf("Forwards[0] = %+v, want 3000:8080", cfg.Forwards[0])
+	}
+	if cfg.Forwards[1].HostPort != 5432 || cfg.Forwards[1].GuestPort != 5432 {
+		t.Errorf("Forwards[1] = %+v, want 5432:5432", cfg.Forwards[1])
+	}
+}
+
+func TestParseForward(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    vm.PortForward
+		wantErr bool
+	}{
+		{"3000:8080", vm.PortForward{HostPort: 3000, GuestPort: 8080}, false},
+		{"5432:5432", vm.PortForward{HostPort: 5432, GuestPort: 5432}, false},
+		{"80:80", vm.PortForward{HostPort: 80, GuestPort: 80}, false},
+		{"nocolon", vm.PortForward{}, true},
+		{"abc:123", vm.PortForward{}, true},
+		{"0:80", vm.PortForward{}, true},
+		{":80", vm.PortForward{}, true},
+	}
+	for _, tt := range tests {
+		got, err := parseForward(tt.input)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("parseForward(%q) expected error", tt.input)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseForward(%q) error: %v", tt.input, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("parseForward(%q) = %+v, want %+v", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestBase64Encode(t *testing.T) {
+	tests := []struct {
+		input string
+	}{
+		{"echo hello"},
+		{"dew-httpd 9999"},
+		{"mkdir -p /tmp/www && httpd -p 80 -h /tmp/www"},
+		{""},
+	}
+	for _, tt := range tests {
+		encoded := base64Encode(tt.input)
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			t.Errorf("base64Encode(%q) produced invalid base64: %v", tt.input, err)
+			continue
+		}
+		if string(decoded) != tt.input {
+			t.Errorf("round-trip failed: got %q, want %q", decoded, tt.input)
+		}
 	}
 }

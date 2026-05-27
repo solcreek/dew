@@ -189,3 +189,76 @@ func TestExecRequestStream(t *testing.T) {
 		t.Error("Stream should be true")
 	}
 }
+
+func TestConnectRequest(t *testing.T) {
+	req := ConnectRequest{Type: TypeConnect, Token: "tok123", Addr: "127.0.0.1:5432"}
+	var buf bytes.Buffer
+	if err := WriteJSON(&buf, &req); err != nil {
+		t.Fatal(err)
+	}
+	var got ConnectRequest
+	if err := ReadJSON(&buf, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != TypeConnect {
+		t.Errorf("Type = %q, want %q", got.Type, TypeConnect)
+	}
+	if got.Token != "tok123" {
+		t.Errorf("Token = %q", got.Token)
+	}
+	if got.Addr != "127.0.0.1:5432" {
+		t.Errorf("Addr = %q", got.Addr)
+	}
+}
+
+func TestConnectResponse(t *testing.T) {
+	tests := []struct {
+		name string
+		resp ConnectResponse
+	}{
+		{"success", ConnectResponse{OK: true}},
+		{"error", ConnectResponse{OK: false, Error: "connection refused"}},
+	}
+	for _, tt := range tests {
+		var buf bytes.Buffer
+		if err := WriteJSON(&buf, &tt.resp); err != nil {
+			t.Fatal(err)
+		}
+		var got ConnectResponse
+		if err := ReadJSON(&buf, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.OK != tt.resp.OK {
+			t.Errorf("%s: OK = %v, want %v", tt.name, got.OK, tt.resp.OK)
+		}
+		if got.Error != tt.resp.Error {
+			t.Errorf("%s: Error = %q, want %q", tt.name, got.Error, tt.resp.Error)
+		}
+	}
+}
+
+func TestExecRequestWithTimeout(t *testing.T) {
+	req := ExecRequest{Token: "t", Command: "sleep", Args: []string{"10"}, TimeoutMs: 5000}
+	var buf bytes.Buffer
+	if err := WriteJSON(&buf, &req); err != nil {
+		t.Fatal(err)
+	}
+	var got ExecRequest
+	if err := ReadJSON(&buf, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.TimeoutMs != 5000 {
+		t.Errorf("TimeoutMs = %d, want 5000", got.TimeoutMs)
+	}
+}
+
+func TestExecRequestWithToken(t *testing.T) {
+	req := ExecRequest{Token: "secret-token-abc", Command: "ls"}
+	var buf bytes.Buffer
+	WriteJSON(&buf, &req)
+	var got ExecRequest
+	ReadJSON(&buf, &got)
+	if got.Token != "secret-token-abc" {
+		t.Errorf("Token = %q", got.Token)
+	}
+}

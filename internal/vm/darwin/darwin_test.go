@@ -162,3 +162,71 @@ func TestNew_WithSharedDirs(t *testing.T) {
 		t.Error("SharedDirs[1].ReadOnly should be false")
 	}
 }
+
+func TestVsockConnect_NilMachine(t *testing.T) {
+	d, err := New(vm.Config{Kernel: "/tmp/vmlinuz"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.VsockConnect(1024)
+	if err == nil {
+		t.Fatal("expected error for VsockConnect on nil machine")
+	}
+}
+
+func TestNew_WithNetwork(t *testing.T) {
+	d, err := New(vm.Config{Kernel: "/tmp/vmlinuz", Network: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.cfg.Network {
+		t.Error("Network should be true")
+	}
+}
+
+func TestNew_WithForwards(t *testing.T) {
+	d, err := New(vm.Config{
+		Kernel: "/tmp/vmlinuz",
+		Forwards: []vm.PortForward{
+			{HostPort: 3000, GuestPort: 8080},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.cfg.Forwards) != 1 {
+		t.Fatalf("Forwards len = %d, want 1", len(d.cfg.Forwards))
+	}
+}
+
+func TestNew_WithConsole(t *testing.T) {
+	console, hostReader, hostWriter, err := vm.NewConsolePipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hostReader.Close()
+	defer hostWriter.Close()
+	defer console.In.Close()
+	defer console.Out.Close()
+
+	d, err := New(vm.Config{Kernel: "/tmp/vmlinuz", Console: console})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.cfg.Console == nil {
+		t.Error("Console should be set")
+	}
+}
+
+func TestStop_Idempotent(t *testing.T) {
+	d, err := New(vm.Config{Kernel: "/tmp/vmlinuz"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Stop(context.Background()); err != nil {
+		t.Errorf("first Stop: %v", err)
+	}
+	if err := d.Stop(context.Background()); err != nil {
+		t.Errorf("second Stop: %v", err)
+	}
+}
