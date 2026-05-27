@@ -62,7 +62,7 @@ Flags:
   --memory <mb>        Memory in MB (default: 512)
   --network            Enable NAT networking
   --vsock <port>       Enable vsock on this port
-  --share <tag:path>   Share host directory (tag:hostpath[:ro])
+  --share <tag:path>   Share host directory (read-only; tag:hostpath[:rw])
 `)
 }
 
@@ -292,14 +292,15 @@ func execViaVsock(d *darwin.DarwinVM, port uint32, cmd string) (string, int, err
 func parseShare(s string) (vm.SharedDir, error) {
 	parts := strings.SplitN(s, ":", 3)
 	if len(parts) < 2 {
-		return vm.SharedDir{}, fmt.Errorf("--share: expected tag:hostpath[:ro], got %q", s)
+		return vm.SharedDir{}, fmt.Errorf("--share: expected tag:hostpath[:rw], got %q", s)
 	}
 	sd := vm.SharedDir{
 		Tag:      parts[0],
 		HostPath: parts[1],
+		ReadOnly: true,
 	}
-	if len(parts) == 3 && parts[2] == "ro" {
-		sd.ReadOnly = true
+	if len(parts) == 3 && parts[2] == "rw" {
+		sd.ReadOnly = false
 	}
 	return sd, nil
 }

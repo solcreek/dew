@@ -16,7 +16,7 @@ func TestParseShare(t *testing.T) {
 	}{
 		{
 			input: "app:/tmp/myapp",
-			want:  vm.SharedDir{Tag: "app", HostPath: "/tmp/myapp"},
+			want:  vm.SharedDir{Tag: "app", HostPath: "/tmp/myapp", ReadOnly: true},
 		},
 		{
 			input: "src:/Users/me/project:ro",
