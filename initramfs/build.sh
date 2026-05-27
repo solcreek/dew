@@ -229,12 +229,18 @@ if [ "$HAS_CONTAINERD" = true ] && [ -b /dev/vda ]; then
     # Populate rootfs from initramfs on first boot
     if [ ! -f /mnt/root/.dew-initialized ]; then
         echo "dew: initializing rootfs on disk (first boot)..."
-        cp -a /bin /etc /lib /opt /sbin /usr /var /init-stage2 /mnt/root/ 2>/dev/null || true
+        cp -a /bin /etc /lib /opt /sbin /usr /var /mnt/root/ 2>/dev/null || true
+        cp /init-stage2 /mnt/root/init-stage2
+        chmod 755 /mnt/root/init-stage2
         mkdir -p /mnt/root/dev /mnt/root/proc /mnt/root/sys \
                  /mnt/root/run /mnt/root/tmp /mnt/root/data \
                  /mnt/root/dev/pts /mnt/root/dev/shm
         touch /mnt/root/.dew-initialized
     fi
+
+    # Always refresh init-stage2 from initramfs (may have been updated)
+    cp /init-stage2 /mnt/root/init-stage2
+    chmod 755 /mnt/root/init-stage2
 
     # Bind-mount virtual filesystems into new root
     mount --move /dev /mnt/root/dev

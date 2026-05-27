@@ -285,13 +285,25 @@ func cmdStart(args []string) error {
 
 	fmt.Fprintf(os.Stderr, "dew: VM running (%s)\n", time.Since(start).Round(time.Millisecond))
 
-	time.Sleep(500 * time.Millisecond)
-	if err := sendToken(d, cfg.VsockPort, token); err != nil {
-		fmt.Fprintf(os.Stderr, "dew: token handshake failed: %v\n", err)
+	// Remove stale socket from previous run
+	os.Remove(daemon.SocketPath(""))
+
+	// Wait for guest agent and inject auth token (retry until VM is ready)
+	fmt.Fprintf(os.Stderr, "dew: waiting for guest agent\n")
+	tokenSent := false
+	for i := 0; i < 300; i++ { // up to 30s
+		if err := sendToken(d, cfg.VsockPort, token); err == nil {
+			tokenSent = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !tokenSent {
+		fmt.Fprintf(os.Stderr, "dew: warning: token handshake failed, daemon may not work\n")
 	}
 	startPortForwards(d, token, cfg.Forwards)
 
-	// Start daemon socket for cross-process exec
+	// Start daemon socket AFTER token is set (so clients can exec immediately)
 	dmn := &daemon.State{
 		VM:         d,
 		Token:      token,
