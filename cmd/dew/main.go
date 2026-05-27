@@ -260,17 +260,47 @@ func cmdRun(args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "dew: VM running (%s)\n", time.Since(start).Round(time.Millisecond))
 
-	// Wait for guest init to complete (serial console)
 	sExec := serialexec.New(hostReader, hostWriter)
-	fmt.Fprintf(os.Stderr, "dew: waiting for guest\n")
-	if err := sExec.WaitReady(15 * time.Second); err != nil {
-		d.Stop(context.Background())
-		return fmt.Errorf("guest not ready: %w", err)
+
+	// Race vsock connect against serial ready — use whichever wins
+	vsockCh := make(chan net.Conn, 1)
+	go func() {
+		conn, err := connectVsock(d, cfg.VsockPort)
+		if err == nil {
+			vsockCh <- conn
+		}
+		close(vsockCh)
+	}()
+	go func() {
+		sExec.WaitReady(15 * time.Second)
+	}()
+
+	cmd := strings.Join(cmdArgs, " ")
+	var result *RunResult
+
+	select {
+	case conn := <-vsockCh:
+		if conn != nil {
+			result, err = execVsockConn(conn, token, cmd)
+			conn.Close()
+		}
+	case <-time.After(10 * time.Second):
 	}
 
-	// Try vsock exec (clean channel), fall back to serial
-	cmd := strings.Join(cmdArgs, " ")
-	result, err := execCommand(d, cfg.VsockPort, token, sExec, cmd)
+	if result == nil {
+		fmt.Fprintf(os.Stderr, "dew: vsock unavailable, using serial\n")
+		if err := sExec.WaitReady(5 * time.Second); err != nil {
+			d.Stop(context.Background())
+			return fmt.Errorf("guest not ready: %w", err)
+		}
+		output, exitCode, serr := sExec.Run(cmd)
+		if serr != nil {
+			d.Stop(context.Background())
+			return fmt.Errorf("exec: %w", serr)
+		}
+		result = &RunResult{ExitCode: exitCode, Stdout: output}
+		err = nil
+	}
 	if err != nil {
 		d.Stop(context.Background())
 		return fmt.Errorf("exec: %w", err)
@@ -313,42 +343,31 @@ func generateToken() string {
 	return hex.EncodeToString(b)
 }
 
-func execCommand(v vm.VM, port uint32, token string, sExec *serialexec.Exec, cmd string) (*RunResult, error) {
-	conn, err := connectVsock(v, port)
-	if err == nil {
-		defer conn.Close()
-		req := vsockProto.ExecRequest{Token: token, Command: "/bin/sh", Args: []string{"-c", cmd}}
-		if err := vsockProto.WriteJSON(conn, &req); err != nil {
-			return nil, err
-		}
-		var resp vsockProto.ExecResponse
-		if err := vsockProto.ReadJSON(conn, &resp); err != nil {
-			return nil, err
-		}
-		return &RunResult{
-			ExitCode: resp.ExitCode,
-			Stdout:   resp.Stdout,
-			Stderr:   resp.Stderr,
-		}, nil
-	}
-
-	fmt.Fprintf(os.Stderr, "dew: vsock unavailable, using serial\n")
-	output, exitCode, err := sExec.Run(cmd)
-	if err != nil {
+func execVsockConn(conn net.Conn, token string, cmd string) (*RunResult, error) {
+	req := vsockProto.ExecRequest{Token: token, Command: "/bin/sh", Args: []string{"-c", cmd}}
+	if err := vsockProto.WriteJSON(conn, &req); err != nil {
 		return nil, err
 	}
-	return &RunResult{ExitCode: exitCode, Stdout: output}, nil
+	var resp vsockProto.ExecResponse
+	if err := vsockProto.ReadJSON(conn, &resp); err != nil {
+		return nil, err
+	}
+	return &RunResult{
+		ExitCode: resp.ExitCode,
+		Stdout:   resp.Stdout,
+		Stderr:   resp.Stderr,
+	}, nil
 }
 
 func connectVsock(v vm.VM, port uint32) (net.Conn, error) {
 	var conn net.Conn
 	var err error
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 500; i++ {
 		conn, err = v.VsockConnect(port)
 		if err == nil {
 			return conn, nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 	return nil, err
 }
