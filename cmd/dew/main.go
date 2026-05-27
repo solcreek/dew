@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -21,6 +22,28 @@ import (
 const version = "0.1.0-dev"
 
 var flagJSON bool
+
+func dewDataDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "dew")
+}
+
+func resolveAssets(cfg *vm.Config) error {
+	dataDir := dewDataDir()
+	if cfg.Kernel == "" {
+		cfg.Kernel = filepath.Join(dataDir, "vmlinuz")
+	}
+	if cfg.Initrd == "" {
+		cfg.Initrd = filepath.Join(dataDir, "initramfs.cpio.gz")
+	}
+	if _, err := os.Stat(cfg.Kernel); err != nil {
+		return fmt.Errorf("kernel not found at %s — run: dew assets pull", cfg.Kernel)
+	}
+	if _, err := os.Stat(cfg.Initrd); err != nil {
+		return fmt.Errorf("initramfs not found at %s — run: dew assets pull", cfg.Initrd)
+	}
+	return nil
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -161,8 +184,8 @@ func cmdStart(args []string) error {
 	if err != nil {
 		return err
 	}
-	if cfg.Kernel == "" {
-		return fmt.Errorf("--kernel is required")
+	if err := resolveAssets(&cfg); err != nil {
+		return err
 	}
 
 	d, err := darwin.New(cfg)
@@ -193,8 +216,8 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	if cfg.Kernel == "" {
-		return fmt.Errorf("--kernel is required")
+	if err := resolveAssets(&cfg); err != nil {
+		return err
 	}
 	if len(cmdArgs) == 0 {
 		return fmt.Errorf("no command specified (use -- <cmd>)")
