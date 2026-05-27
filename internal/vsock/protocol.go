@@ -19,12 +19,25 @@ type ExecRequest struct {
 	Dir       string   `json:"dir,omitempty"`
 	Env       []string `json:"env,omitempty"`
 	TimeoutMs int      `json:"timeout_ms,omitempty"`
+	Stream    bool     `json:"stream,omitempty"`
 }
 
 type ExecResponse struct {
 	ExitCode int    `json:"exit_code"`
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr"`
+	Error    string `json:"error,omitempty"`
+}
+
+// OutputChunk is sent during streaming exec. Stream is "stdout" or "stderr".
+type OutputChunk struct {
+	Stream string `json:"stream"`
+	Data   string `json:"data"`
+}
+
+// ExecDone signals the end of a streaming exec.
+type ExecDone struct {
+	ExitCode int    `json:"exit_code"`
 	Error    string `json:"error,omitempty"`
 }
 

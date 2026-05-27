@@ -141,3 +141,51 @@ func TestPingResponse(t *testing.T) {
 		t.Errorf("Status = %q, want %q", got.Status, "ok")
 	}
 }
+
+func TestStreamingProtocol(t *testing.T) {
+	var buf bytes.Buffer
+
+	// Simulate streaming: 2 chunks + done
+	WriteJSON(&buf, &OutputChunk{Stream: "stdout", Data: "line 1\n"})
+	WriteJSON(&buf, &OutputChunk{Stream: "stderr", Data: "warn\n"})
+	WriteJSON(&buf, &ExecDone{ExitCode: 0})
+
+	var chunk1 OutputChunk
+	if err := ReadJSON(&buf, &chunk1); err != nil {
+		t.Fatal(err)
+	}
+	if chunk1.Stream != "stdout" || chunk1.Data != "line 1\n" {
+		t.Errorf("chunk1 = %+v", chunk1)
+	}
+
+	var chunk2 OutputChunk
+	if err := ReadJSON(&buf, &chunk2); err != nil {
+		t.Fatal(err)
+	}
+	if chunk2.Stream != "stderr" || chunk2.Data != "warn\n" {
+		t.Errorf("chunk2 = %+v", chunk2)
+	}
+
+	var done ExecDone
+	if err := ReadJSON(&buf, &done); err != nil {
+		t.Fatal(err)
+	}
+	if done.ExitCode != 0 {
+		t.Errorf("done.ExitCode = %d", done.ExitCode)
+	}
+}
+
+func TestExecRequestStream(t *testing.T) {
+	req := ExecRequest{Token: "abc", Command: "ls", Stream: true}
+	var buf bytes.Buffer
+	if err := WriteJSON(&buf, &req); err != nil {
+		t.Fatal(err)
+	}
+	var got ExecRequest
+	if err := ReadJSON(&buf, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Stream {
+		t.Error("Stream should be true")
+	}
+}

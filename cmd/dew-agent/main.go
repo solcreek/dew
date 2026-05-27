@@ -5,13 +5,16 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"os/exec"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/mdlayher/vsock"
@@ -65,9 +68,13 @@ func handleConn(conn net.Conn) {
 			return
 		}
 
-		resp := executeCommand(req)
-		if err := protocol.WriteJSON(conn, &resp); err != nil {
-			return
+		if req.Stream {
+			executeStreaming(conn, req)
+		} else {
+			resp := executeCommand(req)
+			if err := protocol.WriteJSON(conn, &resp); err != nil {
+				return
+			}
 		}
 	}
 }
@@ -112,4 +119,63 @@ func executeCommand(req protocol.ExecRequest) protocol.ExecResponse {
 	}
 
 	return resp
+}
+
+func executeStreaming(conn net.Conn, req protocol.ExecRequest) {
+	timeout := 30 * time.Second
+	if req.TimeoutMs > 0 {
+		timeout = time.Duration(req.TimeoutMs) * time.Millisecond
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, req.Command, req.Args...)
+	if req.Dir != "" {
+		cmd.Dir = req.Dir
+	}
+	if len(req.Env) > 0 {
+		cmd.Env = append(os.Environ(), req.Env...)
+	}
+
+	stdoutPipe, _ := cmd.StdoutPipe()
+	stderrPipe, _ := cmd.StderrPipe()
+
+	if err := cmd.Start(); err != nil {
+		protocol.WriteJSON(conn, &protocol.ExecDone{ExitCode: -1, Error: err.Error()})
+		return
+	}
+
+	var wg sync.WaitGroup
+	streamPipe := func(pipe io.Reader, stream string) {
+		defer wg.Done()
+		scanner := bufio.NewScanner(pipe)
+		for scanner.Scan() {
+			chunk := protocol.OutputChunk{Stream: stream, Data: scanner.Text() + "\n"}
+			if err := protocol.WriteJSON(conn, &chunk); err != nil {
+				return
+			}
+		}
+	}
+
+	wg.Add(2)
+	go streamPipe(stdoutPipe, "stdout")
+	go streamPipe(stderrPipe, "stderr")
+	wg.Wait()
+
+	exitCode := 0
+	errMsg := ""
+	if err := cmd.Wait(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = -1
+			errMsg = err.Error()
+		}
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		exitCode = -1
+		errMsg = fmt.Sprintf("timeout after %s", timeout)
+	}
+
+	protocol.WriteJSON(conn, &protocol.ExecDone{ExitCode: exitCode, Error: errMsg})
 }
