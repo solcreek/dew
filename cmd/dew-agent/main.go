@@ -5,12 +5,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"os/exec"
 	"strconv"
+	"time"
 
 	"github.com/mdlayher/vsock"
 	protocol "github.com/solcreek/dew/internal/vsock"
@@ -75,7 +77,14 @@ func executeCommand(req protocol.ExecRequest) protocol.ExecResponse {
 		return protocol.ExecResponse{Stdout: "pong"}
 	}
 
-	cmd := exec.Command(req.Command, req.Args...)
+	timeout := 30 * time.Second
+	if req.TimeoutMs > 0 {
+		timeout = time.Duration(req.TimeoutMs) * time.Millisecond
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, req.Command, req.Args...)
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
 	}
@@ -86,6 +95,12 @@ func executeCommand(req protocol.ExecRequest) protocol.ExecResponse {
 	stdout, err := cmd.Output()
 	resp := protocol.ExecResponse{
 		Stdout: string(stdout),
+	}
+
+	if ctx.Err() == context.DeadlineExceeded {
+		resp.ExitCode = -1
+		resp.Error = fmt.Sprintf("timeout after %s", timeout)
+		return resp
 	}
 
 	if exitErr, ok := err.(*exec.ExitError); ok {

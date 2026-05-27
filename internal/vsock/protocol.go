@@ -13,11 +13,12 @@ const (
 )
 
 type ExecRequest struct {
-	Token   string   `json:"token"`
-	Command string   `json:"command"`
-	Args    []string `json:"args,omitempty"`
-	Dir     string   `json:"dir,omitempty"`
-	Env     []string `json:"env,omitempty"`
+	Token     string   `json:"token"`
+	Command   string   `json:"command"`
+	Args      []string `json:"args,omitempty"`
+	Dir       string   `json:"dir,omitempty"`
+	Env       []string `json:"env,omitempty"`
+	TimeoutMs int      `json:"timeout_ms,omitempty"`
 }
 
 type ExecResponse struct {
