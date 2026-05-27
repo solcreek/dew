@@ -54,3 +54,80 @@ func TestParseShare(t *testing.T) {
 		}
 	}
 }
+
+func TestParseFlags_Defaults(t *testing.T) {
+	cfg, remaining, err := parseFlags([]string{"--kernel", "/tmp/vmlinuz"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Kernel != "/tmp/vmlinuz" {
+		t.Errorf("Kernel = %q", cfg.Kernel)
+	}
+	if cfg.CPUs != 1 {
+		t.Errorf("CPUs = %d, want 1", cfg.CPUs)
+	}
+	if cfg.MemoryMB != 512 {
+		t.Errorf("MemoryMB = %d, want 512", cfg.MemoryMB)
+	}
+	if len(remaining) != 0 {
+		t.Errorf("remaining = %v, want empty", remaining)
+	}
+}
+
+func TestParseFlags_AllFlags(t *testing.T) {
+	cfg, _, err := parseFlags([]string{
+		"--kernel", "/k",
+		"--initrd", "/i",
+		"--cpus", "4",
+		"--memory", "2048",
+		"--network",
+		"--vsock", "1024",
+		"--share", "app:/tmp/app:ro",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Kernel != "/k" {
+		t.Errorf("Kernel = %q", cfg.Kernel)
+	}
+	if cfg.Initrd != "/i" {
+		t.Errorf("Initrd = %q", cfg.Initrd)
+	}
+	if cfg.CPUs != 4 {
+		t.Errorf("CPUs = %d", cfg.CPUs)
+	}
+	if cfg.MemoryMB != 2048 {
+		t.Errorf("MemoryMB = %d", cfg.MemoryMB)
+	}
+	if !cfg.Network {
+		t.Error("Network should be true")
+	}
+	if cfg.VsockPort != 1024 {
+		t.Errorf("VsockPort = %d", cfg.VsockPort)
+	}
+	if len(cfg.SharedDirs) != 1 || cfg.SharedDirs[0].Tag != "app" {
+		t.Errorf("SharedDirs = %v", cfg.SharedDirs)
+	}
+}
+
+func TestParseFlags_DoubleDash(t *testing.T) {
+	cfg, remaining, err := parseFlags([]string{
+		"--kernel", "/k", "--", "ls", "-la",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Kernel != "/k" {
+		t.Errorf("Kernel = %q", cfg.Kernel)
+	}
+	if len(remaining) != 2 || remaining[0] != "ls" || remaining[1] != "-la" {
+		t.Errorf("remaining = %v, want [ls -la]", remaining)
+	}
+}
+
+func TestParseFlags_UnknownFlag(t *testing.T) {
+	_, _, err := parseFlags([]string{"--bogus"})
+	if err == nil {
+		t.Fatal("expected error for unknown flag")
+	}
+}
