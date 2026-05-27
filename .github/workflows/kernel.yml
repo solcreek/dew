@@ -1,0 +1,37 @@
+name: Turbo Kernel Build
+
+on:
+  push:
+    paths:
+      - 'kernel/**'
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build turbo kernel
+        run: |
+          docker build -t dew-kernel kernel/
+          CONTAINER_ID=$(docker create dew-kernel)
+          docker cp "${CONTAINER_ID}:/vmlinuz-turbo" vmlinuz-turbo
+          docker rm "$CONTAINER_ID"
+          ls -lh vmlinuz-turbo
+          sha256sum vmlinuz-turbo
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vmlinuz-turbo
+          path: vmlinuz-turbo
+
+      - name: Verify kernel config
+        run: |
+          echo "Diff from Alpine base (should only be m->y changes):"
+          diff kernel/config-alpine-base kernel/config-turbo || true
