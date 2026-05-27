@@ -4,6 +4,32 @@ Ultra-lightweight VM for macOS. Sub-second boot. Hardware-level isolation.
 
 Dew uses Apple Virtualization.framework to run Linux VMs in under a second. Designed for running untrusted code, AI agent sandboxes, and local development services.
 
+## Install
+
+```bash
+# Download the latest release
+curl -fsSL https://github.com/solcreek/dew/releases/latest/download/dew-darwin-$(uname -m) -o /usr/local/bin/dew
+chmod +x /usr/local/bin/dew
+
+# Sign with virtualization entitlement (required by macOS)
+codesign --entitlements <(echo '<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>com.apple.security.virtualization</key><true/>
+</dict></plist>') --force -s - /usr/local/bin/dew
+
+# Download VM assets (kernel + initramfs)
+dew assets pull
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/solcreek/dew.git && cd dew
+make sign
+bash initramfs/build.sh
+```
+
 ## Quick Start
 
 ```bash
@@ -20,11 +46,17 @@ dew exec "nerdctl run -d --net=host postgres:16"
 psql -h localhost -p 5432
 ```
 
+## When to Use Dew
+
+- **AI agent sandbox** — run LLM-generated code with VM-level isolation, structured output, and network control
+- **Local dev services** — postgres, redis, or any Docker image without Docker Desktop
+- **CI/test isolation** — reproducible environments that match production, boot in under a second
+
 ## Features
 
-**Fast.** 850ms cold boot. 50ms session exec. 40x faster than Lima's cold boot.
+**Fast.** 850ms cold boot (minimal profile). 50ms session exec. Boots a full Linux VM before most tools finish initializing.
 
-**Small.** 4.4MB binary. 5MB minimal profile. No Homebrew, no Docker Desktop.
+**Small.** 4.4MB binary. 5MB minimal profile. No Homebrew, no Docker Desktop, no background daemon when stopped.
 
 **Isolated.** Three network modes — fully isolated (no NIC), host-only (vsock), or NAT. The VM has no network device unless you ask for one.
 
@@ -129,6 +161,14 @@ dew start --disk ./mydata.img
 dew exec "cat /data/greeting.txt"  # hello
 ```
 
+## Hot Reload (Minimal Profile)
+
+Share your project directory into the VM with virtiofs. Changes on the host are immediately visible inside the VM.
+
+```bash
+dew start --profile minimal --share src:/app -- "cd /app && node --watch server.js"
+```
+
 ## Security
 
 - **VM isolation** — Apple Virtualization.framework hardware boundary, not container namespaces
@@ -138,6 +178,14 @@ dew exec "cat /data/greeting.txt"  # hello
 - **Cgroup limits** — configurable CPU/memory limits via kernel cmdline
 - **Read-only shares** — `--share` defaults to read-only; explicit `:rw` required
 - **Per-exec timeout** — commands killed after deadline (default 30s)
+
+## Limitations
+
+- **macOS only** — requires Apple Virtualization.framework (Apple Silicon or Intel Mac with macOS 13+)
+- **No Windows or Linux host** — Linux doesn't need a VM (use containerd directly); Windows support is future work
+- **Standard profile requires --disk** — containerd needs ext4 filesystem, not tmpfs
+- **No docker-compose equivalent** — use multiple `dew exec "nerdctl run ..."` commands
+- **Hot reload** — works with minimal profile + `--share`; standard profile requires container rebuild for code changes
 
 ## Building
 
@@ -181,14 +229,6 @@ kernel/            Turbo kernel build (Dockerfile)
 4. Host connects via vsock, sends JSON exec requests, receives structured responses
 5. Port forwarding: host TCP listener → vsock → guest agent → guest TCP
 6. Standard profile: `switch_root` from initramfs to ext4 disk for overlayfs support
-
-## Benchmarks
-
-| | Lima (cold) | Lima (warm) | Dew minimal | Dew standard |
-|---|---|---|---|---|
-| Boot + exec | 33,000ms | 130ms | 850ms | 2,500ms |
-| Binary | 33MB | — | 4.4MB | 4.4MB |
-| Footprint | 8.7GB | — | 5MB | 129MB + disk |
 
 ## License
 
