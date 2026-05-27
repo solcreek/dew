@@ -41,16 +41,36 @@ func dewDataDir() string {
 
 func resolveAssets(cfg *vm.Config) error {
 	dataDir := dewDataDir()
+	profile := flagProfile
+	if profile == "" {
+		profile = "standard"
+	}
+
+	// Profile-aware defaults
+	switch profile {
+	case "node":
+		if cfg.MemoryMB == 512 {
+			cfg.MemoryMB = 1024
+		}
+		if cfg.DiskPath == "" {
+			cfg.DiskPath = filepath.Join(dataDir, "node.img")
+			cfg.DiskGB = 2
+		}
+	case "standard":
+		if cfg.MemoryMB == 512 {
+			cfg.MemoryMB = 2048
+		}
+		if cfg.DiskPath == "" {
+			cfg.DiskPath = filepath.Join(dataDir, "standard.img")
+			cfg.DiskGB = 10
+		}
+	}
+
 	if cfg.Kernel == "" {
 		cfg.Kernel = filepath.Join(dataDir, "vmlinuz")
 	}
 	if cfg.Initrd == "" {
-		profile := flagProfile
-		if profile == "" {
-			profile = "standard"
-		}
 		cfg.Initrd = filepath.Join(dataDir, "initramfs-"+profile+".cpio.gz")
-		// Fallback to generic name
 		if _, err := os.Stat(cfg.Initrd); err != nil {
 			cfg.Initrd = filepath.Join(dataDir, "initramfs.cpio.gz")
 		}

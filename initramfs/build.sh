@@ -6,7 +6,8 @@ set -euo pipefail
 # Usage:
 #   ./build.sh              # standard profile (default)
 #   ./build.sh minimal      # exec-only, no container runtime
-#   ./build.sh standard     # containerd + nerdctl + runc + CNI
+#   ./build.sh node          # Node.js + npm + build-base (React/Vite ready)
+#   ./build.sh standard     # node + containerd + nerdctl + runc + CNI
 
 PROFILE="${1:-standard}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -75,7 +76,7 @@ echo "Kernel: $(ls -lh "$OUT_KERNEL" | awk '{print $5}')"
 mkdir -p "$WORK_DIR/lib/modules"
 cp -a "$APK_EXTRACT/lib/modules/${KERNEL_VER}" "$WORK_DIR/lib/modules/"
 find "$WORK_DIR/lib/modules/${KERNEL_VER}" -name "*.ko.gz" -exec gunzip {} \;
-echo "Modules: $(du -sh "$MODDIR" | awk '{print $1}')"
+echo "Modules: $(du -sh "$WORK_DIR/lib/modules/${KERNEL_VER}" 2>/dev/null | awk '{print $1}')"
 
 # --- Step 3: Build dew-agent ---
 echo "--- Step 3: Build dew-agent ---"
@@ -85,9 +86,32 @@ GOOS=linux GOARCH="$GO_ARCH" CGO_ENABLED=0 \
     "${REPO_DIR}/cmd/dew-agent/"
 echo "Agent: $(ls -lh "${WORK_DIR}/usr/local/bin/dew-agent" | awk '{print $5}')"
 
-# --- Step 4: Container runtime (standard profile only) ---
+# --- Step 4a: Node.js marker (node and standard profiles) ---
+# Node.js is installed at first boot via apk add (avoids cross-platform APK extraction).
+# A marker file tells init-stage2 to install Node.js + build tools.
+if [ "$PROFILE" = "node" ] || [ "$PROFILE" = "standard" ]; then
+    echo "--- Step 4a: Node.js marker ---"
+    touch "${WORK_DIR}/.dew-node-profile"
+    echo "Node.js: will install at first boot via apk add"
+
+    # e2fsprogs for disk formatting (switch_root)
+    echo "Installing e2fsprogs..."
+    E2FS_PKGS="e2fsprogs e2fsprogs-libs libcom_err libuuid libblkid libeconf"
+    for pkg in $E2FS_PKGS; do
+        APK_FILE="${CACHE}/${pkg}.apk"
+        if [ ! -f "$APK_FILE" ]; then
+            URL=$(curl -sL "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${ALPINE_ARCH}/" \
+                  | grep -o "${pkg}-[0-9][^\"]*\.apk" | head -1)
+            [ -n "$URL" ] && curl -fSL -o "$APK_FILE" \
+                "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${ALPINE_ARCH}/${URL}" 2>/dev/null || true
+        fi
+        [ -f "$APK_FILE" ] && tar xzf "$APK_FILE" -C "$WORK_DIR" 2>/dev/null || true
+    done
+fi
+
+# --- Step 4b: Container runtime (standard profile only) ---
 if [ "$PROFILE" = "standard" ]; then
-    echo "--- Step 4: Container runtime ---"
+    echo "--- Step 4b: Container runtime ---"
 
     # containerd (static build for musl/Alpine)
     CONTAINERD_TAR="${CACHE}/containerd-static-${CONTAINERD_VERSION}-linux-${GO_ARCH}.tar.gz"
@@ -131,20 +155,7 @@ if [ "$PROFILE" = "standard" ]; then
     tar xzf "$CNI_TAR" -C "$WORK_DIR/opt/cni/bin/" 2>/dev/null
     echo "CNI: $(du -sh "$WORK_DIR/opt/cni/bin" | awk '{print $1}')"
 
-    # Install e2fsprogs + dependencies (extract APKs directly)
-    echo "Installing e2fsprogs..."
-    E2FS_PKGS="e2fsprogs e2fsprogs-libs libcom_err libuuid libblkid libeconf"
-    for pkg in $E2FS_PKGS; do
-        APK_FILE="${CACHE}/${pkg}.apk"
-        if [ ! -f "$APK_FILE" ]; then
-            URL=$(curl -sL "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${ALPINE_ARCH}/" \
-                  | grep -o "${pkg}-[0-9][^\"]*\.apk" | head -1)
-            [ -n "$URL" ] && curl -fSL -o "$APK_FILE" \
-                "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${ALPINE_ARCH}/${URL}" || true
-        fi
-        [ -f "$APK_FILE" ] && tar xzf "$APK_FILE" -C "$WORK_DIR" 2>/dev/null || true
-    done
-    echo "e2fsprogs: $(ls "$WORK_DIR/sbin/mkfs.ext4" 2>/dev/null && echo 'OK' || echo 'MISSING')"
+    # e2fsprogs already installed by node/standard shared block above
 
     # containerd config
     mkdir -p "$WORK_DIR/etc/containerd"
@@ -203,21 +214,15 @@ modprobe virtio_blk 2>/dev/null || true
 modprobe vsock 2>/dev/null || true
 modprobe vmw_vsock_virtio_transport 2>/dev/null || true
 
-# ── standard profile: switch_root to ext4 disk ──
-# containerd needs overlayfs on a real filesystem (not tmpfs).
-# If /dev/vda exists and containerd is present, switch_root to disk.
-HAS_CONTAINERD=false
-[ -x /usr/local/bin/containerd ] && HAS_CONTAINERD=true
+# ── switch_root to ext4 disk (node/standard profiles with --disk) ──
+# Provides real filesystem for npm cache, node_modules, containerd.
+# Wait for virtio_blk to create /dev/vda
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    [ -b /dev/vda ] && break
+    sleep 0.1
+done
 
-if [ "$HAS_CONTAINERD" = true ]; then
-    # Wait for virtio_blk to create /dev/vda
-    for i in 1 2 3 4 5 6 7 8 9 10; do
-        [ -b /dev/vda ] && break
-        sleep 0.1
-    done
-fi
-
-if [ "$HAS_CONTAINERD" = true ] && [ -b /dev/vda ]; then
+if [ -b /dev/vda ]; then
     mkdir -p /mnt/root
     # Try mount first; format if it fails
     if ! mount /dev/vda /mnt/root 2>/dev/null; then
@@ -322,8 +327,16 @@ if grep -q cgroup2 /proc/filesystems 2>/dev/null; then
     [ -n "$DEW_MEM_LIMIT" ] && echo "$DEW_MEM_LIMIT" > /sys/fs/cgroup/dew/memory.max 2>/dev/null
 fi
 
-# unprivileged user
+# unprivileged user with sudo
 adduser -D -s /bin/sh dew 2>/dev/null || true
+echo "dew ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/dew 2>/dev/null || true
+chmod 440 /etc/sudoers.d/dew 2>/dev/null || true
+
+# Node.js (node/standard profile, installed once, cached on disk)
+if [ -f /.dew-node-profile ] && ! command -v node >/dev/null 2>&1; then
+    echo "dew: installing Node.js + build tools (first boot)..."
+    apk add --no-cache nodejs npm build-base python3 2>&1 | tail -1
+fi
 
 # containerd (standard profile, now on ext4 rootfs)
 if [ -x /usr/local/bin/containerd ]; then
@@ -334,8 +347,9 @@ if [ -x /usr/local/bin/containerd ]; then
 fi
 
 # dew-agent
+# VM is the isolation boundary — run as root by default for full access.
+# Use DEW_EXEC_USER=dew for untrusted code sandboxing.
 AGENT_ENV=""
-[ ! -x /usr/local/bin/containerd ] && AGENT_ENV="DEW_EXEC_USER=dew"
 if [ -x /usr/local/bin/dew-agent ] && [ -e /dev/vsock ]; then
     env $AGENT_ENV /usr/local/bin/dew-agent >/dev/null 2>&1 &
     echo "dew-agent: vsock ready"
