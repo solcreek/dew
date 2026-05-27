@@ -13,9 +13,11 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/solcreek/dew/internal/serialexec"
+	"github.com/solcreek/dew/internal/session"
 	"github.com/solcreek/dew/internal/vm"
 	"github.com/solcreek/dew/internal/vm/darwin"
 	vsockProto "github.com/solcreek/dew/internal/vsock"
@@ -59,6 +61,12 @@ func main() {
 		err = cmdStart(os.Args[2:])
 	case "run":
 		err = cmdRun(os.Args[2:])
+	case "session":
+		if len(os.Args) < 3 {
+			fmt.Fprintf(os.Stderr, "usage: dew session <create|exec|destroy> [args]\n")
+			os.Exit(1)
+		}
+		err = cmdSession(os.Args[2], os.Args[3:])
 	case "version":
 		fmt.Printf("dew %s\n", version)
 	case "help", "--help", "-h":
@@ -78,10 +86,13 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `dew — ultra-lightweight VM (Apple Virtualization.framework)
 
 Usage:
-  dew start [flags]          Boot a Linux VM (interactive)
-  dew run [flags] -- <cmd>   Boot, execute command, exit
-  dew version                Print version
-  dew help                   Show this help
+  dew start [flags]              Boot a Linux VM (interactive)
+  dew run [flags] [--] <cmd>     Boot, execute command, exit
+  dew session create [flags]     Create a persistent VM session
+  dew session exec <id> <cmd>    Execute in an existing session
+  dew session destroy <id>       Destroy a session
+  dew version                    Print version
+  dew help                       Show this help
 
 Flags:
   --kernel <path>      Path to vmlinuz (required)
@@ -370,6 +381,116 @@ func connectVsock(v vm.VM, port uint32) (net.Conn, error) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return nil, err
+}
+
+// sessions stores active sessions in-process (for daemon mode).
+// For CLI usage, session create forks a background process.
+var activeSessions = map[string]*session.Session{}
+var sessionMu sync.Mutex
+
+func cmdSession(sub string, args []string) error {
+	switch sub {
+	case "create":
+		return cmdSessionCreate(args)
+	case "exec":
+		return cmdSessionExec(args)
+	case "destroy":
+		return cmdSessionDestroy(args)
+	default:
+		return fmt.Errorf("unknown session subcommand %q", sub)
+	}
+}
+
+func cmdSessionCreate(args []string) error {
+	cfg, _, err := parseFlags(args)
+	if err != nil {
+		return err
+	}
+	if err := resolveAssets(&cfg); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "dew: creating session\n")
+	start := time.Now()
+
+	s, err := session.Create(cfg)
+	if err != nil {
+		return err
+	}
+
+	sessionMu.Lock()
+	activeSessions[s.ID] = s
+	sessionMu.Unlock()
+
+	fmt.Fprintf(os.Stderr, "dew: session ready (%s)\n", time.Since(start).Round(time.Millisecond))
+
+	if flagJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.Encode(map[string]string{"id": s.ID})
+	} else {
+		fmt.Println(s.ID)
+	}
+	return nil
+}
+
+func cmdSessionExec(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: dew session exec <id> <cmd...>")
+	}
+	id := args[0]
+	cmd := strings.Join(args[1:], " ")
+
+	sessionMu.Lock()
+	s, ok := activeSessions[id]
+	sessionMu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("session %q not found (sessions are in-process only)", id)
+	}
+
+	start := time.Now()
+	result, err := s.Exec(cmd, 0)
+	if err != nil {
+		return err
+	}
+
+	if flagJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.Encode(result)
+	} else {
+		if result.Stdout != "" {
+			fmt.Print(result.Stdout)
+		}
+		if result.Stderr != "" {
+			fmt.Fprint(os.Stderr, result.Stderr)
+		}
+		fmt.Fprintf(os.Stderr, "dew: exec %s (exit %d)\n", time.Since(start).Round(time.Millisecond), result.ExitCode)
+	}
+
+	if result.ExitCode != 0 {
+		os.Exit(result.ExitCode)
+	}
+	return nil
+}
+
+func cmdSessionDestroy(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: dew session destroy <id>")
+	}
+	id := args[0]
+
+	sessionMu.Lock()
+	s, ok := activeSessions[id]
+	if ok {
+		delete(activeSessions, id)
+	}
+	sessionMu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("session %q not found", id)
+	}
+
+	return s.Destroy()
 }
 
 func parseShare(s string) (vm.SharedDir, error) {
