@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -18,6 +19,8 @@ import (
 )
 
 const version = "0.1.0-dev"
+
+var flagJSON bool
 
 func main() {
 	if len(os.Args) < 2 {
@@ -63,6 +66,7 @@ Flags:
   --network            Enable NAT networking
   --vsock <port>       Enable vsock on this port
   --share <tag:path>   Share host directory (read-only; tag:hostpath[:rw])
+  --json               Machine-readable JSON output (run command)
 `)
 }
 
@@ -142,6 +146,8 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, err
 			}
 			cfg.SharedDirs = append(cfg.SharedDirs, sd)
+		case "--json":
+			flagJSON = true
 		default:
 			return cfg, nil, fmt.Errorf("unknown flag %q", args[i])
 		}
@@ -231,20 +237,26 @@ func cmdRun(args []string) error {
 
 	// Try vsock exec (clean channel), fall back to serial
 	cmd := strings.Join(cmdArgs, " ")
-	output, exitCode, err := execViaVsock(d, cfg.VsockPort, cmd)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dew: vsock unavailable, using serial\n")
-		output, exitCode, err = sExec.Run(cmd)
-	}
+	result, err := execCommand(d, cfg.VsockPort, sExec, cmd)
 	if err != nil {
 		d.Stop(context.Background())
 		return fmt.Errorf("exec: %w", err)
 	}
 
-	if output != "" {
-		fmt.Println(output)
+	if flagJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(result)
+	} else {
+		if result.Stdout != "" {
+			fmt.Print(result.Stdout)
+		}
+		if result.Stderr != "" {
+			fmt.Fprint(os.Stderr, result.Stderr)
+		}
+		fmt.Fprintf(os.Stderr, "dew: exit code %d\n", result.ExitCode)
 	}
-	fmt.Fprintf(os.Stderr, "dew: exit code %d\n", exitCode)
+	exitCode := result.ExitCode
 
 	d.Stop(context.Background())
 	hostReader.Close()
@@ -256,36 +268,50 @@ func cmdRun(args []string) error {
 	return nil
 }
 
-func execViaVsock(v vm.VM, port uint32, cmd string) (string, int, error) {
+type RunResult struct {
+	ExitCode int    `json:"exit_code"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr,omitempty"`
+}
+
+func execCommand(v vm.VM, port uint32, sExec *serialexec.Exec, cmd string) (*RunResult, error) {
+	conn, err := connectVsock(v, port)
+	if err == nil {
+		defer conn.Close()
+		req := vsockProto.ExecRequest{Command: "/bin/sh", Args: []string{"-c", cmd}}
+		if err := vsockProto.WriteJSON(conn, &req); err != nil {
+			return nil, err
+		}
+		var resp vsockProto.ExecResponse
+		if err := vsockProto.ReadJSON(conn, &resp); err != nil {
+			return nil, err
+		}
+		return &RunResult{
+			ExitCode: resp.ExitCode,
+			Stdout:   resp.Stdout,
+			Stderr:   resp.Stderr,
+		}, nil
+	}
+
+	fmt.Fprintf(os.Stderr, "dew: vsock unavailable, using serial\n")
+	output, exitCode, err := sExec.Run(cmd)
+	if err != nil {
+		return nil, err
+	}
+	return &RunResult{ExitCode: exitCode, Stdout: output}, nil
+}
+
+func connectVsock(v vm.VM, port uint32) (net.Conn, error) {
 	var conn net.Conn
 	var err error
 	for i := 0; i < 20; i++ {
 		conn, err = v.VsockConnect(port)
 		if err == nil {
-			break
+			return conn, nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if err != nil {
-		return "", -1, err
-	}
-	defer conn.Close()
-
-	req := vsockProto.ExecRequest{Command: "/bin/sh", Args: []string{"-c", cmd}}
-	if err := vsockProto.WriteJSON(conn, &req); err != nil {
-		return "", -1, err
-	}
-
-	var resp vsockProto.ExecResponse
-	if err := vsockProto.ReadJSON(conn, &resp); err != nil {
-		return "", -1, err
-	}
-
-	output := resp.Stdout
-	if resp.Stderr != "" {
-		output += resp.Stderr
-	}
-	return strings.TrimRight(output, "\n"), resp.ExitCode, nil
+	return nil, err
 }
 
 func parseShare(s string) (vm.SharedDir, error) {
