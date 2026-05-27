@@ -65,6 +65,9 @@ func (d *DarwinVM) buildConfig() (*vz.VirtualMachineConfiguration, error) {
 	if err := d.configureNetwork(config); err != nil {
 		return nil, err
 	}
+	if err := d.configureDisk(config); err != nil {
+		return nil, err
+	}
 	if err := d.configureVsock(config); err != nil {
 		return nil, err
 	}
@@ -127,6 +130,32 @@ func (d *DarwinVM) configureNetwork(config *vz.VirtualMachineConfiguration) erro
 		return fmt.Errorf("net config: %w", err)
 	}
 	config.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{netConfig})
+	return nil
+}
+
+func (d *DarwinVM) configureDisk(config *vz.VirtualMachineConfiguration) error {
+	if d.cfg.DiskPath == "" {
+		return nil
+	}
+	// Create disk image if it doesn't exist
+	if _, err := os.Stat(d.cfg.DiskPath); os.IsNotExist(err) {
+		size := int64(d.cfg.DiskGB) * 1024 * 1024 * 1024
+		if size == 0 {
+			size = 10 * 1024 * 1024 * 1024 // default 10GB
+		}
+		if err := vz.CreateDiskImage(d.cfg.DiskPath, size); err != nil {
+			return fmt.Errorf("create disk: %w", err)
+		}
+	}
+	attachment, err := vz.NewDiskImageStorageDeviceAttachment(d.cfg.DiskPath, false)
+	if err != nil {
+		return fmt.Errorf("disk attach: %w", err)
+	}
+	blockDev, err := vz.NewVirtioBlockDeviceConfiguration(attachment)
+	if err != nil {
+		return fmt.Errorf("block dev: %w", err)
+	}
+	config.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{blockDev})
 	return nil
 }
 

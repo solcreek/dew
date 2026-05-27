@@ -141,6 +141,15 @@ modprobe virtio_net 2>/dev/null || true
 modprobe vsock 2>/dev/null || true
 modprobe vmw_vsock_virtio_transport 2>/dev/null || true
 
+# persistent disk (auto-format ext4 if raw, mount to /data)
+if [ -b /dev/vda ]; then
+    mkdir -p /data
+    if ! blkid /dev/vda >/dev/null 2>&1; then
+        mkfs.ext4 -q /dev/vda 2>/dev/null || true
+    fi
+    mount /dev/vda /data 2>/dev/null || true
+fi
+
 # network (if eth0 exists = NAT mode)
 if ip link show eth0 >/dev/null 2>&1; then
     ip link set eth0 up

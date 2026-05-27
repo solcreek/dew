@@ -105,6 +105,7 @@ Flags:
   --network            Enable NAT networking
   --vsock <port>       Enable vsock on this port
   --share <tag:path>   Share host directory (read-only; tag:hostpath[:rw])
+  --disk <path>         Persistent disk image (created if absent, default 10GB)
   --forward <h:g>      Forward host port to guest (e.g. 3000:3000)
   --json               Machine-readable JSON output (run command)
 `)
@@ -186,6 +187,12 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, err
 			}
 			cfg.SharedDirs = append(cfg.SharedDirs, sd)
+		case "--disk":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--disk requires a path")
+			}
+			cfg.DiskPath = args[i]
 		case "--forward":
 			i++
 			if i >= len(args) {
