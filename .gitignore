@@ -1,3 +1,7 @@
 /dew
 /dew-agent-*
 *.test
+/initramfs/cache/
+/initramfs/vmlinuz
+/initramfs/initramfs.cpio.gz
+/initramfs/work/
