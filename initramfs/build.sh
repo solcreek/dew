@@ -71,27 +71,10 @@ tar xzf "$KERNEL_APK" -C "$APK_EXTRACT" 2>/dev/null
 cp "$APK_EXTRACT/boot/vmlinuz-virt" "$OUT_KERNEL"
 echo "Kernel: $(ls -lh "$OUT_KERNEL" | awk '{print $5}')"
 
-MODDIR="${WORK_DIR}/lib/modules/${KERNEL_VER}"
-mkdir -p "$MODDIR/kernel/net/vmw_vsock" "$MODDIR/kernel/drivers/net" \
-         "$MODDIR/kernel/net/packet" "$MODDIR/kernel/net/core"
-cp "$APK_EXTRACT/lib/modules/${KERNEL_VER}/kernel/net/vmw_vsock/"*.ko.gz \
-   "$MODDIR/kernel/net/vmw_vsock/" 2>/dev/null || true
-cp "$APK_EXTRACT/lib/modules/${KERNEL_VER}/kernel/drivers/net/virtio_net.ko.gz" \
-   "$APK_EXTRACT/lib/modules/${KERNEL_VER}/kernel/drivers/net/net_failover.ko.gz" \
-   "$MODDIR/kernel/drivers/net/" 2>/dev/null || true
-cp "$APK_EXTRACT/lib/modules/${KERNEL_VER}/kernel/net/packet/af_packet.ko.gz" \
-   "$MODDIR/kernel/net/packet/" 2>/dev/null || true
-cp "$APK_EXTRACT/lib/modules/${KERNEL_VER}/kernel/net/core/failover.ko.gz" \
-   "$MODDIR/kernel/net/core/" 2>/dev/null || true
-# overlay fs for containerd
-mkdir -p "$MODDIR/kernel/fs/overlayfs"
-cp "$APK_EXTRACT/lib/modules/${KERNEL_VER}/kernel/fs/overlayfs/overlay.ko.gz" \
-   "$MODDIR/kernel/fs/overlayfs/" 2>/dev/null || true
-for f in modules.dep modules.dep.bin modules.alias modules.alias.bin \
-         modules.symbols modules.symbols.bin modules.builtin modules.order; do
-    cp "$APK_EXTRACT/lib/modules/${KERNEL_VER}/$f" "$MODDIR/$f" 2>/dev/null || true
-done
-find "$MODDIR" -name "*.ko.gz" -exec gunzip {} \;
+# Copy ALL kernel modules (depmod handles dependencies automatically)
+mkdir -p "$WORK_DIR/lib/modules"
+cp -a "$APK_EXTRACT/lib/modules/${KERNEL_VER}" "$WORK_DIR/lib/modules/"
+find "$WORK_DIR/lib/modules/${KERNEL_VER}" -name "*.ko.gz" -exec gunzip {} \;
 echo "Modules: $(du -sh "$MODDIR" | awk '{print $1}')"
 
 # --- Step 3: Build dew-agent ---
@@ -148,6 +131,21 @@ if [ "$PROFILE" = "standard" ]; then
     tar xzf "$CNI_TAR" -C "$WORK_DIR/opt/cni/bin/" 2>/dev/null
     echo "CNI: $(du -sh "$WORK_DIR/opt/cni/bin" | awk '{print $1}')"
 
+    # Install e2fsprogs + dependencies (extract APKs directly)
+    echo "Installing e2fsprogs..."
+    E2FS_PKGS="e2fsprogs e2fsprogs-libs libcom_err libuuid libblkid libeconf"
+    for pkg in $E2FS_PKGS; do
+        APK_FILE="${CACHE}/${pkg}.apk"
+        if [ ! -f "$APK_FILE" ]; then
+            URL=$(curl -sL "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${ALPINE_ARCH}/" \
+                  | grep -o "${pkg}-[0-9][^\"]*\.apk" | head -1)
+            [ -n "$URL" ] && curl -fSL -o "$APK_FILE" \
+                "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${ALPINE_ARCH}/${URL}" || true
+        fi
+        [ -f "$APK_FILE" ] && tar xzf "$APK_FILE" -C "$WORK_DIR" 2>/dev/null || true
+    done
+    echo "e2fsprogs: $(ls "$WORK_DIR/sbin/mkfs.ext4" 2>/dev/null && echo 'OK' || echo 'MISSING')"
+
     # containerd config
     mkdir -p "$WORK_DIR/etc/containerd"
     cat > "$WORK_DIR/etc/containerd/config.toml" << 'CTRD_EOF'
@@ -198,10 +196,61 @@ depmod -a 2>/dev/null || true
 modprobe af_packet 2>/dev/null || true
 modprobe virtio_net 2>/dev/null || true
 modprobe overlay 2>/dev/null || true
+modprobe mbcache 2>/dev/null || true
+modprobe jbd2 2>/dev/null || true
+modprobe ext4 2>/dev/null || true
+modprobe virtio_blk 2>/dev/null || true
 modprobe vsock 2>/dev/null || true
 modprobe vmw_vsock_virtio_transport 2>/dev/null || true
 
-# persistent disk
+# ── standard profile: switch_root to ext4 disk ──
+# containerd needs overlayfs on a real filesystem (not tmpfs).
+# If /dev/vda exists and containerd is present, switch_root to disk.
+HAS_CONTAINERD=false
+[ -x /usr/local/bin/containerd ] && HAS_CONTAINERD=true
+
+if [ "$HAS_CONTAINERD" = true ]; then
+    # Wait for virtio_blk to create /dev/vda
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        [ -b /dev/vda ] && break
+        sleep 0.1
+    done
+fi
+
+if [ "$HAS_CONTAINERD" = true ] && [ -b /dev/vda ]; then
+    mkdir -p /mnt/root
+    # Try mount first; format if it fails
+    if ! mount /dev/vda /mnt/root 2>/dev/null; then
+        echo "dew: formatting disk..."
+        mkfs.ext4 -F -L dew /dev/vda
+        mount /dev/vda /mnt/root
+    fi
+
+    # Populate rootfs from initramfs on first boot
+    if [ ! -f /mnt/root/.dew-initialized ]; then
+        echo "dew: initializing rootfs on disk (first boot)..."
+        cp -a /bin /etc /lib /opt /sbin /usr /var /init-stage2 /mnt/root/ 2>/dev/null || true
+        mkdir -p /mnt/root/dev /mnt/root/proc /mnt/root/sys \
+                 /mnt/root/run /mnt/root/tmp /mnt/root/data \
+                 /mnt/root/dev/pts /mnt/root/dev/shm
+        touch /mnt/root/.dew-initialized
+    fi
+
+    # Bind-mount virtual filesystems into new root
+    mount --move /dev /mnt/root/dev
+    mount --move /proc /mnt/root/proc
+    mount --move /sys /mnt/root/sys
+    mount --move /run /mnt/root/run
+    mount -t tmpfs tmpfs /mnt/root/tmp
+    chmod 1777 /mnt/root/tmp
+
+    # switch_root replaces initramfs with the disk rootfs
+    exec switch_root /mnt/root /init-stage2
+fi
+
+# ── minimal profile: stay on tmpfs (no containerd) ──
+
+# persistent disk as /data (if present but no containerd)
 if [ -b /dev/vda ]; then
     mkdir -p /data
     if ! blkid /dev/vda >/dev/null 2>&1; then
@@ -210,15 +259,29 @@ if [ -b /dev/vda ]; then
     mount /dev/vda /data 2>/dev/null || true
 fi
 
+exec /init-stage2
+INIT_EOF
+chmod 755 "${WORK_DIR}/init"
+
+# Stage 2 init — runs on both tmpfs (minimal) and ext4 (standard)
+cat > "${WORK_DIR}/init-stage2" << 'INIT2_EOF'
+#!/bin/sh
+export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
+
+# Re-mount essentials if not already mounted (after switch_root)
+mountpoint -q /proc || mount -t proc proc /proc
+mountpoint -q /sys || mount -t sysfs sysfs /sys
+mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
+mountpoint -q /dev/pts || { mkdir -p /dev/pts; mount -t devpts devpts /dev/pts; }
+
 # network
 if ip link show eth0 >/dev/null 2>&1; then
-    ip link set eth0 up
+    ip link set eth0 up 2>/dev/null || true
     for i in 1 2 3 4 5; do
-        if [ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = "1" ]; then break; fi
+        [ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = "1" ] && break
         sleep 0.1
     done
     udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -t 3 || true
-    # Apple VZ NAT gateway doesn't provide DNS — use public DNS
     echo "nameserver 1.1.1.1" > /etc/resolv.conf
 fi
 
@@ -246,42 +309,27 @@ for param in $(cat /proc/cmdline); do
 done
 
 # cgroup v2
-if [ -d /sys/fs/cgroup ] && grep -q cgroup2 /proc/filesystems 2>/dev/null; then
-    mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
+if grep -q cgroup2 /proc/filesystems 2>/dev/null; then
+    mountpoint -q /sys/fs/cgroup || mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
     mkdir -p /sys/fs/cgroup/dew
-    if [ -n "$DEW_CPU_QUOTA" ]; then
-        echo "$DEW_CPU_QUOTA 100000" > /sys/fs/cgroup/dew/cpu.max 2>/dev/null || true
-    fi
-    if [ -n "$DEW_MEM_LIMIT" ]; then
-        echo "$DEW_MEM_LIMIT" > /sys/fs/cgroup/dew/memory.max 2>/dev/null || true
-    fi
+    [ -n "$DEW_CPU_QUOTA" ] && echo "$DEW_CPU_QUOTA 100000" > /sys/fs/cgroup/dew/cpu.max 2>/dev/null
+    [ -n "$DEW_MEM_LIMIT" ] && echo "$DEW_MEM_LIMIT" > /sys/fs/cgroup/dew/memory.max 2>/dev/null
 fi
 
 # unprivileged user
 adduser -D -s /bin/sh dew 2>/dev/null || true
 
-# containerd (standard profile)
+# containerd (standard profile, now on ext4 rootfs)
 if [ -x /usr/local/bin/containerd ]; then
-    mkdir -p /run/containerd /var/lib/nerdctl
-    CTRD_ROOT="/var/lib/containerd"
-    if [ -d /data ]; then
-        mkdir -p /data/containerd
-        CTRD_ROOT="/data/containerd"
-    else
-        mkdir -p /var/lib/containerd
-    fi
-    /usr/local/bin/containerd --root "$CTRD_ROOT" --state /run/containerd >/var/log/containerd.log 2>&1 &
+    mkdir -p /run/containerd /var/lib/containerd /var/lib/nerdctl
+    containerd >/var/log/containerd.log 2>&1 &
     sleep 0.5
     echo "containerd: started"
 fi
 
-# dew-agent (vsock exec)
-# standard profile: run as root (containerd needs root access, VM is the isolation boundary)
-# minimal profile: run workloads as unprivileged 'dew' user
+# dew-agent
 AGENT_ENV=""
-if [ ! -x /usr/local/bin/containerd ]; then
-    AGENT_ENV="DEW_EXEC_USER=dew"
-fi
+[ ! -x /usr/local/bin/containerd ] && AGENT_ENV="DEW_EXEC_USER=dew"
 if [ -x /usr/local/bin/dew-agent ] && [ -e /dev/vsock ]; then
     env $AGENT_ENV /usr/local/bin/dew-agent >/dev/null 2>&1 &
     echo "dew-agent: vsock ready"
@@ -290,20 +338,16 @@ fi
 # startup command
 if [ -n "$DEW_CMD" ]; then
     DECODED=$(echo "$DEW_CMD" | base64 -d 2>/dev/null)
-    if [ -n "$DECODED" ]; then
-        PATH="/usr/local/bin:$PATH" sh -c "$DECODED" &
-    fi
+    [ -n "$DECODED" ] && sh -c "$DECODED" &
 fi
 
 echo ""
-echo "  dew vm ready (${PROFILE:-standard})"
+echo "  dew vm ready"
 echo ""
 
 exec /bin/sh 2>/dev/null
-INIT_EOF
-# Inject profile name into init (macOS sed needs '' after -i)
-sed -i'' -e "s/\${PROFILE:-standard}/${PROFILE}/g" "${WORK_DIR}/init"
-chmod 755 "${WORK_DIR}/init"
+INIT2_EOF
+chmod 755 "${WORK_DIR}/init-stage2"
 
 # --- Step 7: Pack ---
 echo "--- Step 7: Pack initramfs ---"
