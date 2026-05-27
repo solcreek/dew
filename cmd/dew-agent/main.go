@@ -47,6 +47,11 @@ func main() {
 	}
 	defer listener.Close()
 
+	// Drop unnecessary root capabilities now that vsock is bound.
+	// Keep only CAP_SETUID/CAP_SETGID (for exec as unprivileged user)
+	// and CAP_NET_BIND_SERVICE (for port forwarding to privileged ports).
+	dropCapabilities()
+
 	fmt.Fprintf(os.Stderr, "dew-agent: listening on vsock port %d\n", port)
 
 	for {
@@ -250,6 +255,17 @@ func handleConnect(vsockConn net.Conn, addr string) {
 		io.Copy(vsockConn, tcpConn)
 	}()
 	wg.Wait()
+}
+
+func dropCapabilities() {
+	// Clear the bounding set except CAP_SETUID(7), CAP_SETGID(6),
+	// CAP_NET_BIND_SERVICE(10), CAP_KILL(5)
+	keep := map[uintptr]bool{5: true, 6: true, 7: true, 10: true}
+	for i := uintptr(0); i < 40; i++ {
+		if !keep[i] {
+			syscall.Syscall6(syscall.SYS_PRCTL, 24, i, 0, 0, 0, 0) // PR_CAPBSET_DROP=24
+		}
+	}
 }
 
 func setExecUser(cmd *exec.Cmd) {
