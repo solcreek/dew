@@ -5,3 +5,5 @@
 /initramfs/vmlinuz
 /initramfs/initramfs.cpio.gz
 /initramfs/work/
+/kernel/vmlinuz-turbo
+/kernel/config-alpine-base
