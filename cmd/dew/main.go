@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/solcreek/dew/internal/daemon"
+	"github.com/solcreek/dew/internal/detect"
 	"github.com/solcreek/dew/internal/serialexec"
 	"github.com/solcreek/dew/internal/session"
 	"github.com/solcreek/dew/internal/vm"
@@ -98,6 +100,8 @@ func main() {
 		err = cmdRun(os.Args[2:])
 	case "exec":
 		err = cmdExec(os.Args[2:])
+	case "up":
+		err = cmdUp(os.Args[2:])
 	case "session":
 		if len(os.Args) < 3 {
 			fmt.Fprintf(os.Stderr, "usage: dew session <create|exec|destroy> [args]\n")
@@ -123,6 +127,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `dew — ultra-lightweight VM (Apple Virtualization.framework)
 
 Usage:
+  dew up [dir]                   Auto-detect project and start dev environment
   dew start [flags]              Boot a Linux VM (interactive, daemon socket)
   dew run [flags] [--] <cmd>     Boot, execute command, exit
   dew exec <cmd>                 Execute in a running VM (via daemon socket)
@@ -545,6 +550,135 @@ func execVsockStream(conn net.Conn, token string, cmd string) (int, error) {
 			}
 		}
 	}
+}
+
+func cmdUp(args []string) error {
+	dir := "."
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		dir = args[0]
+	}
+
+	proj, err := detect.Detect(dir)
+	if err != nil {
+		return err
+	}
+	if proj.Framework == "" {
+		return fmt.Errorf("no supported project detected in %s", dir)
+	}
+
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "  detected: %s", proj.Framework)
+	if proj.PackageMgr != "" {
+		fmt.Fprintf(os.Stderr, " (%s)", proj.PackageMgr)
+	}
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "  profile:  %s\n", proj.Profile)
+	fmt.Fprintf(os.Stderr, "  port:     %d\n", proj.Port)
+	fmt.Fprintf(os.Stderr, "\n")
+
+	flagProfile = proj.Profile
+	cfg := vm.Config{
+		CPUs:     1,
+		MemoryMB: 512,
+		CmdLine:  "console=hvc0",
+		Network:  true,
+		Forwards: []vm.PortForward{{HostPort: proj.Port, GuestPort: proj.Port}},
+	}
+	if err := resolveAssets(&cfg); err != nil {
+		return err
+	}
+	cfg.VsockPort = uint32(vsockProto.DefaultPort)
+
+	token := generateToken()
+
+	// Remove stale socket
+	os.Remove(daemon.SocketPath(""))
+
+	d, err := darwin.New(cfg)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "  booting...")
+	start := time.Now()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	if err := d.Start(ctx); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, " %s\n", time.Since(start).Round(time.Millisecond))
+
+	// Wait for agent + inject token
+	tokenSent := false
+	for i := 0; i < 300; i++ {
+		if err := sendToken(d, cfg.VsockPort, token); err == nil {
+			tokenSent = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !tokenSent {
+		fmt.Fprintf(os.Stderr, "  warning: agent not ready\n")
+	}
+
+	startPortForwards(d, token, cfg.Forwards)
+
+	dmn := &daemon.State{
+		VM: d, Token: token, VsockPort: cfg.VsockPort,
+		SocketPath: daemon.SocketPath(""),
+	}
+	dmn.Start()
+
+	// Copy project files into VM
+	fmt.Fprintf(os.Stderr, "  copying project...\n")
+	execInVM := func(cmd string) {
+		conn, err := connectVsock(d, cfg.VsockPort)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		execVsockConn(conn, token, cmd)
+	}
+
+	execInVM("mkdir -p /app")
+	// Use tar to copy the entire project directory
+	absDir, _ := filepath.Abs(dir)
+	tarCmd := fmt.Sprintf("cd %s && tar cf - --exclude=node_modules --exclude=.git . | base64", absDir)
+	tarOut, err := exec.Command("sh", "-c", tarCmd).Output()
+	if err == nil && len(tarOut) > 0 {
+		// Send in chunks to avoid vsock message size limits
+		encoded := strings.TrimSpace(string(tarOut))
+		execInVM(fmt.Sprintf("echo '%s' | base64 -d | tar xf - -C /app", encoded))
+	}
+
+	// Install dependencies
+	if proj.InstallCmd != "" {
+		fmt.Fprintf(os.Stderr, "  installing deps...\n")
+		conn, err := connectVsock(d, cfg.VsockPort)
+		if err == nil {
+			execVsockConn(conn, token, "cd /app && "+proj.InstallCmd)
+			conn.Close()
+		}
+	}
+
+	// Start dev server
+	fmt.Fprintf(os.Stderr, "  starting dev server...\n")
+	execInVM("cd /app && " + proj.DevCmd + " &")
+	time.Sleep(2 * time.Second)
+
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "  ✓ http://localhost:%d\n", proj.Port)
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "  Ctrl+C to stop\n")
+	fmt.Fprintf(os.Stderr, "\n")
+
+	<-ctx.Done()
+
+	dmn.Stop()
+	fmt.Fprintf(os.Stderr, "\n  stopping...\n")
+	return d.Stop(context.Background())
 }
 
 func cmdExec(args []string) error {
