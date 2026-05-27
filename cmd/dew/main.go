@@ -30,6 +30,7 @@ const version = "0.1.0-dev"
 
 var flagJSON bool
 var flagStream bool
+var flagEvents bool
 
 func dewDataDir() string {
 	home, _ := os.UserHomeDir()
@@ -109,6 +110,7 @@ Flags:
   --disk <path>         Persistent disk image (created if absent, default 10GB)
   --forward <h:g>      Forward host port to guest (e.g. 3000:3000)
   --stream             Stream stdout/stderr in real time
+  --events             NDJSON event stream (for agent integration)
   --json               Machine-readable JSON output (run command)
 `)
 }
@@ -206,6 +208,9 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 			}
 			cfg.Forwards = append(cfg.Forwards, fwd)
 		case "--stream":
+			flagStream = true
+		case "--events":
+			flagEvents = true
 			flagStream = true
 		case "--json":
 			flagJSON = true
@@ -454,16 +459,25 @@ func execVsockStream(conn net.Conn, token string, cmd string) (int, error) {
 			var check struct{ Stream string `json:"stream"` }
 			json.Unmarshal(data, &check)
 			if check.Stream == "" {
+				if flagEvents {
+					event, _ := json.Marshal(map[string]interface{}{"type": "exit", "exit_code": done.ExitCode, "error": done.Error})
+					fmt.Println(string(event))
+				}
 				return done.ExitCode, nil
 			}
 		}
 		var chunk vsockProto.OutputChunk
 		json.Unmarshal(data, &chunk)
-		switch chunk.Stream {
-		case "stderr":
-			fmt.Fprint(os.Stderr, chunk.Data)
-		default:
-			fmt.Print(chunk.Data)
+		if flagEvents {
+			event, _ := json.Marshal(map[string]string{"type": chunk.Stream, "data": chunk.Data})
+			fmt.Println(string(event))
+		} else {
+			switch chunk.Stream {
+			case "stderr":
+				fmt.Fprint(os.Stderr, chunk.Data)
+			default:
+				fmt.Print(chunk.Data)
+			}
 		}
 	}
 }
