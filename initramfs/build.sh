@@ -133,18 +133,37 @@ for share in $(cat /proc/cmdline | tr ' ' '\n' | grep '^dew.share='); do
     fi
 done
 
-# extract auth token from kernel cmdline
+# extract params from kernel cmdline
 DEW_TOKEN=""
+DEW_CPU_QUOTA=""
+DEW_MEM_LIMIT=""
 for param in $(cat /proc/cmdline); do
     case "$param" in
-        dew.token=*) DEW_TOKEN="${param#dew.token=}" ;;
+        dew.token=*)     DEW_TOKEN="${param#dew.token=}" ;;
+        dew.cpu_quota=*) DEW_CPU_QUOTA="${param#dew.cpu_quota=}" ;;
+        dew.mem_limit=*) DEW_MEM_LIMIT="${param#dew.mem_limit=}" ;;
     esac
 done
 export DEW_TOKEN
 
-# dew-agent (vsock exec channel)
+# cgroup v2 resource limits for workloads
+if [ -d /sys/fs/cgroup ] && grep -q cgroup2 /proc/filesystems 2>/dev/null; then
+    mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
+    mkdir -p /sys/fs/cgroup/dew
+    if [ -n "$DEW_CPU_QUOTA" ]; then
+        echo "$DEW_CPU_QUOTA 100000" > /sys/fs/cgroup/dew/cpu.max 2>/dev/null || true
+    fi
+    if [ -n "$DEW_MEM_LIMIT" ]; then
+        echo "$DEW_MEM_LIMIT" > /sys/fs/cgroup/dew/memory.max 2>/dev/null || true
+    fi
+fi
+
+# unprivileged user for agent workloads
+adduser -D -s /bin/sh dew 2>/dev/null || true
+
+# dew-agent (vsock exec channel, runs as unprivileged user)
 if [ -x /usr/local/bin/dew-agent ] && [ -e /dev/vsock ]; then
-    /usr/local/bin/dew-agent >/dev/null 2>&1 &
+    su -s /bin/sh dew -c "DEW_TOKEN=$DEW_TOKEN /usr/local/bin/dew-agent" >/dev/null 2>&1 &
     echo "dew-agent: vsock ready"
 fi
 
