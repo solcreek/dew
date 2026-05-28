@@ -1,0 +1,153 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+            goarch: arm64
+          - runner: macos-13
+            arch: x86_64
+            goarch: amd64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build dew binary
+        run: |
+          GOARCH=${{ matrix.goarch }} go build -ldflags="-s -w" -o dew-darwin-${{ matrix.arch }} ./cmd/dew/
+          codesign --entitlements entitlements.plist --force -s - dew-darwin-${{ matrix.arch }}
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: dew-darwin-${{ matrix.arch }}
+          path: dew-darwin-${{ matrix.arch }}
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build guest agent
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dew-agent-linux-amd64 ./cmd/dew-agent/
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dew-agent-linux-arm64 ./cmd/dew-agent/
+
+      - name: Build Windows wrapper
+        run: |
+          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dew-windows-x86_64.exe ./cmd/dew/
+
+      - name: Build initramfs profiles
+        run: bash initramfs/build.sh minimal && bash initramfs/build.sh node && bash initramfs/build.sh standard
+
+      - name: Rename assets with arch
+        run: |
+          ARCH=$(uname -m)
+          cp initramfs/vmlinuz vmlinuz-${ARCH}
+          cp initramfs/initramfs-minimal.cpio.gz initramfs-minimal-${ARCH}.cpio.gz
+          cp initramfs/initramfs-node.cpio.gz initramfs-node-${ARCH}.cpio.gz
+          cp initramfs/initramfs-standard.cpio.gz initramfs-standard-${ARCH}.cpio.gz
+
+      - name: Build WSL2 rootfs
+        run: |
+          # Create a WSL2-compatible rootfs from the standard initramfs
+          mkdir -p /tmp/wsl-rootfs
+          cd /tmp/wsl-rootfs
+          gzip -dc $GITHUB_WORKSPACE/initramfs/initramfs-standard.cpio.gz | cpio -id 2>/dev/null
+          tar czf $GITHUB_WORKSPACE/dew-rootfs-x86_64.tar.gz .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-assets
+          path: |
+            dew-agent-linux-*
+            dew-windows-x86_64.exe
+            vmlinuz-*
+            initramfs-*
+            dew-rootfs-*
+
+  release:
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Create install script
+        run: |
+          cat > artifacts/install.sh << 'SCRIPT'
+          #!/bin/bash
+          set -euo pipefail
+
+          REPO="solcreek/dew"
+          VERSION="${1:-latest}"
+          ARCH="$(uname -m)"
+          OS="$(uname -s)"
+
+          if [ "$OS" != "Darwin" ]; then
+            echo "dew: macOS only (for now). See https://github.com/$REPO for Windows instructions."
+            exit 1
+          fi
+
+          DEST="${DEST:-/usr/local/bin}"
+          BINARY="dew-darwin-${ARCH}"
+
+          if [ "$VERSION" = "latest" ]; then
+            URL="https://github.com/$REPO/releases/latest/download/$BINARY"
+          else
+            URL="https://github.com/$REPO/releases/download/$VERSION/$BINARY"
+          fi
+
+          echo "dew: downloading $BINARY..."
+          curl -fsSL -o "$DEST/dew" "$URL"
+          chmod +x "$DEST/dew"
+
+          echo "dew: signing with virtualization entitlement..."
+          codesign --entitlements <(cat <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>com.apple.security.virtualization</key><true/>
+          </dict></plist>
+          PLIST
+          ) --force -s - "$DEST/dew"
+
+          echo "dew: installed to $DEST/dew"
+          echo "dew: run 'dew up' in any project directory to get started"
+          SCRIPT
+          chmod +x artifacts/install.sh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/*
