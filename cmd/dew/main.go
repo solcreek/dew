@@ -248,6 +248,8 @@ func main() {
 		err = cmdRun(os.Args[2:])
 	case "exec":
 		err = cmdExec(os.Args[2:])
+	case "install":
+		err = cmdInstall(os.Args[2:])
 	case "build":
 		err = cmdBuild(os.Args[2:])
 	case "deploy":
@@ -295,6 +297,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `dew — ultra-lightweight VM (Apple Virtualization.framework)
 
 Usage:
+  dew install [app]              Install app from registry (or list available)
   dew build [dir]                Package app into deploy tarball
   dew deploy <target>            Deploy tarball or image to dew serve
   dew rollback <target> <app>   Rollback to previous version
