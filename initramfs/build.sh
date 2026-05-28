@@ -333,6 +333,7 @@ fi
 
 # unprivileged user with sudo
 adduser -D -s /bin/sh dew 2>/dev/null || true
+mkdir -p /etc/sudoers.d 2>/dev/null || true
 echo "dew ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/dew 2>/dev/null || true
 chmod 440 /etc/sudoers.d/dew 2>/dev/null || true
 
