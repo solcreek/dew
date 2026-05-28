@@ -159,7 +159,7 @@ func createTarball(projectDir, outPath string, manifest *buildManifest, proj *de
 			return err
 		}
 
-		if info.IsDir() {
+		if info.IsDir() || !info.Mode().IsRegular() {
 			return nil
 		}
 
@@ -201,6 +201,8 @@ func buildSkipSet(dir string) map[string]bool {
 	skip := map[string]bool{
 		".git":         true,
 		".dew":         true,
+		".claude":      true,
+		".cursor":      true,
 		"node_modules": true,
 		"__pycache__":  true,
 		".venv":        true,
