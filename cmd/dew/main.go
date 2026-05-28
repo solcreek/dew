@@ -11,8 +11,9 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"net/http"
+	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -77,13 +78,149 @@ func resolveAssets(cfg *vm.Config) error {
 			cfg.Initrd = filepath.Join(dataDir, "initramfs.cpio.gz")
 		}
 	}
+	// Auto-download assets on first use
+	needDownload := false
 	if _, err := os.Stat(cfg.Kernel); err != nil {
-		return fmt.Errorf("kernel not found at %s — run: dew assets pull", cfg.Kernel)
+		needDownload = true
 	}
 	if _, err := os.Stat(cfg.Initrd); err != nil {
-		return fmt.Errorf("initramfs not found at %s — run: dew assets pull", cfg.Initrd)
+		needDownload = true
+	}
+	if needDownload {
+		if err := downloadAssets(dataDir, profile, cfg.Kernel, cfg.Initrd); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Stat(cfg.Kernel); err != nil {
+		return fmt.Errorf("kernel not found at %s", cfg.Kernel)
+	}
+	if _, err := os.Stat(cfg.Initrd); err != nil {
+		return fmt.Errorf("initramfs not found at %s", cfg.Initrd)
 	}
 	return nil
+}
+
+const (
+	releaseBaseURL = "https://github.com/solcreek/dew/releases/download"
+	releaseVersion = "v0.1.0"
+)
+
+func downloadAssets(dataDir, profile, kernelPath, initrdPath string) error {
+	os.MkdirAll(dataDir, 0755)
+
+	arch := "x86_64"
+	if goArch := os.Getenv("GOARCH"); goArch == "arm64" {
+		arch = "aarch64"
+	}
+	// Detect arm64 from runtime
+	if filepath.Base(os.Args[0]) != "" {
+		// runtime detection via uname
+		cmd := exec.Command("uname", "-m")
+		if out, err := cmd.Output(); err == nil {
+			a := strings.TrimSpace(string(out))
+			if a == "arm64" || a == "aarch64" {
+				arch = "aarch64"
+			}
+		}
+	}
+
+	files := []struct {
+		url  string
+		dest string
+		name string
+	}{
+		{
+			fmt.Sprintf("%s/%s/vmlinuz-%s", releaseBaseURL, releaseVersion, arch),
+			kernelPath,
+			"kernel",
+		},
+		{
+			fmt.Sprintf("%s/%s/initramfs-%s-%s.cpio.gz", releaseBaseURL, releaseVersion, profile, arch),
+			initrdPath,
+			fmt.Sprintf("initramfs (%s)", profile),
+		},
+	}
+
+	for _, f := range files {
+		if _, err := os.Stat(f.dest); err == nil {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "  downloading %s...", f.name)
+
+		resp, err := http.Get(f.url)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, " failed\n")
+			return fmt.Errorf("download %s: %w", f.name, err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != 200 {
+			fmt.Fprintf(os.Stderr, " not found (HTTP %d)\n", resp.StatusCode)
+			return fmt.Errorf("download %s: HTTP %d\n\n  Assets not available at %s\n  Build locally: bash initramfs/build.sh %s",
+				f.name, resp.StatusCode, f.url, profile)
+		}
+
+		out, err := os.Create(f.dest)
+		if err != nil {
+			return fmt.Errorf("create %s: %w", f.dest, err)
+		}
+		written, err := io.Copy(out, resp.Body)
+		out.Close()
+		if err != nil {
+			os.Remove(f.dest)
+			return fmt.Errorf("download %s: %w", f.name, err)
+		}
+		fmt.Fprintf(os.Stderr, " %dMB\n", written/1024/1024)
+	}
+	return nil
+}
+
+func cmdAssets(args []string) error {
+	sub := "pull"
+	if len(args) > 0 {
+		sub = args[0]
+	}
+
+	dataDir := dewDataDir()
+	profile := flagProfile
+	if profile == "" {
+		profile = "standard"
+	}
+	// Parse --profile from remaining args
+	for i, a := range args {
+		if a == "--profile" && i+1 < len(args) {
+			profile = args[i+1]
+		}
+	}
+
+	switch sub {
+	case "pull":
+		kernelPath := filepath.Join(dataDir, "vmlinuz")
+		initrdPath := filepath.Join(dataDir, "initramfs-"+profile+".cpio.gz")
+		fmt.Fprintf(os.Stderr, "  profile: %s\n  target:  %s\n\n", profile, dataDir)
+		return downloadAssets(dataDir, profile, kernelPath, initrdPath)
+
+	case "list":
+		entries, err := os.ReadDir(dataDir)
+		if err != nil {
+			fmt.Println("No assets downloaded yet.")
+			return nil
+		}
+		for _, e := range entries {
+			info, _ := e.Info()
+			if info != nil {
+				fmt.Printf("  %-40s %dMB\n", e.Name(), info.Size()/1024/1024)
+			}
+		}
+		return nil
+
+	case "path":
+		fmt.Println(dataDir)
+		return nil
+
+	default:
+		return fmt.Errorf("unknown assets subcommand %q (use: pull, list, path)", sub)
+	}
 }
 
 func main() {
@@ -102,6 +239,8 @@ func main() {
 		err = cmdExec(os.Args[2:])
 	case "up":
 		err = cmdUp(os.Args[2:])
+	case "assets":
+		err = cmdAssets(os.Args[2:])
 	case "session":
 		if len(os.Args) < 3 {
 			fmt.Fprintf(os.Stderr, "usage: dew session <create|exec|destroy> [args]\n")
@@ -134,6 +273,8 @@ Usage:
   dew session create [flags]     Create a persistent VM session
   dew session exec <id> <cmd>    Execute in an existing session
   dew session destroy <id>       Destroy a session
+  dew assets pull                Download VM image for current profile
+  dew assets list                Show downloaded assets
   dew version                    Print version
   dew help                       Show this help
 
