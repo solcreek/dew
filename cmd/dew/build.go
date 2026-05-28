@@ -24,6 +24,7 @@ type buildManifest struct {
 	App         string `json:"app"`
 	Version     string `json:"version"`
 	Runtime     string `json:"runtime"`
+	Type        string `json:"type"`
 	Entry       string `json:"entry"`
 	Port        int    `json:"port"`
 	Checksum    string `json:"checksum,omitempty"`
@@ -81,12 +82,23 @@ func cmdBuild(args []string) error {
 		}
 	}
 
+	isStatic := detectStaticSite(abs, proj)
+	if isStatic {
+		proj.Port = 0
+	}
+
 	sp.Step("Packaging tarball")
+
+	appType := "server"
+	if isStatic {
+		appType = "static"
+	}
 
 	manifest := buildManifest{
 		App:     appName,
 		Version: gitVersion,
 		Runtime: proj.Runtime,
+		Type:    appType,
 		Entry:   proj.Entry,
 		Port:    proj.Port,
 		BuiltAt: time.Now().UTC().Format(time.RFC3339),
@@ -197,20 +209,27 @@ func createTarball(projectDir, outPath string, manifest *buildManifest, proj *de
 	return stat.Size(), checksum, nil
 }
 
+var buildOutputDirs = map[string]bool{
+	"dist":        true,
+	"build":       true,
+	".next":       true,
+	".nuxt":       true,
+	".astro":      true,
+	".svelte-kit": true,
+	".output":     true,
+}
+
 func buildSkipSet(dir string) map[string]bool {
 	skip := map[string]bool{
 		".git":         true,
 		".dew":         true,
 		".claude":      true,
 		".cursor":      true,
+		".agents":      true,
 		"node_modules": true,
 		"__pycache__":  true,
 		".venv":        true,
 		"venv":         true,
-		".next":        true,
-		".nuxt":        true,
-		".astro":       true,
-		".svelte-kit":  true,
 		".env":         true,
 		".env.local":   true,
 	}
@@ -222,6 +241,9 @@ func buildSkipSet(dir string) map[string]bool {
 			line = strings.TrimSpace(line)
 			if line != "" && !strings.HasPrefix(line, "#") {
 				line = strings.TrimSuffix(line, "/")
+				if buildOutputDirs[line] {
+					continue
+				}
 				skip[line] = true
 			}
 		}
@@ -247,6 +269,28 @@ func shouldSkip(rel string, info os.FileInfo, skip map[string]bool) bool {
 	}
 	if strings.HasSuffix(base, ".db") || strings.HasSuffix(base, ".db-shm") || strings.HasSuffix(base, ".db-wal") || strings.HasSuffix(base, ".db-journal") {
 		return true
+	}
+	lockFiles := map[string]bool{
+		"package-lock.json": true,
+		"pnpm-lock.yaml":    true,
+		"yarn.lock":         true,
+		"bun.lockb":         true,
+		"bun.lock":          true,
+	}
+	if lockFiles[base] {
+		return true
+	}
+	return false
+}
+
+func detectStaticSite(dir string, proj *detect.Project) bool {
+	if proj.Entry != "" {
+		return false
+	}
+	for _, d := range []string{"dist", "build", ".next/standalone"} {
+		if info, err := os.Stat(filepath.Join(dir, d)); err == nil && info.IsDir() {
+			return true
+		}
 	}
 	return false
 }

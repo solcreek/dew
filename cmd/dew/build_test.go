@@ -14,10 +14,16 @@ func TestBuildSkipSet(t *testing.T) {
 
 	skip := buildSkipSet(dir)
 
-	expected := []string{".git", "node_modules", "__pycache__", ".venv", ".env", "dist", "build"}
-	for _, name := range expected {
+	mustSkip := []string{".git", "node_modules", "__pycache__", ".venv", ".env"}
+	for _, name := range mustSkip {
 		if !skip[name] {
 			t.Errorf("should skip %q", name)
+		}
+	}
+	mustKeep := []string{"dist", "build"}
+	for _, name := range mustKeep {
+		if skip[name] {
+			t.Errorf("should NOT skip build output dir %q", name)
 		}
 	}
 }
