@@ -260,6 +260,8 @@ func main() {
 			os.Exit(1)
 		}
 		err = cmdSession(os.Args[2], os.Args[3:])
+	case "server":
+		err = cmdServer(os.Args[2:])
 	case "version":
 		fmt.Printf("dew %s\n", version)
 	case "help", "--help", "-h":
@@ -287,6 +289,9 @@ Usage:
   dew session exec <id> <cmd>    Execute in an existing session
   dew session destroy <id>       Destroy a session
   dew down                       Stop the running VM
+  dew server create [flags]      Create a VPS and install dew serve
+  dew server list                List managed servers
+  dew server destroy <name>      Destroy a managed server
   dew assets pull                Download VM image for current profile
   dew assets list                Show downloaded assets
   dew version                    Print version
