@@ -50,7 +50,8 @@ All communication uses length-prefixed JSON over vsock (no SSH). Auth token inje
 - **`internal/vm`** — platform-agnostic `VM` interface (`Start/Stop/State/WaitForState/VsockConnect`). `Config` holds kernel, initrd, cpus, memory, network, shared dirs, port forwards, console pipes.
 - **`internal/vm/darwin`** — Apple Virtualization.framework implementation. Configures boot loader, serial console, NAT, vsock, virtiofs, block devices.
 - **`internal/vsock`** — protocol types (`ExecRequest`, `ExecResponse`, `ConnectRequest`, `SetTokenRequest`, `OutputChunk`, `ExecDone`) and `WriteJSON`/`ReadJSON` with 4-byte big-endian length prefix.
-- **`internal/detect`** — registry-based project detection. `Detector` interface with `Match(dir)` and `Detect(dir)`. Currently registers `nodeDetector`; extensible for Python/Go/Rust.
+- **`internal/detect`** — registry-based project detection. `Detector` interface with `Match(dir)` and `Detect(dir)`. Registers `nodeDetector` and `pythonDetector`; extensible for Go/Rust.
+- **`internal/services`** — predefined service configs for `--with` flag (postgres, redis, mysql, mongo, minio). `NerdctlRunCmd()` generates container run commands.
 - **`internal/daemon`** — Unix socket at `~/.local/state/dew/default.sock` for cross-process exec. `dew start` opens it; `dew exec` connects to it.
 - **`internal/session`** — in-process VM session (`Create/Exec/Destroy`). Token handshake via vsock ping.
 - **`internal/serialexec`** — fallback exec via serial console (sentinel-based framing). Used when vsock is unavailable.
@@ -76,6 +77,7 @@ Standard/node profiles use `switch_root` to ext4 disk because containerd's overl
 |---|---|
 | minimal | 512MB RAM, no disk |
 | node | 1GB RAM, 4GB auto disk at `~/.local/share/dew/node.img` |
+| python | 1GB RAM, 4GB auto disk at `~/.local/share/dew/python.img` |
 | standard | 2GB RAM, 10GB auto disk at `~/.local/share/dew/standard.img` |
 
 `dew up` auto-selects profile via `detect.Detect()`. Assets auto-download from GitHub Releases on first use.

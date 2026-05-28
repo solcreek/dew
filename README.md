@@ -81,22 +81,25 @@ dew run -- uname -a
 # Linux dew 6.12.91-0-virt x86_64 Linux
 ```
 
-### Run Postgres + Redis (no Docker Desktop)
+### Start with services
 
 ```bash
-# Terminal 1: start VM with port forwarding
-dew start --network --forward 5432:5432 --forward 6379:6379
+dew up --with postgres,redis
+# → boots VM, starts Postgres (5432) + Redis (6379), starts dev server
+# → psql -h localhost -p 5432, redis-cli -p 6379
 
-# Terminal 2: start services (from any terminal)
-dew exec "nerdctl run -d --net=host postgres:16-alpine"
-dew exec "nerdctl run -d --net=host redis:7-alpine"
-
-# Terminal 3: connect from your app
-psql -h localhost -p 5432 -U postgres
-redis-cli -p 6379 PING  # PONG
+dew down  # stop everything
 ```
 
-This is a complete example. `dew start` keeps the VM running. `dew exec` sends commands to it from any terminal via a Unix socket. Services persist as long as the VM is running. Ctrl+C in Terminal 1 stops everything.
+Available services: postgres, redis, mysql, mongo, minio.
+
+### Run Postgres manually (more control)
+
+```bash
+dew start --network --forward 5432:5432
+dew exec "nerdctl run -d --net=host postgres:16-alpine"
+psql -h localhost -p 5432 -U postgres
+```
 
 ## `dew up`
 
@@ -110,6 +113,8 @@ Auto-detects your project and starts a dev environment:
 | `nuxt.config.*` | Nuxt | 3000 | |
 | `svelte.config.*` | SvelteKit | 5173 | |
 | `package.json` | Node.js | 3000 | |
+| `requirements.txt` | Django / Flask / FastAPI | 8000 / 5000 | `pip install -r requirements.txt` |
+| `pyproject.toml` | Python | 8000 | `pip install -e .` / `poetry install` |
 
 Your project directory syncs live between macOS and the VM. Edit files on your Mac, the dev server picks up changes instantly. `node_modules` and build artifacts stay inside the VM — your project directory stays clean.
 
@@ -121,9 +126,10 @@ npm cache persists on disk. Second run installs dependencies in seconds.
 |---|---|---|---|---|
 | **minimal** | Alpine Linux + exec agent | 5MB | 512MB | none (tmpfs) |
 | **node** | + Node.js, npm, build tools | 31MB | 1GB | 4GB (auto) |
+| **python** | + Python 3, pip, build tools | 31MB | 1GB | 4GB (auto) |
 | **standard** | + containerd, nerdctl, runc, CNI | 129MB | 2GB | 10GB (auto) |
 
-`dew up` selects the profile automatically. Node projects → `node` profile. Docker workflows → `standard`. Pure sandboxing → `minimal`.
+`dew up` selects the profile automatically. Node projects → `node`. Python projects → `python`. `--with` services → `standard`. Pure sandboxing → `minimal`.
 
 Node and standard profiles create a persistent disk automatically at `~/.local/share/dew/`. No flags needed.
 
@@ -131,9 +137,11 @@ Node and standard profiles create a persistent disk automatically at `~/.local/s
 
 ```
 dew up [dir]                   Auto-detect and start dev environment
+dew down                       Stop the running VM
 dew start [flags]              Boot a VM (persistent, daemon socket)
 dew run [flags] [--] <cmd>     Boot, exec, exit (ephemeral)
 dew exec <cmd>                 Exec in a running VM (from any terminal)
+dew assets pull                Download VM image for current profile
 dew session create [flags]     In-process session (~50ms per exec)
 dew session exec <id> <cmd>    Exec in session
 dew session destroy <id>       Destroy session
@@ -261,7 +269,7 @@ Measured on M1 MacBook Pro, macOS 14, Apple Virtualization.framework.
 
 ## Limitations
 
-- **macOS only** — requires Apple Virtualization.framework (macOS 13+, Apple Silicon or Intel). Linux doesn't need a VM (use containerd directly). Windows support is on the roadmap.
+- **macOS + Windows** — macOS uses Apple Virtualization.framework (macOS 13+). Windows uses WSL2 (`dew setup` to install). Linux doesn't need a VM (use containerd directly).
 - **Hot reload** — works with `dew up` and minimal profile + `--share`. Standard profile containers require image rebuild for code changes.
 - **No docker-compose equivalent** — use multiple `dew exec "nerdctl run ..."` commands, or `dew up` for single-app projects.
 - **First boot is slower** — standard profile formats a disk and installs Node.js on first use (~20s). Subsequent boots use the cached disk (~5s).
