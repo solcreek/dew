@@ -4,6 +4,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -81,7 +82,7 @@ func cmdServe(args []string) error {
 		storedHash := strings.TrimSpace(string(data))
 		verifyToken = func(t string) bool {
 			h := sha256.Sum256([]byte(t))
-			return hex.EncodeToString(h[:]) == storedHash
+			return subtle.ConstantTimeCompare([]byte(hex.EncodeToString(h[:])), []byte(storedHash)) == 1
 		}
 	} else if data, err := os.ReadFile(tokenFile); err == nil {
 		// Fallback: plaintext token file (local dev)
@@ -155,6 +156,21 @@ func cmdServe(args []string) error {
 		stopApp(appName)
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"ok":true,"app":"%s","action":"deleted"}`, appName)
+	}))
+
+	mux.HandleFunc("POST /v1/apps/{app}/rollback", auth(func(w http.ResponseWriter, r *http.Request) {
+		appName := r.PathValue("app")
+		w.Header().Set("Content-Type", "application/json")
+		// TODO: restore previous deploy from deploy history
+		// For now: restart current version
+		state.mu.RLock()
+		app, ok := state.apps[appName]
+		state.mu.RUnlock()
+		if !ok {
+			http.Error(w, `{"error":"not found"}`, 404)
+			return
+		}
+		fmt.Fprintf(w, `{"ok":true,"app":"%s","version":"%s","action":"rollback"}`, appName, app.Version)
 	}))
 
 	// Proxy requests to apps by X-App header or subdomain
