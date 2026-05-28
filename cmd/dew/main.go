@@ -23,6 +23,7 @@ import (
 
 	"github.com/solcreek/dew/internal/daemon"
 	"github.com/solcreek/dew/internal/detect"
+	"github.com/solcreek/dew/internal/services"
 	"github.com/solcreek/dew/internal/serialexec"
 	"github.com/solcreek/dew/internal/session"
 	"github.com/solcreek/dew/internal/vm"
@@ -35,6 +36,7 @@ const version = "0.1.0-dev"
 var flagJSON bool
 var flagStream bool
 var flagEvents bool
+var flagWith string
 var flagProfile string
 
 func dewDataDir() string {
@@ -300,6 +302,7 @@ Flags:
   --profile <name>      VM profile: standard (default) or minimal
   --disk <path>         Persistent disk image (created if absent, default 10GB)
   --forward <h:g>      Forward host port to guest (e.g. 3000:3000)
+  --with <services>    Start services alongside app (e.g. postgres,redis)
   --stream             Stream stdout/stderr in real time
   --events             NDJSON event stream (for agent integration)
   --json               Machine-readable JSON output (run command)
@@ -404,6 +407,12 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, err
 			}
 			cfg.Forwards = append(cfg.Forwards, fwd)
+		case "--with":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--with requires service names (e.g. postgres,redis)")
+			}
+			flagWith = args[i]
 		case "--stream":
 			flagStream = true
 		case "--events":
@@ -754,6 +763,10 @@ func cmdUp(args []string) error {
 
 	absDir, _ := filepath.Abs(dir)
 	flagProfile = proj.Profile
+	// --with requires containerd → upgrade to standard profile
+	if flagWith != "" && flagProfile != "standard" {
+		flagProfile = "standard"
+	}
 	cfg := vm.Config{
 		CPUs:     parsedCfg.CPUs,
 		MemoryMB: parsedCfg.MemoryMB,
@@ -871,6 +884,49 @@ func cmdUp(args []string) error {
 			if !flagJSON && !flagEvents {
 				fmt.Fprintf(os.Stderr, "  deps installed (%dms)\n", installMs)
 			}
+		}
+	}
+
+	// Start services (--with postgres,redis)
+	if flagWith != "" {
+		svcNames := strings.Split(flagWith, ",")
+		for _, name := range svcNames {
+			name = strings.TrimSpace(name)
+			svc := services.Lookup(name)
+			if svc == nil {
+				emit(map[string]interface{}{
+					"type": "service", "status": "failed", "name": name,
+					"error": "unknown service", "suggestion": "available: " + strings.Join(services.Names(), ", "),
+				})
+				if !flagJSON && !flagEvents {
+					fmt.Fprintf(os.Stderr, "  unknown service: %s\n", name)
+				}
+				continue
+			}
+			emit(map[string]interface{}{"type": "service", "status": "starting", "name": svc.Name, "port": svc.Port})
+			if !flagJSON && !flagEvents {
+				fmt.Fprintf(os.Stderr, "  starting %s (port %d)...\n", svc.Name, svc.Port)
+			}
+			runCmd := services.NerdctlRunCmd(*svc)
+			execInVM(runCmd)
+
+			// Add port forward for this service
+			cfg.Forwards = append(cfg.Forwards, vm.PortForward{HostPort: svc.Port, GuestPort: svc.Port})
+			go func(f vm.PortForward) {
+				ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", f.HostPort))
+				if err != nil {
+					return
+				}
+				for {
+					tcpConn, err := ln.Accept()
+					if err != nil {
+						return
+					}
+					go proxyToGuest(d, token, tcpConn, f.GuestPort)
+				}
+			}(vm.PortForward{HostPort: svc.Port, GuestPort: svc.Port})
+
+			emit(map[string]interface{}{"type": "service", "status": "started", "name": svc.Name, "port": svc.Port})
 		}
 	}
 
