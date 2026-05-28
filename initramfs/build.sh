@@ -209,6 +209,16 @@ hostname dew
 ip link set lo up
 
 # load kernel modules
+# Alpine virt kernel modules are under 6.12.91-0-virt/ but Apple VZ
+# reports uname -r as 6.12.91 (no suffix). Symlink so depmod/modprobe
+# can find the modules.
+KVER=$(uname -r)
+if [ -d /lib/modules ] && [ ! -d "/lib/modules/$KVER" ]; then
+    for d in /lib/modules/*/; do
+        ln -sf "$(basename "$d")" "/lib/modules/$KVER"
+        break
+    done
+fi
 depmod -a 2>/dev/null || true
 modprobe af_packet 2>/dev/null || true
 modprobe virtio_net 2>/dev/null || true
