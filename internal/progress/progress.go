@@ -108,7 +108,7 @@ func (s *Spinner) Done(url string) {
 	s.finish()
 	elapsed := time.Since(s.start)
 	fmt.Fprintf(os.Stderr, "\n  ✓ %s\n", url)
-	fmt.Fprintf(os.Stderr, "  %d steps, %.1fs\n\n", s.steps, elapsed.Seconds())
+	fmt.Fprintf(os.Stderr, "  ⚡ %d steps, %.1fs\n\n", s.steps, elapsed.Seconds())
 }
 
 // Timeout prints a timeout summary.
@@ -116,5 +116,5 @@ func (s *Spinner) Timeout(url string) {
 	s.finish()
 	elapsed := time.Since(s.start)
 	fmt.Fprintf(os.Stderr, "\n  ? %s — may still be starting\n", url)
-	fmt.Fprintf(os.Stderr, "  %d steps, %.1fs\n\n", s.steps, elapsed.Seconds())
+	fmt.Fprintf(os.Stderr, "  ⚡ %d steps, %.1fs\n\n", s.steps, elapsed.Seconds())
 }

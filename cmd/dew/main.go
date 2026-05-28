@@ -751,15 +751,12 @@ func cmdUp(args []string) error {
 	})
 
 	if !flagJSON && !flagEvents {
-		fmt.Fprintf(os.Stderr, "\n")
+		fmt.Fprintf(os.Stderr, "\n  💧 dew up\n\n")
 		fmt.Fprintf(os.Stderr, "  detected: %s", proj.Framework)
 		if proj.PackageMgr != "" {
 			fmt.Fprintf(os.Stderr, " (%s)", proj.PackageMgr)
 		}
-		fmt.Fprintf(os.Stderr, "\n")
-		fmt.Fprintf(os.Stderr, "  profile:  %s\n", proj.Profile)
-		fmt.Fprintf(os.Stderr, "  port:     %d\n", proj.Port)
-		fmt.Fprintf(os.Stderr, "\n")
+		fmt.Fprintf(os.Stderr, "\n\n")
 	}
 
 	absDir, _ := filepath.Abs(dir)
