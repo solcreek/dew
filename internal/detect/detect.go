@@ -15,8 +15,10 @@ type Project struct {
 	Framework  string // "vite", "nextjs", "astro", "nuxt", "sveltekit", "node", "django", "flask"
 	PackageMgr string // "npm", "yarn", "pnpm", "bun", "pip", "go"
 	DevCmd     string // full command to start dev server
+	BuildCmd   string // full command to build for production
 	InstallCmd string // full command to install dependencies
 	Port       int
+	Entry      string // production entry point (e.g. "server.ts")
 	Profile    string // recommended dew profile
 }
 
@@ -82,7 +84,9 @@ func (d *nodeDetector) Detect(dir string) *Project {
 	p.Framework = detectNodeFramework(dir)
 	p.InstallCmd = buildInstallCmd(p.PackageMgr)
 	p.DevCmd = buildDevCmd(p.PackageMgr, p.Framework, dir)
+	p.BuildCmd = buildBuildCmd(p.PackageMgr, dir)
 	p.Port = defaultPort(p.Framework)
+	p.Entry = detectEntry(dir)
 
 	return p
 }
@@ -149,6 +153,42 @@ func buildInstallCmd(mgr string) string {
 	default:
 		return "npm install --legacy-peer-deps"
 	}
+}
+
+func buildBuildCmd(mgr string, dir string) string {
+	scripts := readScripts(dir)
+	if _, ok := scripts["build"]; ok {
+		switch mgr {
+		case "yarn":
+			return "yarn build"
+		case "bun":
+			return "bun run build"
+		case "pnpm":
+			return "pnpm build"
+		default:
+			return "npm run build"
+		}
+	}
+	return ""
+}
+
+func detectEntry(dir string) string {
+	candidates := []string{"server.ts", "server.js", "index.ts", "index.js", "main.ts", "main.js", "app.ts", "app.js"}
+	for _, c := range candidates {
+		if exists(filepath.Join(dir, c)) {
+			return c
+		}
+	}
+	pkg := readPkgJSON(dir)
+	if pkg.Scripts != nil {
+		if start, ok := pkg.Scripts["start"]; ok {
+			parts := strings.Fields(start)
+			if len(parts) >= 2 {
+				return parts[len(parts)-1]
+			}
+		}
+	}
+	return ""
 }
 
 func buildDevCmd(mgr, framework, dir string) string {
