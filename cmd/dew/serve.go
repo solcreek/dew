@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,26 +20,34 @@ import (
 )
 
 type serveState struct {
-	mu   sync.RWMutex
-	apps map[string]*appRecord
+	mu       sync.RWMutex
+	apps     map[string]*appRecord
+	nextPort int
+	dataDir  string
 }
 
 type appRecord struct {
-	Name      string `json:"name"`
-	Type      string `json:"type"`
-	Version   string `json:"version"`
-	Status    string `json:"status"`
-	Port      int    `json:"port,omitempty"`
-	DeployDir string `json:"deploy_dir"`
-	DeployedAt string `json:"deployed_at"`
+	Name       string       `json:"name"`
+	Type       string       `json:"type"`
+	Version    string       `json:"version"`
+	Status     string       `json:"status"`
+	Port       int          `json:"port,omitempty"`
+	URL        string       `json:"url,omitempty"`
+	DeployDir  string       `json:"deploy_dir"`
+	DeployedAt string       `json:"deployed_at"`
+	cmd        *exec.Cmd
+	stop       func()
 }
 
-var state = &serveState{apps: make(map[string]*appRecord)}
+var state = &serveState{
+	apps:     make(map[string]*appRecord),
+	nextPort: 10000,
+}
 
 func cmdServe(args []string) error {
 	port := "9080"
-	dataDir := "/var/dew"
 	tokenFile := ""
+	state.dataDir = "/var/dew"
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -49,7 +59,7 @@ func cmdServe(args []string) error {
 		case "--data-dir":
 			i++
 			if i < len(args) {
-				dataDir = args[i]
+				state.dataDir = args[i]
 			}
 		case "--token-file":
 			i++
@@ -60,7 +70,7 @@ func cmdServe(args []string) error {
 	}
 
 	if tokenFile == "" {
-		tokenFile = filepath.Join(dataDir, "token")
+		tokenFile = filepath.Join(state.dataDir, "token")
 	}
 
 	token, err := os.ReadFile(tokenFile)
@@ -70,9 +80,9 @@ func cmdServe(args []string) error {
 	serverToken := strings.TrimSpace(string(token))
 
 	for _, dir := range []string{
-		filepath.Join(dataDir, "apps"),
-		filepath.Join(dataDir, "data"),
-		filepath.Join(dataDir, "deploys"),
+		filepath.Join(state.dataDir, "apps"),
+		filepath.Join(state.dataDir, "data"),
+		filepath.Join(state.dataDir, "deploys"),
 	} {
 		os.MkdirAll(dir, 0755)
 	}
@@ -108,14 +118,11 @@ func cmdServe(args []string) error {
 
 	mux.HandleFunc("POST /v1/apps/{app}/deploy", auth(func(w http.ResponseWriter, r *http.Request) {
 		appName := r.PathValue("app")
-		contentType := r.Header.Get("Content-Type")
-
-		if contentType == "application/json" {
-			handleImageDeploy(w, r, appName, dataDir)
+		if r.Header.Get("Content-Type") == "application/json" {
+			handleImageDeploy(w, r, appName)
 			return
 		}
-
-		handleTarballDeploy(w, r, appName, dataDir)
+		handleTarballDeploy(w, r, appName)
 	}))
 
 	mux.HandleFunc("GET /v1/apps/{app}/health", auth(func(w http.ResponseWriter, r *http.Request) {
@@ -133,12 +140,26 @@ func cmdServe(args []string) error {
 
 	mux.HandleFunc("DELETE /v1/apps/{app}", auth(func(w http.ResponseWriter, r *http.Request) {
 		appName := r.PathValue("app")
-		state.mu.Lock()
-		delete(state.apps, appName)
-		state.mu.Unlock()
+		stopApp(appName)
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"ok":true,"app":"%s","action":"deleted"}`, appName)
 	}))
+
+	// Proxy requests to apps by X-App header or subdomain
+	mux.HandleFunc("GET /proxy/{app}/{path...}", func(w http.ResponseWriter, r *http.Request) {
+		appName := r.PathValue("app")
+		state.mu.RLock()
+		app, ok := state.apps[appName]
+		state.mu.RUnlock()
+		if !ok || app.Port == 0 {
+			http.Error(w, "app not found", 404)
+			return
+		}
+		target, _ := url.Parse(fmt.Sprintf("http://localhost:%d", app.Port))
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		r.URL.Path = "/" + r.PathValue("path")
+		proxy.ServeHTTP(w, r)
+	})
 
 	addr := ":" + port
 	fmt.Fprintf(os.Stderr, "  💧 dew serve listening on %s\n", addr)
@@ -147,8 +168,29 @@ func cmdServe(args []string) error {
 	return http.ListenAndServe(addr, mux)
 }
 
-func handleTarballDeploy(w http.ResponseWriter, r *http.Request, appName, dataDir string) {
+func allocatePort() int {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	p := state.nextPort
+	state.nextPort++
+	return p
+}
+
+func stopApp(name string) {
+	state.mu.Lock()
+	app, ok := state.apps[name]
+	if ok {
+		if app.stop != nil {
+			app.stop()
+		}
+		delete(state.apps, name)
+	}
+	state.mu.Unlock()
+}
+
+func handleTarballDeploy(w http.ResponseWriter, r *http.Request, appName string) {
 	checksumHeader := r.Header.Get("X-Deploy-Checksum")
+	dataDir := state.dataDir
 
 	deployID := fmt.Sprintf("deploy_%d", time.Now().Unix())
 	deployDir := filepath.Join(dataDir, "deploys", appName, deployID)
@@ -165,13 +207,13 @@ func handleTarballDeploy(w http.ResponseWriter, r *http.Request, appName, dataDi
 		}
 	}
 
+	// Receive tarball
 	tarPath := filepath.Join(deployDir, "app.tar.gz")
 	f, err := os.Create(tarPath)
 	if err != nil {
 		sendEvent("receive", "fail", fmt.Sprintf(",\"error\":%q", err.Error()))
 		return
 	}
-
 	hash := sha256.New()
 	written, err := io.Copy(io.MultiWriter(f, hash), r.Body)
 	f.Close()
@@ -181,6 +223,7 @@ func handleTarballDeploy(w http.ResponseWriter, r *http.Request, appName, dataDi
 	}
 	sendEvent("receive", "done", fmt.Sprintf(",\"bytes\":%d", written))
 
+	// Verify checksum
 	checksum := "sha256:" + hex.EncodeToString(hash.Sum(nil))
 	if checksumHeader != "" && checksumHeader != checksum {
 		sendEvent("verify", "fail", ",\"error\":\"checksum mismatch\"")
@@ -188,64 +231,212 @@ func handleTarballDeploy(w http.ResponseWriter, r *http.Request, appName, dataDi
 	}
 	sendEvent("verify", "done", fmt.Sprintf(",\"checksum\":%q", checksum))
 
+	// Extract
 	appDir := filepath.Join(dataDir, "apps", appName)
 	os.MkdirAll(appDir, 0755)
-
-	extractCmd := fmt.Sprintf("tar xzf %s -C %s", tarPath, appDir)
-	if err := runShell(extractCmd); err != nil {
+	if err := runShell(fmt.Sprintf("tar xzf %s -C %s", tarPath, appDir)); err != nil {
 		sendEvent("extract", "fail", fmt.Sprintf(",\"error\":%q", err.Error()))
 		return
 	}
 	sendEvent("extract", "done", fmt.Sprintf(",\"path\":%q", appDir))
 
+	// Read manifest
 	var manifest buildManifest
-	manifestPath := filepath.Join(appDir, "manifest.json")
-	if data, err := os.ReadFile(manifestPath); err == nil {
+	if data, err := os.ReadFile(filepath.Join(appDir, "manifest.json")); err == nil {
 		json.Unmarshal(data, &manifest)
 	}
 
+	// Stop old version
+	stopApp(appName)
+
+	// Start app
+	appPort := allocatePort()
+	appURL := fmt.Sprintf("http://localhost:%d", appPort)
+
+	var stopFn func()
+	switch manifest.Type {
+	case "static":
+		stopFn = startStaticServer(appDir, appPort)
+		sendEvent("start", "done", fmt.Sprintf(",\"mode\":\"static\",\"port\":%d", appPort))
+	default:
+		var err error
+		stopFn, err = startProcessServer(appDir, manifest, appPort)
+		if err != nil {
+			sendEvent("start", "fail", fmt.Sprintf(",\"error\":%q", err.Error()))
+			return
+		}
+		sendEvent("start", "done", fmt.Sprintf(",\"mode\":\"process\",\"port\":%d", appPort))
+	}
+
+	// Health check
+	healthy := false
+	for i := 0; i < 15; i++ {
+		time.Sleep(time.Second)
+		resp, err := http.Get(appURL + "/")
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+				healthy = true
+				break
+			}
+		}
+	}
+
+	status := "running"
+	if !healthy {
+		status = "unhealthy"
+	}
+	sendEvent("health", status, fmt.Sprintf(",\"url\":%q", appURL))
+
+	// Register
 	state.mu.Lock()
 	state.apps[appName] = &appRecord{
 		Name:       appName,
 		Type:       manifest.Type,
 		Version:    manifest.Version,
-		Status:     "deployed",
-		Port:       manifest.Port,
+		Status:     status,
+		Port:       appPort,
+		URL:        appURL,
 		DeployDir:  deployDir,
 		DeployedAt: time.Now().UTC().Format(time.RFC3339),
+		stop:       stopFn,
 	}
 	state.mu.Unlock()
 
-	sendEvent("start", "done", fmt.Sprintf(",\"app\":%q", appName))
-
-	fmt.Fprintf(w, "event: done\ndata: {\"ok\":true,\"app\":%q,\"version\":%q,\"deploy_id\":%q}\n\n",
-		appName, manifest.Version, deployID)
+	fmt.Fprintf(w, "event: done\ndata: {\"ok\":true,\"app\":%q,\"version\":%q,\"url\":%q,\"port\":%d}\n\n",
+		appName, manifest.Version, appURL, appPort)
 	if flusher != nil {
 		flusher.Flush()
 	}
 }
 
-func handleImageDeploy(w http.ResponseWriter, r *http.Request, appName, dataDir string) {
+func startStaticServer(appDir string, port int) func() {
+	// Find the static output dir
+	staticDir := appDir
+	for _, candidate := range []string{"app/dist", "app/build", "app/public", "dist", "build"} {
+		d := filepath.Join(appDir, candidate)
+		if info, err := os.Stat(d); err == nil && info.IsDir() {
+			staticDir = d
+			break
+		}
+	}
+
+	mux := http.NewServeMux()
+	fs := http.FileServer(http.Dir(staticDir))
+	mux.Handle("/", fs)
+
+	srv := &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: mux}
+	go srv.ListenAndServe()
+
+	return func() { srv.Close() }
+}
+
+func startProcessServer(appDir string, manifest buildManifest, port int) (func(), error) {
+	entry := manifest.Entry
+	if entry == "" {
+		return nil, fmt.Errorf("no entry point in manifest")
+	}
+
+	entryPath := filepath.Join(appDir, "app", entry)
+	if _, err := os.Stat(entryPath); err != nil {
+		entryPath = filepath.Join(appDir, entry)
+	}
+
+	var cmdName string
+	var cmdArgs []string
+	switch manifest.Runtime {
+	case "node":
+		if strings.HasSuffix(entry, ".ts") {
+			cmdName = "bun"
+		} else {
+			cmdName = "node"
+		}
+		cmdArgs = []string{entryPath}
+	case "python":
+		cmdName = "python3"
+		cmdArgs = []string{entryPath}
+	default:
+		cmdName = "node"
+		cmdArgs = []string{entryPath}
+	}
+
+	cmd := exec.Command(cmdName, cmdArgs...)
+	cmd.Dir = filepath.Dir(entryPath)
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("PORT=%d", port),
+		"NODE_ENV=production",
+	)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start %s: %w", entry, err)
+	}
+
+	return func() {
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+			cmd.Wait()
+		}
+	}, nil
+}
+
+func handleImageDeploy(w http.ResponseWriter, r *http.Request, appName string) {
 	var body struct {
 		Image string `json:"image"`
+		Port  int    `json:"port"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Image == "" {
 		http.Error(w, `{"error":"image field required"}`, 400)
 		return
 	}
 
+	containerPort := body.Port
+	if containerPort == 0 {
+		containerPort = 80
+	}
+	hostPort := allocatePort()
+
+	stopApp(appName)
+
+	// Try nerdctl first, then docker
+	runtime := "nerdctl"
+	if _, err := exec.LookPath("nerdctl"); err != nil {
+		runtime = "docker"
+	}
+
+	cmd := exec.Command(runtime, "run", "-d",
+		"--name", "dew-"+appName,
+		"-p", fmt.Sprintf("%d:%d", hostPort, containerPort),
+		body.Image,
+	)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"container start failed: %s"}`, err), 500)
+		return
+	}
+
+	appURL := fmt.Sprintf("http://localhost:%d", hostPort)
+
 	state.mu.Lock()
 	state.apps[appName] = &appRecord{
 		Name:       appName,
 		Type:       "image",
 		Version:    body.Image,
-		Status:     "deployed",
+		Status:     "running",
+		Port:       hostPort,
+		URL:        appURL,
 		DeployedAt: time.Now().UTC().Format(time.RFC3339),
+		stop: func() {
+			exec.Command(runtime, "rm", "-f", "dew-"+appName).Run()
+		},
 	}
 	state.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"ok":true,"app":"%s","image":"%s"}`, appName, body.Image)
+	fmt.Fprintf(w, `{"ok":true,"app":"%s","image":"%s","url":"%s","port":%d}`, appName, body.Image, appURL, hostPort)
 }
 
 func runShell(cmd string) error {
