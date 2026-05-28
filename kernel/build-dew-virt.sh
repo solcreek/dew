@@ -16,7 +16,7 @@ KERNEL_VERSION="${KERNEL_VERSION:-6.12.91}"
 KERNEL_SERIES="${KERNEL_VERSION%.*}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORK="${SCRIPT_DIR}/build"
-OUT="${SCRIPT_DIR}/vmlinuz-dew"
+OUT="${SCRIPT_DIR}/vmlinuz-dew-virt"
 
 echo "=== Building Dew kernel ${KERNEL_VERSION} (x86_64, monolithic) ==="
 

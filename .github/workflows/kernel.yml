@@ -17,8 +17,8 @@ jobs:
 
       - name: Build x86_64 monolithic kernel
         run: |
-          docker build -f kernel/Dockerfile.dew --output type=local,dest=out kernel/
-          mv out/vmlinuz-dew vmlinuz-x86_64
+          docker build -f kernel/Dockerfile.dew-virt --output type=local,dest=out kernel/
+          mv out/vmlinuz-dew-virt vmlinuz-x86_64
           ls -lh vmlinuz-x86_64
           sha256sum vmlinuz-x86_64
 

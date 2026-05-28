@@ -16,11 +16,11 @@ WORKDIR /linux-${KERNEL_VERSION}
 RUN make x86_64_defconfig
 
 # Dew VM monolithic config: all containerd features built-in, no modules
-COPY config-dew-x86_64.fragment /tmp/
-RUN cat /tmp/config-dew-x86_64.fragment >> .config \
+COPY config-dew-virt-x86_64.fragment /tmp/
+RUN cat /tmp/config-dew-virt-x86_64.fragment >> .config \
     && make olddefconfig \
     && make -j"$(nproc)" bzImage \
-    && cp arch/x86/boot/bzImage /vmlinuz-dew
+    && cp arch/x86/boot/bzImage /vmlinuz-dew-virt
 
 FROM scratch
-COPY --from=builder /vmlinuz-dew /vmlinuz-dew
+COPY --from=builder /vmlinuz-dew-virt /vmlinuz-dew-virt
