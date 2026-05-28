@@ -298,14 +298,16 @@ if ip link show eth0 >/dev/null 2>&1; then
     echo "nameserver 1.1.1.1" > /etc/resolv.conf
 fi
 
-# virtiofs mounts
+# virtiofs mounts (need fuse + virtiofs modules after switch_root)
+modprobe fuse 2>/dev/null || true
+modprobe virtiofs 2>/dev/null || true
 for share in $(cat /proc/cmdline | tr ' ' '\n' | grep '^dew.share='); do
     tag="${share#dew.share=}"
     tag_name="${tag%%:*}"
     mount_point="${tag#*:}"
     if [ -n "$tag_name" ] && [ -n "$mount_point" ]; then
         mkdir -p "$mount_point"
-        mount -t virtiofs "$tag_name" "$mount_point" 2>/dev/null || true
+        mount -t virtiofs "$tag_name" "$mount_point" || echo "virtiofs mount failed: $tag_name → $mount_point"
     fi
 done
 

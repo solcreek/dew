@@ -285,6 +285,11 @@ func cmdStart(args []string) error {
 		cfg.VsockPort = uint32(vsockProto.DefaultPort)
 	}
 
+	// Pass shared dir mount points to guest via kernel cmdline
+	for _, sd := range cfg.SharedDirs {
+		cfg.CmdLine += fmt.Sprintf(" dew.share=%s:/%s", sd.Tag, sd.Tag)
+	}
+
 	token := generateToken()
 
 	if len(cmdArgs) > 0 {
