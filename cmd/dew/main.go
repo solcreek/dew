@@ -23,6 +23,7 @@ import (
 
 	"github.com/solcreek/dew/internal/daemon"
 	"github.com/solcreek/dew/internal/detect"
+	"github.com/solcreek/dew/internal/progress"
 	"github.com/solcreek/dew/internal/services"
 	"github.com/solcreek/dew/internal/serialexec"
 	"github.com/solcreek/dew/internal/session"
@@ -793,6 +794,17 @@ func cmdUp(args []string) error {
 
 	token := generateToken()
 
+	// Calculate total steps for spinner
+	totalSteps := 3 // boot + install + serve
+	if flagWith != "" {
+		totalSteps += len(strings.Split(flagWith, ","))
+	}
+	totalSteps++ // health check
+	var spin *progress.Spinner
+	if !flagJSON && !flagEvents {
+		spin = progress.New(totalSteps)
+	}
+
 	// Remove stale socket
 	os.Remove(daemon.SocketPath(""))
 
@@ -802,8 +814,8 @@ func cmdUp(args []string) error {
 	}
 
 	emit(map[string]interface{}{"type": "boot", "status": "starting"})
-	if !flagJSON && !flagEvents {
-		fmt.Fprintf(os.Stderr, "  booting...")
+	if spin != nil {
+		spin.Step("booting")
 	}
 	start := time.Now()
 
@@ -816,9 +828,6 @@ func cmdUp(args []string) error {
 	}
 	bootMs := time.Since(start).Milliseconds()
 	emit(map[string]interface{}{"type": "boot", "status": "ready", "elapsed_ms": bootMs})
-	if !flagJSON && !flagEvents {
-		fmt.Fprintf(os.Stderr, " %dms\n", bootMs)
-	}
 
 	// Wait for agent + inject token
 	tokenSent := false
@@ -831,8 +840,8 @@ func cmdUp(args []string) error {
 	}
 	if !tokenSent {
 		emit(map[string]interface{}{"type": "agent", "status": "failed", "error": "token handshake timeout"})
-		if !flagJSON && !flagEvents {
-			fmt.Fprintf(os.Stderr, "  warning: agent not ready\n")
+		if spin != nil {
+			spin.Fail("agent not ready")
 		}
 	}
 
@@ -857,8 +866,8 @@ func cmdUp(args []string) error {
 	// node_modules on VM tmpfs (not on host via virtiofs)
 	if proj.InstallCmd != "" {
 		emit(map[string]interface{}{"type": "install", "status": "starting", "cmd": proj.InstallCmd})
-		if !flagJSON && !flagEvents {
-			fmt.Fprintf(os.Stderr, "  installing deps...\n")
+		if spin != nil {
+			spin.Step("installing deps")
 		}
 		t := time.Now()
 		result, err := execInVM("mkdir -p /tmp/nm && cd /app && ln -sf /tmp/nm node_modules && " + proj.InstallCmd)
@@ -876,14 +885,11 @@ func cmdUp(args []string) error {
 				"type": "install", "status": "failed",
 				"elapsed_ms": installMs, "error": errMsg, "suggestion": suggestion,
 			})
-			if !flagJSON && !flagEvents {
-				fmt.Fprintf(os.Stderr, "  install failed (%dms)\n", installMs)
+			if spin != nil {
+				spin.Fail("install failed")
 			}
 		} else {
 			emit(map[string]interface{}{"type": "install", "status": "done", "elapsed_ms": installMs})
-			if !flagJSON && !flagEvents {
-				fmt.Fprintf(os.Stderr, "  deps installed (%dms)\n", installMs)
-			}
 		}
 	}
 
@@ -898,14 +904,14 @@ func cmdUp(args []string) error {
 					"type": "service", "status": "failed", "name": name,
 					"error": "unknown service", "suggestion": "available: " + strings.Join(services.Names(), ", "),
 				})
-				if !flagJSON && !flagEvents {
-					fmt.Fprintf(os.Stderr, "  unknown service: %s\n", name)
+				if spin != nil {
+					spin.Fail(fmt.Sprintf("unknown service: %s", name))
 				}
 				continue
 			}
 			emit(map[string]interface{}{"type": "service", "status": "starting", "name": svc.Name, "port": svc.Port})
-			if !flagJSON && !flagEvents {
-				fmt.Fprintf(os.Stderr, "  starting %s (port %d)...\n", svc.Name, svc.Port)
+			if spin != nil {
+				spin.Step(fmt.Sprintf("%s (port %d)", svc.Name, svc.Port))
 			}
 			runCmd := services.NerdctlRunCmd(*svc)
 			execInVM(runCmd)
@@ -932,15 +938,10 @@ func cmdUp(args []string) error {
 
 	// Start dev server
 	emit(map[string]interface{}{"type": "serve", "status": "starting", "cmd": proj.DevCmd})
-	if !flagJSON && !flagEvents {
-		fmt.Fprintf(os.Stderr, "  starting dev server...\n")
+	if spin != nil {
+		spin.Step("dev server")
 	}
 	execInVM("cd /app && " + proj.DevCmd + " &")
-
-	// Health check — poll until dev server responds
-	if !flagJSON && !flagEvents {
-		fmt.Fprintf(os.Stderr, "  waiting for server...")
-	}
 	healthy := false
 	url := fmt.Sprintf("http://localhost:%d/", proj.Port)
 	for i := 0; i < 30; i++ {
@@ -953,7 +954,8 @@ func cmdUp(args []string) error {
 		}
 	}
 
-	totalMs := time.Since(start).Milliseconds()
+	totalElapsed := time.Since(start)
+	totalMs := totalElapsed.Milliseconds()
 	if healthy {
 		emit(map[string]interface{}{
 			"type": "health", "status": "ok",
@@ -965,8 +967,9 @@ func cmdUp(args []string) error {
 				"status": "ready", "url": url, "port": proj.Port,
 				"framework": proj.Framework, "elapsed_ms": totalMs,
 			})
-		} else if !flagEvents {
-			fmt.Fprintf(os.Stderr, " ok\n\n  ✓ http://localhost:%d\n\n  Ctrl+C to stop\n\n", proj.Port)
+		} else if spin != nil {
+			spin.Done(url, totalElapsed)
+			fmt.Fprintf(os.Stderr, "  Ctrl+C to stop\n\n")
 		}
 	} else {
 		emit(map[string]interface{}{
@@ -980,8 +983,9 @@ func cmdUp(args []string) error {
 				"status": "timeout", "url": url, "port": proj.Port,
 				"framework": proj.Framework, "elapsed_ms": totalMs,
 			})
-		} else if !flagEvents {
-			fmt.Fprintf(os.Stderr, " timeout\n\n  ? http://localhost:%d (may still be starting)\n\n  Ctrl+C to stop\n\n", proj.Port)
+		} else if spin != nil {
+			spin.Timeout(url, totalElapsed)
+			fmt.Fprintf(os.Stderr, "  Ctrl+C to stop\n\n")
 		}
 	}
 
