@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`dew build`** — package app into deploy tarball with manifest.json. Detects runtime, runs build command, generates checksum. Static site detection (`type: "static"`) preserves build output even if in .gitignore. Skips node_modules, lock files, .claude/, .agents/, *.db
+- **`dew share [port]`** — temporary public HTTPS URL via Cloudflare Quick Tunnel. Auto-downloads cloudflared on first use. Verifies tunnel reachability before printing URL
+- **`dew server create/list/destroy`** — provision VPS from local machine via capstan (Hetzner, DigitalOcean, Linode, Vultr). Zero-SSH setup with cloud-init. Auto-saves credentials
+- **`BuildCmd` and `Entry` fields** in project detection for production builds
+
+### Fixed
+
+- Tarball packaging crash on `.claude/` and `.agents/` directories (non-regular file handling)
+- Build output directories (`dist/`, `build/`, `.next/`) excluded by .gitignore parsing — now preserved
+
 ## [0.2.0] - 2026-05-28
 
 ### Added
