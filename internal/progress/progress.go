@@ -1,5 +1,5 @@
-// Package progress provides a terminal spinner with elapsed time
-// and step counter for CLI feedback.
+// Package progress provides a terminal spinner for CLI feedback.
+// Inspired by Turborepo's clean output style.
 package progress
 
 import (
@@ -11,30 +11,27 @@ import (
 
 var frames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// Spinner displays an animated spinner with elapsed time on stderr.
+// Spinner displays an animated spinner on stderr.
 type Spinner struct {
 	mu      sync.Mutex
-	step    int
-	total   int
 	label   string
+	steps   int
 	start   time.Time
 	done    chan struct{}
 	stopped bool
 }
 
-// New creates a spinner with the given total step count.
-func New(totalSteps int) *Spinner {
-	return &Spinner{total: totalSteps}
+// New creates a spinner. Call Step() to start each phase.
+func New() *Spinner {
+	return &Spinner{start: time.Now()}
 }
 
-// Step starts a new step with the given label. Stops the previous
-// spinner if running.
+// Step starts a new phase. Previous phase gets a ✓ line.
 func (s *Spinner) Step(label string) {
-	s.Stop()
+	s.finish()
 	s.mu.Lock()
-	s.step++
+	s.steps++
 	s.label = label
-	s.start = time.Now()
 	s.stopped = false
 	s.done = make(chan struct{})
 	s.mu.Unlock()
@@ -53,36 +50,31 @@ func (s *Spinner) spin() {
 			return
 		case <-ticker.C:
 			s.mu.Lock()
-			elapsed := time.Since(s.start)
 			frame := frames[i%len(frames)]
-			fmt.Fprintf(os.Stderr, "\r  [%d/%d] %s %s %.1fs",
-				s.step, s.total, s.label, frame, elapsed.Seconds())
+			fmt.Fprintf(os.Stderr, "\r  %s %s", s.label, frame)
 			s.mu.Unlock()
 			i++
 		}
 	}
 }
 
-// Stop halts the current spinner and prints the final elapsed time.
-func (s *Spinner) Stop() {
+// finish stops the current spinner and prints ✓.
+func (s *Spinner) finish() {
 	s.mu.Lock()
 	if s.stopped || s.done == nil {
 		s.mu.Unlock()
 		return
 	}
 	s.stopped = true
-	elapsed := time.Since(s.start)
-	step := s.step
-	total := s.total
 	label := s.label
 	ch := s.done
 	s.mu.Unlock()
 
 	close(ch)
-	fmt.Fprintf(os.Stderr, "\r  [%d/%d] %s ✓ %.1fs\n", step, total, label, elapsed.Seconds())
+	fmt.Fprintf(os.Stderr, "\r  %s ✓\n", label)
 }
 
-// Fail halts the current spinner and prints a failure indicator.
+// Fail stops the current spinner and prints ✗.
 func (s *Spinner) Fail(reason string) {
 	s.mu.Lock()
 	if s.stopped || s.done == nil {
@@ -90,25 +82,39 @@ func (s *Spinner) Fail(reason string) {
 		return
 	}
 	s.stopped = true
-	elapsed := time.Since(s.start)
-	step := s.step
-	total := s.total
 	label := s.label
 	ch := s.done
 	s.mu.Unlock()
 
 	close(ch)
-	fmt.Fprintf(os.Stderr, "\r  [%d/%d] %s ✗ %.1fs — %s\n", step, total, label, elapsed.Seconds(), reason)
+	fmt.Fprintf(os.Stderr, "\r  %s ✗ %s\n", label, reason)
 }
 
-// Done prints the final summary line.
-func (s *Spinner) Done(url string, totalElapsed time.Duration) {
-	s.Stop()
-	fmt.Fprintf(os.Stderr, "\n  ✓ %s (%.1fs)\n\n", url, totalElapsed.Seconds())
+// Stop halts the spinner without printing anything.
+func (s *Spinner) Stop() {
+	s.mu.Lock()
+	if s.stopped || s.done == nil {
+		s.mu.Unlock()
+		return
+	}
+	s.stopped = true
+	ch := s.done
+	s.mu.Unlock()
+	close(ch)
+}
+
+// Done prints the final summary.
+func (s *Spinner) Done(url string) {
+	s.finish()
+	elapsed := time.Since(s.start)
+	fmt.Fprintf(os.Stderr, "\n  ✓ %s\n", url)
+	fmt.Fprintf(os.Stderr, "  %d steps, %.1fs\n\n", s.steps, elapsed.Seconds())
 }
 
 // Timeout prints a timeout summary.
-func (s *Spinner) Timeout(url string, totalElapsed time.Duration) {
-	s.Stop()
-	fmt.Fprintf(os.Stderr, "\n  ? %s — may still be starting (%.1fs)\n\n", url, totalElapsed.Seconds())
+func (s *Spinner) Timeout(url string) {
+	s.finish()
+	elapsed := time.Since(s.start)
+	fmt.Fprintf(os.Stderr, "\n  ? %s — may still be starting\n", url)
+	fmt.Fprintf(os.Stderr, "  %d steps, %.1fs\n\n", s.steps, elapsed.Seconds())
 }

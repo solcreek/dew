@@ -794,15 +794,9 @@ func cmdUp(args []string) error {
 
 	token := generateToken()
 
-	// Calculate total steps for spinner
-	totalSteps := 3 // boot + install + serve
-	if flagWith != "" {
-		totalSteps += len(strings.Split(flagWith, ","))
-	}
-	totalSteps++ // health check
 	var spin *progress.Spinner
 	if !flagJSON && !flagEvents {
-		spin = progress.New(totalSteps)
+		spin = progress.New()
 	}
 
 	// Remove stale socket
@@ -968,8 +962,8 @@ func cmdUp(args []string) error {
 				"framework": proj.Framework, "elapsed_ms": totalMs,
 			})
 		} else if spin != nil {
-			spin.Done(url, totalElapsed)
-			fmt.Fprintf(os.Stderr, "  Ctrl+C to stop\n\n")
+			spin.Done(url)
+			fmt.Fprintf(os.Stderr, "  Ctrl+C to stop\n")
 		}
 	} else {
 		emit(map[string]interface{}{
@@ -984,8 +978,8 @@ func cmdUp(args []string) error {
 				"framework": proj.Framework, "elapsed_ms": totalMs,
 			})
 		} else if spin != nil {
-			spin.Timeout(url, totalElapsed)
-			fmt.Fprintf(os.Stderr, "  Ctrl+C to stop\n\n")
+			spin.Timeout(url)
+			fmt.Fprintf(os.Stderr, "  Ctrl+C to stop\n")
 		}
 	}
 
