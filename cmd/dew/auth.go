@@ -5,8 +5,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 )
 
 func cmdAuth(args []string) error {
@@ -43,24 +41,15 @@ func cmdAuthSet(args []string) error {
 }
 
 func cmdAuthList() error {
-	path := filepath.Join(dewConfigDir(), "credentials")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Println("No saved credentials.")
-			return nil
-		}
-		return err
+	store := loadCredentialStore()
+	if len(store.Credentials) == 0 {
+		fmt.Println("No saved credentials.")
+		return nil
 	}
-
 	fmt.Printf("%-30s %s\n", "HOST", "TOKEN")
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 2 {
-			token := fields[1]
-			masked := token[:min(10, len(token))] + "..." + token[max(0, len(token)-4):]
-			fmt.Printf("%-30s %s\n", fields[0], masked)
-		}
+	for host, token := range store.Credentials {
+		masked := token[:min(10, len(token))] + "..." + token[max(0, len(token)-4):]
+		fmt.Printf("%-30s %s\n", host, masked)
 	}
 	return nil
 }

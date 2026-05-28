@@ -7,11 +7,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/solcreek/capstan"
@@ -360,94 +360,101 @@ func dewConfigDir() string {
 	return dir
 }
 
-func saveCredentials(ip, token string) error {
-	path := filepath.Join(dewConfigDir(), "credentials")
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+// ─── Credential storage (JSON) ─────────────────────────────────────
+
+type credentialStore struct {
+	Credentials map[string]string `json:"credentials"`
+}
+
+func loadCredentialStore() *credentialStore {
+	path := filepath.Join(dewConfigDir(), "credentials.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return &credentialStore{Credentials: make(map[string]string)}
+	}
+	var store credentialStore
+	if json.Unmarshal(data, &store) != nil || store.Credentials == nil {
+		return &credentialStore{Credentials: make(map[string]string)}
+	}
+	return &store
+}
+
+func (s *credentialStore) save() error {
+	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = fmt.Fprintf(f, "%s %s\n", ip, token)
-	return err
+	return os.WriteFile(filepath.Join(dewConfigDir(), "credentials.json"), data, 0600)
 }
 
-func removeCredentials(ip string) {
-	path := filepath.Join(dewConfigDir(), "credentials")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	var lines []string
-	for _, line := range strings.Split(string(data), "\n") {
-		if line != "" && !strings.HasPrefix(line, ip+" ") {
-			lines = append(lines, line)
-		}
-	}
-	os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600)
+func saveCredentials(host, token string) error {
+	store := loadCredentialStore()
+	store.Credentials[host] = token
+	return store.save()
 }
 
-// ─── Server record storage ─────────────────────────────────────────
+func removeCredentials(host string) {
+	store := loadCredentialStore()
+	delete(store.Credentials, host)
+	store.save()
+}
+
+// ─── Server record storage (JSON) ───────────────────────────────────
 
 type serverRecord struct {
-	Provider string
-	ID       string
-	Name     string
-	IP       string
-	Region   string
-	Plan     string
+	Provider string `json:"provider"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	IP       string `json:"ip"`
+	Region   string `json:"region"`
+	Plan     string `json:"plan"`
+}
+
+type serverStore struct {
+	Servers []serverRecord `json:"servers"`
+}
+
+func loadServerStore() *serverStore {
+	path := filepath.Join(dewConfigDir(), "servers.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return &serverStore{}
+	}
+	var store serverStore
+	json.Unmarshal(data, &store)
+	return &store
+}
+
+func (s *serverStore) save() error {
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dewConfigDir(), "servers.json"), data, 0600)
 }
 
 func saveServer(provider capstan.ProviderName, id, name, ip, region, plan string) error {
-	path := filepath.Join(dewConfigDir(), "servers")
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = fmt.Fprintf(f, "%s %s %s %s %s %s\n", provider, id, name, ip, region, plan)
-	return err
+	store := loadServerStore()
+	store.Servers = append(store.Servers, serverRecord{
+		Provider: string(provider), ID: id, Name: name, IP: ip, Region: region, Plan: plan,
+	})
+	return store.save()
 }
 
 func loadServers() ([]serverRecord, error) {
-	path := filepath.Join(dewConfigDir(), "servers")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var servers []serverRecord
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 6 {
-			servers = append(servers, serverRecord{
-				Provider: fields[0],
-				ID:       fields[1],
-				Name:     fields[2],
-				IP:       fields[3],
-				Region:   fields[4],
-				Plan:     fields[5],
-			})
-		}
-	}
-	return servers, nil
+	return loadServerStore().Servers, nil
 }
 
 func removeServer(ip string) {
-	path := filepath.Join(dewConfigDir(), "servers")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	var lines []string
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 4 && fields[3] != ip {
-			lines = append(lines, line)
+	store := loadServerStore()
+	var kept []serverRecord
+	for _, s := range store.Servers {
+		if s.IP != ip {
+			kept = append(kept, s)
 		}
 	}
-	os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600)
+	store.Servers = kept
+	store.save()
 }
 
 func loadProviderToken(name capstan.ProviderName) (string, error) {
@@ -463,13 +470,13 @@ func loadProviderToken(name capstan.ProviderName) (string, error) {
 		return v, nil
 	}
 
-	path := filepath.Join(dewConfigDir(), "providers")
+	path := filepath.Join(dewConfigDir(), "providers.json")
 	data, err := os.ReadFile(path)
 	if err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 && fields[0] == string(name) {
-				return fields[1], nil
+		var providers map[string]string
+		if json.Unmarshal(data, &providers) == nil {
+			if t, ok := providers[string(name)]; ok {
+				return t, nil
 			}
 		}
 	}

@@ -251,14 +251,13 @@ func loadDeployToken(target string) (string, error) {
 		return v, nil
 	}
 
-	path := filepath.Join(dewConfigDir(), "credentials")
-	data, err := os.ReadFile(path)
-	if err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 && (fields[0] == target || strings.HasPrefix(target, fields[0])) {
-				return fields[1], nil
-			}
+	store := loadCredentialStore()
+	if t, ok := store.Credentials[target]; ok {
+		return t, nil
+	}
+	for host, t := range store.Credentials {
+		if strings.HasPrefix(target, host) {
+			return t, nil
 		}
 	}
 
