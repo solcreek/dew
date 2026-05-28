@@ -18,10 +18,8 @@ jobs:
 
       - name: Build turbo kernel
         run: |
-          docker build -t dew-kernel kernel/
-          CONTAINER_ID=$(docker create dew-kernel)
-          docker cp "${CONTAINER_ID}:/vmlinuz-turbo" vmlinuz-turbo
-          docker rm "$CONTAINER_ID"
+          docker build --output type=local,dest=out kernel/
+          mv out/vmlinuz-turbo vmlinuz-turbo
           ls -lh vmlinuz-turbo
           sha256sum vmlinuz-turbo
 
