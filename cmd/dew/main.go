@@ -558,9 +558,13 @@ func execVsockStream(conn net.Conn, token string, cmd string) (int, error) {
 }
 
 func cmdUp(args []string) error {
+	parsedCfg, remaining, err := parseFlags(args)
+	if err != nil {
+		return err
+	}
 	dir := "."
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		dir = args[0]
+	if len(remaining) > 0 {
+		dir = remaining[0]
 	}
 
 	proj, err := detect.Detect(dir)
@@ -599,14 +603,22 @@ func cmdUp(args []string) error {
 	absDir, _ := filepath.Abs(dir)
 	flagProfile = proj.Profile
 	cfg := vm.Config{
-		CPUs:     1,
-		MemoryMB: 512,
+		CPUs:     parsedCfg.CPUs,
+		MemoryMB: parsedCfg.MemoryMB,
+		Kernel:   parsedCfg.Kernel,
+		Initrd:   parsedCfg.Initrd,
 		CmdLine:  "console=hvc0",
 		Network:  true,
 		Forwards: []vm.PortForward{{HostPort: proj.Port, GuestPort: proj.Port}},
 		SharedDirs: []vm.SharedDir{
 			{Tag: "project", HostPath: absDir, ReadOnly: false},
 		},
+	}
+	if cfg.CPUs == 0 {
+		cfg.CPUs = 1
+	}
+	if cfg.MemoryMB == 0 {
+		cfg.MemoryMB = 512
 	}
 	if err := resolveAssets(&cfg); err != nil {
 		return err
