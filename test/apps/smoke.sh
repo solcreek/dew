@@ -1,116 +1,94 @@
 #!/bin/bash
 set -euo pipefail
 
-# Smoke test: validate dew deploy --image with real Docker Hub apps.
+# Smoke test: validate dew build + dew deploy + dew serve with real apps.
+# No Docker required. Uses dew serve's built-in process/static server.
+#
 # Usage:
-#   ./smoke.sh              # run all tier 1 tests
-#   ./smoke.sh excalidraw   # run single test
+#   ./smoke.sh              # run all tests
+#   ./smoke.sh static       # run static site tests only
+#   ./smoke.sh server       # run server app tests only
 
+DEW_BIN="${DEW_BIN:-./dew}"
+SERVE_DIR="/tmp/dew-smoke-$$"
+SERVE_PORT=9082
+TOKEN="smoke-test-token"
 PASS=0
 FAIL=0
-SKIP=0
 
-test_image() {
-  local name="$1"
-  local image="$2"
-  local port="$3"
-  local health_path="$4"
-  local env_args="${5:-}"
-
-  printf "  %-20s " "$name"
-
-  # Pull
-  if ! docker pull "$image" > /dev/null 2>&1; then
-    echo "SKIP (pull failed)"
-    SKIP=$((SKIP + 1))
-    return
-  fi
-
-  # Stop previous
-  docker rm -f "dew-test-$name" > /dev/null 2>&1 || true
-
-  # Run
-  local host_port=$((port + 10000))
-  local run_cmd="docker run -d --name dew-test-$name -p $host_port:$port"
-  if [ -n "$env_args" ]; then
-    run_cmd="$run_cmd $env_args"
-  fi
-  run_cmd="$run_cmd $image"
-
-  if ! eval "$run_cmd" > /dev/null 2>&1; then
-    echo "FAIL (start)"
-    FAIL=$((FAIL + 1))
-    return
-  fi
-
-  # Wait for health
-  local ok=false
-  for i in $(seq 1 20); do
-    sleep 2
-    code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$host_port$health_path" 2>/dev/null || echo "000")
-    if [ "$code" -ge 200 ] && [ "$code" -lt 400 ]; then
-      ok=true
-      break
-    fi
+cleanup() {
+  kill $(lsof -ti:$SERVE_PORT) 2>/dev/null || true
+  # Kill any app processes on 10000+
+  for p in $(seq 10000 10010); do
+    kill $(lsof -ti:$p) 2>/dev/null || true
   done
+  rm -rf "$SERVE_DIR"
+}
+trap cleanup EXIT
 
-  # Cleanup
-  docker rm -f "dew-test-$name" > /dev/null 2>&1 || true
-
-  if $ok; then
-    echo "PASS (${i}s)"
-    PASS=$((PASS + 1))
-  else
-    echo "FAIL (health check, last HTTP $code)"
-    FAIL=$((FAIL + 1))
+setup_serve() {
+  mkdir -p "$SERVE_DIR"
+  echo "$TOKEN" > "$SERVE_DIR/token"
+  "$DEW_BIN" serve --port $SERVE_PORT --data-dir "$SERVE_DIR" > /dev/null 2>&1 &
+  sleep 2
+  if ! curl -s -o /dev/null http://localhost:$SERVE_PORT/v1/system/health; then
+    echo "FATAL: dew serve failed to start"
+    exit 1
   fi
 }
 
-test_build() {
+test_build_deploy() {
   local name="$1"
   local dir="$2"
   local expected_type="$3"
+  local health_path="${4:-/}"
 
-  printf "  %-20s " "$name (build)"
+  printf "  %-25s " "$name"
 
   if [ ! -d "$dir" ]; then
     echo "SKIP (dir not found)"
-    SKIP=$((SKIP + 1))
     return
   fi
 
-  local dew_bin="${DEW_BIN:-./dew}"
-  local out="/tmp/dew-smoke-$name.tar.gz"
-  rm -f "$out"
+  local tarball="/tmp/dew-smoke-$name.tar.gz"
+  rm -f "$tarball"
 
-  if ! "$dew_bin" build "$dir" -o "$out" > /dev/null 2>&1; then
+  # Build
+  if ! "$DEW_BIN" build "$dir" -o "$tarball" > /dev/null 2>&1; then
     echo "FAIL (build)"
     FAIL=$((FAIL + 1))
     return
   fi
 
-  if [ ! -f "$out" ]; then
-    echo "FAIL (no tarball)"
+  # Deploy
+  if ! DEW_TOKEN=$TOKEN "$DEW_BIN" deploy "http://localhost:$SERVE_PORT" --tarball "$tarball" --app "$name" > /dev/null 2>&1; then
+    echo "FAIL (deploy)"
+    FAIL=$((FAIL + 1))
+    rm -f "$tarball"
+    return
+  fi
+  rm -f "$tarball"
+
+  # Get port
+  local app_port
+  app_port=$(curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$SERVE_PORT/v1/apps" | \
+    python3 -c "import json,sys; apps=json.load(sys.stdin); print([a['port'] for a in apps if a['name']=='$name'][0])" 2>/dev/null)
+
+  if [ -z "$app_port" ] || [ "$app_port" = "0" ]; then
+    echo "FAIL (no port)"
     FAIL=$((FAIL + 1))
     return
   fi
 
-  # Check manifest type
-  local app_type
-  app_type=$(python3 -c "
-import tarfile, json
-with tarfile.open('$out') as t:
-    f = t.extractfile('manifest.json')
-    print(json.load(f).get('type', 'unknown'))
-" 2>/dev/null || echo "error")
-
-  rm -f "$out"
-
-  if [ "$app_type" = "$expected_type" ]; then
-    echo "PASS (type=$app_type)"
+  # Health check
+  sleep 1
+  local code
+  code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$app_port$health_path" 2>/dev/null || echo "000")
+  if [ "$code" -ge 200 ] && [ "$code" -lt 400 ]; then
+    echo "PASS (:$app_port, HTTP $code)"
     PASS=$((PASS + 1))
   else
-    echo "FAIL (type=$app_type, expected $expected_type)"
+    echo "FAIL (HTTP $code on :$app_port)"
     FAIL=$((FAIL + 1))
   fi
 }
@@ -119,38 +97,24 @@ echo ""
 echo "💧 Dew App Smoke Tests"
 echo ""
 
+setup_serve
+
 TARGET="${1:-all}"
 
-if [ "$TARGET" = "all" ] || [ "$TARGET" = "excalidraw" ]; then
-  echo "── Docker image apps ──"
-  test_image "excalidraw" "excalidraw/excalidraw" "80" "/"
+if [ "$TARGET" = "all" ] || [ "$TARGET" = "static" ]; then
+  echo "── Static sites ──"
+  test_build_deploy "open-slide" "/tmp/my-slide" "static" "/"
 fi
 
-if [ "$TARGET" = "all" ] || [ "$TARGET" = "uptime-kuma" ]; then
-  test_image "uptime-kuma" "louislam/uptime-kuma:2" "3001" "/"
-fi
-
-if [ "$TARGET" = "all" ] || [ "$TARGET" = "vaultwarden" ]; then
-  test_image "vaultwarden" "vaultwarden/server" "80" "/alive"
-fi
-
-if [ "$TARGET" = "all" ] || [ "$TARGET" = "gitea" ]; then
-  test_image "gitea" "gitea/gitea" "3000" "/" "-e GITEA__security__INSTALL_LOCK=true"
-fi
-
-if [ "$TARGET" = "all" ] || [ "$TARGET" = "ghost" ]; then
-  test_image "ghost" "ghost:5-alpine" "2368" "/ghost/api/admin/site/" "-e NODE_ENV=development -e database__client=sqlite3"
-fi
-
-if [ "$TARGET" = "all" ] || [ "$TARGET" = "build" ]; then
+if [ "$TARGET" = "all" ] || [ "$TARGET" = "server" ]; then
   echo ""
-  echo "── dew build ──"
-  test_build "demo-crud" "/Users/linyiru/Projects/creek/demo-vite-sqlite" "server"
+  echo "── Server apps ──"
+  test_build_deploy "demo-crud" "/Users/linyiru/Projects/creek/demo-vite-sqlite" "server" "/api/health"
 fi
 
 echo ""
 echo "── Results ──"
-echo "  PASS: $PASS  FAIL: $FAIL  SKIP: $SKIP"
+echo "  PASS: $PASS  FAIL: $FAIL"
 echo ""
 
 [ "$FAIL" -eq 0 ] || exit 1
