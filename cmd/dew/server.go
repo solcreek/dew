@@ -161,7 +161,7 @@ func cmdServerCreate(args []string) error {
 	if ready {
 		sp.Done(ip)
 	}
-	fmt.Fprintf(os.Stderr, "  Token: %s\n", dewToken)
+	fmt.Fprintf(os.Stderr, "  Token: %s...%s\n", dewToken[:14], dewToken[len(dewToken)-4:])
 	fmt.Fprintf(os.Stderr, "  Deploy: dew deploy %s\n\n", ip)
 
 	if flagJSON {
