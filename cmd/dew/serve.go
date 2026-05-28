@@ -260,6 +260,14 @@ func handleTarballDeploy(w http.ResponseWriter, r *http.Request, appName string)
 		sendEvent("start", "done", fmt.Sprintf(",\"mode\":\"static\",\"port\":%d", appPort))
 	default:
 		var err error
+		if hasContainerd() {
+			stopFn, err = startContainerServer(appDir, manifest, appPort)
+			if err == nil {
+				sendEvent("start", "done", fmt.Sprintf(",\"mode\":\"container\",\"port\":%d", appPort))
+				break
+			}
+			fmt.Fprintf(os.Stderr, "  container start failed, falling back to process: %v\n", err)
+		}
 		stopFn, err = startProcessServer(appDir, manifest, appPort)
 		if err != nil {
 			sendEvent("start", "fail", fmt.Sprintf(",\"error\":%q", err.Error()))
@@ -342,25 +350,13 @@ func startProcessServer(appDir string, manifest buildManifest, port int) (func()
 		entryPath = filepath.Join(appDir, entry)
 	}
 
-	var cmdName string
-	var cmdArgs []string
-	switch manifest.Runtime {
-	case "node":
-		if strings.HasSuffix(entry, ".ts") {
-			cmdName = "bun"
-		} else {
-			cmdName = "node"
-		}
-		cmdArgs = []string{entryPath}
-	case "python":
-		cmdName = "python3"
-		cmdArgs = []string{entryPath}
-	default:
-		cmdName = "node"
-		cmdArgs = []string{entryPath}
+	// Resolve runtime binary
+	runtime, err := resolveRuntime(manifest.Runtime, entry)
+	if err != nil {
+		return nil, err
 	}
 
-	cmd := exec.Command(cmdName, cmdArgs...)
+	cmd := exec.Command(runtime, entryPath)
 	cmd.Dir = filepath.Dir(entryPath)
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
@@ -379,6 +375,100 @@ func startProcessServer(appDir string, manifest buildManifest, port int) (func()
 			cmd.Wait()
 		}
 	}, nil
+}
+
+var runtimeImages = map[string]string{
+	"bun":    "oven/bun:1.3-alpine",
+	"node":   "node:22-alpine",
+	"python": "python:3.12-alpine",
+}
+
+func resolveRuntime(runtime, entry string) (string, error) {
+	if runtime == "" {
+		runtime = "node"
+	}
+
+	// For .ts files, prefer bun
+	if runtime == "node" && strings.HasSuffix(entry, ".ts") {
+		runtime = "bun"
+	}
+
+	binaryName := runtime
+	switch runtime {
+	case "python":
+		binaryName = "python3"
+	}
+
+	// 1. Check PATH
+	if p, err := exec.LookPath(binaryName); err == nil {
+		return p, nil
+	}
+
+	// 2. Check dew runtimes dir
+	localBin := filepath.Join(dewDataDir(), "runtimes", runtime, "bin", binaryName)
+	if runtime == "bun" {
+		localBin = filepath.Join(dewDataDir(), "runtimes", "bun", "bun")
+	}
+	if _, err := os.Stat(localBin); err == nil {
+		return localBin, nil
+	}
+
+	// 3. Auto-download
+	fmt.Fprintf(os.Stderr, "  Downloading %s runtime...\n", runtime)
+	downloaded, err := downloadRuntime(runtime)
+	if err != nil {
+		return "", fmt.Errorf("runtime %q not found and auto-download failed: %w", runtime, err)
+	}
+	return downloaded, nil
+}
+
+func downloadRuntime(runtime string) (string, error) {
+	dir := filepath.Join(dewDataDir(), "runtimes", runtime)
+	os.MkdirAll(dir, 0755)
+
+	switch runtime {
+	case "bun":
+		binPath := filepath.Join(dir, "bun")
+		cmd := exec.Command("sh", "-c",
+			fmt.Sprintf("curl -fsSL https://bun.sh/install | BUN_INSTALL=%s bash", dir))
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return "", err
+		}
+		if _, err := os.Stat(binPath); err == nil {
+			return binPath, nil
+		}
+		binPath = filepath.Join(dir, "bin", "bun")
+		return binPath, nil
+
+	case "node":
+		arch := "x64"
+		platform := "darwin"
+		if out, _ := exec.Command("uname", "-m").Output(); strings.TrimSpace(string(out)) == "arm64" {
+			arch = "arm64"
+		}
+		if out, _ := exec.Command("uname", "-s").Output(); strings.TrimSpace(string(out)) == "Linux" {
+			platform = "linux"
+		}
+		url := fmt.Sprintf("https://nodejs.org/dist/v22.0.0/node-v22.0.0-%s-%s.tar.xz", platform, arch)
+		cmd := exec.Command("sh", "-c",
+			fmt.Sprintf("curl -fsSL '%s' | tar xJ --strip-components=1 -C '%s'", url, dir))
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return "", err
+		}
+		return filepath.Join(dir, "bin", "node"), nil
+
+	default:
+		return "", fmt.Errorf("auto-download not supported for runtime %q", runtime)
+	}
+}
+
+func runtimeBaseImage(runtime string) string {
+	if img, ok := runtimeImages[runtime]; ok {
+		return img
+	}
+	return "node:22-alpine"
 }
 
 func handleImageDeploy(w http.ResponseWriter, r *http.Request, appName string) {
@@ -437,6 +527,52 @@ func handleImageDeploy(w http.ResponseWriter, r *http.Request, appName string) {
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"ok":true,"app":"%s","image":"%s","url":"%s","port":%d}`, appName, body.Image, appURL, hostPort)
+}
+
+func hasContainerd() bool {
+	_, err := exec.LookPath("nerdctl")
+	return err == nil
+}
+
+func startContainerServer(appDir string, manifest buildManifest, port int) (func(), error) {
+	runtime := manifest.Runtime
+	if runtime == "" {
+		runtime = "node"
+	}
+	if runtime == "node" && strings.HasSuffix(manifest.Entry, ".ts") {
+		runtime = "bun"
+	}
+
+	baseImage := runtimeBaseImage(runtime)
+	containerName := "dew-app-" + filepath.Base(appDir)
+
+	exec.Command("nerdctl", "rm", "-f", containerName).Run()
+
+	entry := manifest.Entry
+	if entry == "" {
+		entry = "server.js"
+	}
+
+	cmd := exec.Command("nerdctl", "run", "-d",
+		"--name", containerName,
+		"--mount", fmt.Sprintf("type=bind,src=%s/app,dst=/app", appDir),
+		"-e", fmt.Sprintf("PORT=%d", port),
+		"-e", "NODE_ENV=production",
+		"-p", fmt.Sprintf("%d:%d", port, port),
+		"-w", "/app",
+		baseImage,
+		runtime, "/app/"+entry,
+	)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("nerdctl run: %w", err)
+	}
+
+	return func() {
+		exec.Command("nerdctl", "rm", "-f", containerName).Run()
+	}, nil
 }
 
 func runShell(cmd string) error {
