@@ -239,6 +239,8 @@ func main() {
 		err = cmdExec(os.Args[2:])
 	case "up":
 		err = cmdUp(os.Args[2:])
+	case "down":
+		err = cmdDown()
 	case "assets":
 		err = cmdAssets(os.Args[2:])
 	case "session":
@@ -273,6 +275,7 @@ Usage:
   dew session create [flags]     Create a persistent VM session
   dew session exec <id> <cmd>    Execute in an existing session
   dew session destroy <id>       Destroy a session
+  dew down                       Stop the running VM
   dew assets pull                Download VM image for current profile
   dew assets list                Show downloaded assets
   dew version                    Print version
@@ -923,6 +926,56 @@ func cmdUp(args []string) error {
 	dmn.Stop()
 	fmt.Fprintf(os.Stderr, "\n  stopping...\n")
 	return d.Stop(context.Background())
+}
+
+func cmdDown() error {
+	for _, a := range os.Args[2:] {
+		if a == "--json" {
+			flagJSON = true
+		}
+	}
+	sockPath := daemon.SocketPath("")
+	if _, err := os.Stat(sockPath); err != nil {
+		if flagJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.Encode(map[string]interface{}{"status": "not_running"})
+		} else {
+			fmt.Fprintf(os.Stderr, "dew: no running VM\n")
+		}
+		return nil
+	}
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		os.Remove(sockPath)
+		if flagJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.Encode(map[string]interface{}{"status": "stopped", "note": "stale socket removed"})
+		} else {
+			fmt.Fprintf(os.Stderr, "dew: removed stale socket\n")
+		}
+		return nil
+	}
+	conn.Close()
+
+	// Send a signal to stop — the daemon's VM process handles cleanup
+	// Find the dew process holding the socket and send SIGTERM
+	out, err := exec.Command("lsof", "-t", sockPath).Output()
+	if err == nil {
+		pid := strings.TrimSpace(string(out))
+		if pid != "" {
+			exec.Command("kill", pid).Run()
+		}
+	}
+	os.Remove(sockPath)
+
+	if flagJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.Encode(map[string]interface{}{"status": "stopped"})
+	} else {
+		fmt.Fprintf(os.Stderr, "dew: stopped\n")
+	}
+	return nil
 }
 
 func cmdExec(args []string) error {
