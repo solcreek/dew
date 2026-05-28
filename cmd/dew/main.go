@@ -268,6 +268,8 @@ func main() {
 		err = cmdSession(os.Args[2], os.Args[3:])
 	case "auth":
 		err = cmdAuth(os.Args[2:])
+	case "env":
+		err = cmdEnv(os.Args[2:])
 	case "serve":
 		err = cmdServe(os.Args[2:])
 	case "server":
@@ -303,6 +305,9 @@ Usage:
   dew session exec <id> <cmd>    Execute in an existing session
   dew session destroy <id>       Destroy a session
   dew down                       Stop the running VM
+  dew env set <target> <app> K=V Set environment variables
+  dew env list <target> <app>    List env var names
+  dew env remove <target> <app> <key>  Remove env var
   dew auth set <host> <token>    Save deploy credentials
   dew auth list                  Show saved credentials
   dew auth remove <host>         Remove credentials
