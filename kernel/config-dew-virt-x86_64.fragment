@@ -4,6 +4,12 @@
 
 # Monolithic: no module loading, no MODVERSIONS mismatch
 # CONFIG_MODULES is not set
+# CONFIG_MODULE_SIG is not set
+
+# No cert signing (avoids openssl build dependency for certs)
+# CONFIG_SYSTEM_TRUSTED_KEYRING is not set
+# CONFIG_SYSTEM_TRUSTED_KEYS is not set
+# CONFIG_MODULE_SIG_KEY is not set
 
 # Virtio (Apple VZ / QEMU device model)
 CONFIG_VIRTIO=y

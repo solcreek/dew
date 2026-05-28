@@ -3,7 +3,7 @@ FROM alpine:3.21 AS builder
 ARG KERNEL_VERSION=6.12.91
 
 RUN apk add --no-cache \
-    build-base bc bison flex elfutils-dev perl \
+    build-base bc bison flex elfutils-dev openssl-dev perl \
     linux-headers diffutils findutils
 
 RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz" \
