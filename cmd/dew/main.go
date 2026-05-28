@@ -250,6 +250,8 @@ func main() {
 		err = cmdExec(os.Args[2:])
 	case "build":
 		err = cmdBuild(os.Args[2:])
+	case "share":
+		err = cmdShare(os.Args[2:])
 	case "up":
 		err = cmdUp(os.Args[2:])
 	case "down":
@@ -284,6 +286,7 @@ func printUsage() {
 
 Usage:
   dew build [dir]                Package app into deploy tarball
+  dew share [port]               Create temporary public HTTPS URL
   dew up [dir]                   Auto-detect project and start dev environment
   dew start [flags]              Boot a Linux VM (interactive, daemon socket)
   dew run [flags] [--] <cmd>     Boot, execute command, exit
