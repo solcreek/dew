@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/solcreek/dew/internal/tlscert"
 )
 
 type serveState struct {
@@ -190,10 +192,19 @@ func cmdServe(args []string) error {
 	})
 
 	addr := ":" + port
-	fmt.Fprintf(os.Stderr, "  💧 dew serve listening on %s\n", addr)
-	fmt.Fprintf(os.Stderr, "  Health: http://localhost%s/v1/system/health\n\n", addr)
+	tlsDir := filepath.Join(state.dataDir, "tls")
+	cert, err := tlscert.Generate(tlsDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  warning: TLS cert generation failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  💧 dew serve listening on %s (HTTP, insecure)\n", addr)
+		fmt.Fprintf(os.Stderr, "  Health: http://localhost%s/v1/system/health\n\n", addr)
+		return http.ListenAndServe(addr, mux)
+	}
 
-	return http.ListenAndServe(addr, mux)
+	fmt.Fprintf(os.Stderr, "  💧 dew serve listening on %s (HTTPS)\n", addr)
+	fmt.Fprintf(os.Stderr, "  Fingerprint: %s\n", cert.Fingerprint)
+	fmt.Fprintf(os.Stderr, "  Health: https://localhost%s/v1/system/health\n\n", addr)
+	return http.ListenAndServeTLS(addr, cert.CertFile, cert.KeyFile, mux)
 }
 
 func allocatePort() int {

@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -58,7 +59,7 @@ func cmdDeploy(args []string) error {
 	endpoint := resolveEndpoint(target)
 
 	if imageName != "" {
-		return deployImage(endpoint, token, imageName, appName)
+		return deployImage(target, endpoint, token, imageName, appName)
 	}
 
 	if tarballPath == "" {
@@ -76,10 +77,10 @@ func cmdDeploy(args []string) error {
 		}
 	}
 
-	return deployTarball(endpoint, token, tarballPath, appName)
+	return deployTarball(target, endpoint, token, tarballPath, appName)
 }
 
-func deployTarball(endpoint, token, tarballPath, appName string) error {
+func deployTarball(target, endpoint, token, tarballPath, appName string) error {
 	sp := progress.New()
 
 	sp.Step("Reading tarball")
@@ -117,7 +118,7 @@ func deployTarball(endpoint, token, tarballPath, appName string) error {
 	req.Header.Set("X-Deploy-Checksum", "sha256:"+checksum)
 	req.ContentLength = stat.Size()
 
-	client := &http.Client{Timeout: 5 * time.Minute}
+	client := makeHTTPClient(target)
 	resp, err := client.Do(req)
 	if err != nil {
 		sp.Fail("upload failed")
@@ -153,7 +154,7 @@ func deployTarball(endpoint, token, tarballPath, appName string) error {
 	return nil
 }
 
-func deployImage(endpoint, token, imageName, appName string) error {
+func deployImage(target, endpoint, token, imageName, appName string) error {
 	sp := progress.New()
 
 	if appName == "" {
@@ -173,7 +174,7 @@ func deployImage(endpoint, token, imageName, appName string) error {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 5 * time.Minute}
+	client := makeHTTPClient(target)
 	resp, err := client.Do(req)
 	if err != nil {
 		sp.Fail("request failed")
@@ -268,7 +269,45 @@ func resolveEndpoint(target string) string {
 	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
 		return strings.TrimSuffix(target, "/")
 	}
-	return "http://" + target + ":9080"
+	return "https://" + target + ":9080"
+}
+
+func makeHTTPClient(target string) *http.Client {
+	store := loadCredentialStore()
+	_ = store // fingerprint pinning will use this
+
+	return &http.Client{
+		Timeout: 5 * time.Minute,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+				VerifyConnection: func(cs tls.ConnectionState) error {
+					if len(cs.PeerCertificates) == 0 {
+						return fmt.Errorf("no server certificate")
+					}
+					cert := cs.PeerCertificates[0]
+					h := sha256.Sum256(cert.Raw)
+					fp := "sha256:" + formatFingerprint(hex.EncodeToString(h[:]))
+
+					store := loadCredentialStore()
+					if stored, ok := store.Fingerprints[target]; ok {
+						if stored != fp {
+							return fmt.Errorf("certificate fingerprint mismatch: expected %s, got %s", stored, fp)
+						}
+					}
+					return nil
+				},
+			},
+		},
+	}
+}
+
+func formatFingerprint(hexStr string) string {
+	parts := make([]string, 0, 32)
+	for i := 0; i < len(hexStr); i += 2 {
+		parts = append(parts, hexStr[i:i+2])
+	}
+	return strings.Join(parts, ":")
 }
 
 func inferAppName(tarballPath string) string {

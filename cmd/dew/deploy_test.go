@@ -12,8 +12,8 @@ func TestResolveEndpoint(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"1.2.3.4", "http://1.2.3.4:9080"},
-		{"myserver.com", "http://myserver.com:9080"},
+		{"1.2.3.4", "https://1.2.3.4:9080"},
+		{"myserver.com", "https://myserver.com:9080"},
 		{"http://localhost:9080", "http://localhost:9080"},
 		{"https://api.creek.dev", "https://api.creek.dev"},
 		{"https://example.com/", "https://example.com"},

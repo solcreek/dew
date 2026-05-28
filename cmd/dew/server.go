@@ -363,7 +363,8 @@ func dewConfigDir() string {
 // ─── Credential storage (JSON) ─────────────────────────────────────
 
 type credentialStore struct {
-	Credentials map[string]string `json:"credentials"`
+	Credentials  map[string]string `json:"credentials"`
+	Fingerprints map[string]string `json:"fingerprints,omitempty"`
 }
 
 func loadCredentialStore() *credentialStore {
@@ -374,7 +375,10 @@ func loadCredentialStore() *credentialStore {
 	}
 	var store credentialStore
 	if json.Unmarshal(data, &store) != nil || store.Credentials == nil {
-		return &credentialStore{Credentials: make(map[string]string)}
+		return &credentialStore{Credentials: make(map[string]string), Fingerprints: make(map[string]string)}
+	}
+	if store.Fingerprints == nil {
+		store.Fingerprints = make(map[string]string)
 	}
 	return &store
 }
