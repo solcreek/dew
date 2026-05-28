@@ -16,20 +16,16 @@ jobs:
         with:
           go-version: '1.25'
 
-      - name: Build dew binaries (arm64 + amd64)
+      - name: Build dew binary (arm64)
         run: |
-          GOARCH=arm64 go build -ldflags="-s -w" -o dew-darwin-arm64 ./cmd/dew/
+          go build -ldflags="-s -w" -o dew-darwin-arm64 ./cmd/dew/
           codesign --entitlements entitlements.plist --force -s - dew-darwin-arm64
-          GOARCH=amd64 go build -ldflags="-s -w" -o dew-darwin-x86_64 ./cmd/dew/
-          codesign --entitlements entitlements.plist --force -s - dew-darwin-x86_64
 
-      - name: Upload binaries
+      - name: Upload binary
         uses: actions/upload-artifact@v6
         with:
-          name: macos-binaries
-          path: |
-            dew-darwin-arm64
-            dew-darwin-x86_64
+          name: dew-darwin-arm64
+          path: dew-darwin-arm64
 
   build-linux:
     runs-on: ubuntu-latest
