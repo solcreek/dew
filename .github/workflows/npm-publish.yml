@@ -21,5 +21,6 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
 
-      - run: npm publish --provenance --access public
+      - name: Publish (skip if version exists)
         working-directory: npm
+        run: npm publish --provenance --access public || echo "Version already published, skipping"
