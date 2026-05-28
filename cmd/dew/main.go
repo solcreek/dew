@@ -252,6 +252,8 @@ func main() {
 		err = cmdBuild(os.Args[2:])
 	case "deploy":
 		err = cmdDeploy(os.Args[2:])
+	case "rollback":
+		err = cmdRollback(os.Args[2:])
 	case "share":
 		err = cmdShare(os.Args[2:])
 	case "up":
@@ -295,6 +297,7 @@ func printUsage() {
 Usage:
   dew build [dir]                Package app into deploy tarball
   dew deploy <target>            Deploy tarball or image to dew serve
+  dew rollback <target> <app>   Rollback to previous version
   dew serve                      Run deploy receiver (production, VPS)
   dew share [port]               Create temporary public HTTPS URL
   dew up [dir]                   Auto-detect project and start dev environment
