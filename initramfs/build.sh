@@ -339,6 +339,9 @@ chmod 440 /etc/sudoers.d/dew 2>/dev/null || true
 # Node.js (node/standard profile, installed once, cached on disk)
 if [ -f /.dew-node-profile ] && ! command -v node >/dev/null 2>&1; then
     echo "dew: installing Node.js + build tools (first boot)..."
+    # Reconcile libs after initramfs rootfs copy (musl version mismatch)
+    apk update 2>/dev/null || true
+    apk upgrade --no-cache musl 2>&1 | tail -1
     apk add --no-cache nodejs npm build-base python3 2>&1 | tail -1
 fi
 
