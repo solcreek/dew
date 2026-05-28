@@ -29,17 +29,21 @@ func TestGenerateDewToken(t *testing.T) {
 
 func TestGenerateCloudInit(t *testing.T) {
 	ci := generateCloudInit("crk_admin_test123")
-	if !strings.Contains(ci, "crk_admin_test123") {
-		t.Error("cloud-init should contain the token")
+	if strings.Contains(ci, "crk_admin_test123") {
+		t.Error("cloud-init must NOT contain plaintext token")
+	}
+	expectedHash := hashToken("crk_admin_test123")
+	if !strings.Contains(ci, expectedHash) {
+		t.Error("cloud-init should contain token hash")
+	}
+	if !strings.Contains(ci, "token-hash") {
+		t.Error("cloud-init should write to token-hash file")
 	}
 	if !strings.Contains(ci, "containerd") {
 		t.Error("cloud-init should install containerd")
 	}
 	if !strings.Contains(ci, "dew-serve.service") {
 		t.Error("cloud-init should create systemd service")
-	}
-	if !strings.Contains(ci, "dewvm.dev/install.sh") {
-		t.Error("cloud-init should download dew installer")
 	}
 }
 

@@ -73,11 +73,23 @@ func cmdServe(args []string) error {
 		tokenFile = filepath.Join(state.dataDir, "token")
 	}
 
-	token, err := os.ReadFile(tokenFile)
-	if err != nil {
-		return fmt.Errorf("cannot read token from %s: %w\nRun: dew serve init", tokenFile, err)
+	var verifyToken func(string) bool
+
+	// Try hash file first (secure: VPS cloud-init only stores hash)
+	hashFile := filepath.Join(state.dataDir, "token-hash")
+	if data, err := os.ReadFile(hashFile); err == nil {
+		storedHash := strings.TrimSpace(string(data))
+		verifyToken = func(t string) bool {
+			h := sha256.Sum256([]byte(t))
+			return hex.EncodeToString(h[:]) == storedHash
+		}
+	} else if data, err := os.ReadFile(tokenFile); err == nil {
+		// Fallback: plaintext token file (local dev)
+		serverToken := strings.TrimSpace(string(data))
+		verifyToken = func(t string) bool { return t == serverToken }
+	} else {
+		return fmt.Errorf("no token found at %s or %s\nRun: dew serve init", hashFile, tokenFile)
 	}
-	serverToken := strings.TrimSpace(string(token))
 
 	for _, dir := range []string{
 		filepath.Join(state.dataDir, "apps"),
@@ -92,7 +104,7 @@ func cmdServe(args []string) error {
 	auth := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			h := r.Header.Get("Authorization")
-			if !strings.HasPrefix(h, "Bearer ") || strings.TrimPrefix(h, "Bearer ") != serverToken {
+			if !strings.HasPrefix(h, "Bearer ") || !verifyToken(strings.TrimPrefix(h, "Bearer ")) {
 				http.Error(w, `{"error":"unauthorized"}`, 401)
 				return
 			}

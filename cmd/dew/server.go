@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -289,7 +290,13 @@ func randomHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
+func hashToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
+
 func generateCloudInit(token string) string {
+	tokenHash := hashToken(token)
 	return fmt.Sprintf(`#!/bin/bash
 set -e
 
@@ -297,9 +304,9 @@ set -e
 curl -fsSL https://dewvm.dev/install.sh -o /tmp/install-dew.sh
 bash /tmp/install-dew.sh
 
-# Initialize dew serve with deploy token
+# Store token hash (not plaintext — provider metadata API can read user-data)
 mkdir -p /var/dew
-echo '%s' > /var/dew/token
+echo '%s' > /var/dew/token-hash
 
 # Install containerd
 CONTAINERD_VERSION="2.1.1"
@@ -341,7 +348,7 @@ SVC
 
 systemctl daemon-reload
 systemctl enable --now dew-serve
-`, token)
+`, tokenHash)
 }
 
 // ─── Credential storage ────────────────────────────────────────────
