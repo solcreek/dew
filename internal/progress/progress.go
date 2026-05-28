@@ -71,7 +71,7 @@ func (s *Spinner) finish() {
 	s.mu.Unlock()
 
 	close(ch)
-	fmt.Fprintf(os.Stderr, "\r  %s ✓\n", label)
+	fmt.Fprintf(os.Stderr, "\r\033[K  %s ✓\n", label)
 }
 
 // Fail stops the current spinner and prints ✗.
@@ -87,7 +87,7 @@ func (s *Spinner) Fail(reason string) {
 	s.mu.Unlock()
 
 	close(ch)
-	fmt.Fprintf(os.Stderr, "\r  %s ✗ %s\n", label, reason)
+	fmt.Fprintf(os.Stderr, "\r\033[K  %s ✗ %s\n", label, reason)
 }
 
 // Stop halts the spinner without printing anything.
