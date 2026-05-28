@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`dew build`** — package app into deploy tarball with manifest.json. Detects runtime, runs build command, generates checksum. Static site detection (`type: "static"`) preserves build output even if in .gitignore. Skips node_modules, lock files, .claude/, .agents/, *.db
+- **`dew deploy <target>`** — upload tarball or OCI image to remote `dew serve`. SSE progress streaming. Token resolution from env, credentials file, or flag. Checksum verification. Handles tarball mode (`dew deploy <target>`) and image mode (`dew deploy <target> --image <name>`)
+- **`dew serve`** — production deploy receiver. HTTP API with token-based auth. Accepts tarball uploads with SSE progress (receive → verify → extract → start). Image deploy via JSON body. Endpoints: `/v1/system/health`, `/v1/apps`, `/v1/apps/{app}/deploy`, `/v1/apps/{app}/health`, `DELETE /v1/apps/{app}`
 - **`dew share [port]`** — temporary public HTTPS URL via Cloudflare Quick Tunnel. Auto-downloads cloudflared on first use. Verifies tunnel reachability before printing URL
 - **`dew server create/list/destroy`** — provision VPS from local machine via capstan (Hetzner, DigitalOcean, Linode, Vultr). Zero-SSH setup with cloud-init. Auto-saves credentials
 - **`BuildCmd` and `Entry` fields** in project detection for production builds
@@ -18,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Tarball packaging crash on `.claude/` and `.agents/` directories (non-regular file handling)
 - Build output directories (`dist/`, `build/`, `.next/`) excluded by .gitignore parsing — now preserved
+- Deploy token printed unmasked in terminal output — now shows prefix + last 4 chars only
+- `dew share` tunnel URL printed before edge connection is reachable — now verifies with HTTP poll
 
 ## [0.2.0] - 2026-05-28
 
