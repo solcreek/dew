@@ -266,6 +266,8 @@ func main() {
 			os.Exit(1)
 		}
 		err = cmdSession(os.Args[2], os.Args[3:])
+	case "serve":
+		err = cmdServe(os.Args[2:])
 	case "server":
 		err = cmdServer(os.Args[2:])
 	case "version":
@@ -289,6 +291,7 @@ func printUsage() {
 Usage:
   dew build [dir]                Package app into deploy tarball
   dew deploy <target>            Deploy tarball or image to dew serve
+  dew serve                      Run deploy receiver (production, VPS)
   dew share [port]               Create temporary public HTTPS URL
   dew up [dir]                   Auto-detect project and start dev environment
   dew start [flags]              Boot a Linux VM (interactive, daemon socket)
