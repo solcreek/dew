@@ -5,12 +5,14 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"regexp"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/solcreek/dew/internal/progress"
 )
@@ -82,7 +84,26 @@ func cmdShare(args []string) error {
 		return fmt.Errorf("cloudflared did not return a tunnel URL")
 	}
 
-	sp.Done(publicURL)
+	sp.Step("Verifying tunnel")
+	ready := false
+	for i := 0; i < 20; i++ {
+		time.Sleep(3 * time.Second)
+		resp, err := http.Get(publicURL)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+				ready = true
+				break
+			}
+		}
+	}
+	if !ready {
+		sp.Timeout(publicURL)
+		fmt.Fprintf(os.Stderr, "  Tunnel created but edge may still be connecting.\n")
+		fmt.Fprintf(os.Stderr, "  Try opening the URL in a few seconds.\n\n")
+	} else {
+		sp.Done(publicURL)
+	}
 	fmt.Fprintf(os.Stderr, "  localhost:%s → %s\n", port, publicURL)
 	fmt.Fprintf(os.Stderr, "  Press Ctrl+C to stop\n\n")
 
