@@ -1,4 +1,4 @@
-name: Turbo Kernel Build
+name: Kernel Build
 
 on:
   push:
@@ -8,28 +8,47 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-x86_64:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      packages: write
     steps:
       - uses: actions/checkout@v6
 
-      - name: Build turbo kernel
+      - name: Build x86_64 monolithic kernel
         run: |
-          docker build --output type=local,dest=out kernel/
-          mv out/vmlinuz-turbo vmlinuz-turbo
-          ls -lh vmlinuz-turbo
-          sha256sum vmlinuz-turbo
+          docker build -f kernel/Dockerfile.dew --output type=local,dest=out kernel/
+          mv out/vmlinuz-dew vmlinuz-x86_64
+          ls -lh vmlinuz-x86_64
+          sha256sum vmlinuz-x86_64
 
-      - name: Upload artifact
+      - name: Upload x86_64 kernel
         uses: actions/upload-artifact@v6
         with:
-          name: vmlinuz-turbo
-          path: vmlinuz-turbo
+          name: vmlinuz-x86_64
+          path: vmlinuz-x86_64
 
-      - name: Verify kernel config
+  download-arm64:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      KATA_VERSION: "3.28.0"
+      KATA_KERNEL: "vmlinux-6.18.15-186"
+    steps:
+      - name: Download Kata ARM64 kernel
         run: |
-          echo "Diff from Alpine base (should only be m->y changes):"
-          diff kernel/config-alpine-base kernel/config-turbo || true
+          curl -fsSL -o kata-arm64.tar.zst \
+            "https://github.com/kata-containers/kata-containers/releases/download/${KATA_VERSION}/kata-static-${KATA_VERSION}-arm64.tar.zst"
+          zstd -d kata-arm64.tar.zst
+          tar xf kata-arm64.tar --wildcards "*/vmlinux-*" --strip-components=5
+          mv ${KATA_KERNEL} vmlinuz-arm64
+          ls -lh vmlinuz-arm64
+          sha256sum vmlinuz-arm64
+          rm -f kata-arm64.tar kata-arm64.tar.zst
+
+      - name: Upload ARM64 kernel
+        uses: actions/upload-artifact@v6
+        with:
+          name: vmlinuz-arm64
+          path: vmlinuz-arm64
