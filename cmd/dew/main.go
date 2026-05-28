@@ -59,6 +59,14 @@ func resolveAssets(cfg *vm.Config) error {
 			cfg.DiskPath = filepath.Join(dataDir, "node.img")
 			cfg.DiskGB = 4
 		}
+	case "python":
+		if cfg.MemoryMB == 512 {
+			cfg.MemoryMB = 1024
+		}
+		if cfg.DiskPath == "" {
+			cfg.DiskPath = filepath.Join(dataDir, "python.img")
+			cfg.DiskGB = 4
+		}
 	case "standard":
 		if cfg.MemoryMB == 512 {
 			cfg.MemoryMB = 2048

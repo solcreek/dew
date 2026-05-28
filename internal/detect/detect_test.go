@@ -262,3 +262,138 @@ func TestDetect_ViteFromDeps(t *testing.T) {
 		t.Errorf("Framework = %q, want vite (detected from deps)", p.Framework)
 	}
 }
+
+// ── Python tests ──
+
+func TestDetect_Django(t *testing.T) {
+	dir := setupProject(t, map[string]string{
+		"requirements.txt": "django==5.0\npsycopg2-binary",
+		"manage.py":        "#!/usr/bin/env python",
+	})
+	p, err := Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Runtime != "python" {
+		t.Errorf("Runtime = %q, want python", p.Runtime)
+	}
+	if p.Framework != "django" {
+		t.Errorf("Framework = %q, want django", p.Framework)
+	}
+	if p.PackageMgr != "pip" {
+		t.Errorf("PackageMgr = %q, want pip", p.PackageMgr)
+	}
+	if p.Port != 8000 {
+		t.Errorf("Port = %d, want 8000", p.Port)
+	}
+	if p.DevCmd != "python manage.py runserver 0.0.0.0:8000" {
+		t.Errorf("DevCmd = %q", p.DevCmd)
+	}
+	if p.InstallCmd != "pip install -r requirements.txt" {
+		t.Errorf("InstallCmd = %q", p.InstallCmd)
+	}
+	if p.Profile != "python" {
+		t.Errorf("Profile = %q, want python", p.Profile)
+	}
+}
+
+func TestDetect_Flask(t *testing.T) {
+	dir := setupProject(t, map[string]string{
+		"requirements.txt": "flask==3.0\ngunicorn",
+		"app.py":           "from flask import Flask",
+	})
+	p, err := Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Framework != "flask" {
+		t.Errorf("Framework = %q, want flask", p.Framework)
+	}
+	if p.Port != 5000 {
+		t.Errorf("Port = %d, want 5000", p.Port)
+	}
+	if p.DevCmd != "flask run --host=0.0.0.0" {
+		t.Errorf("DevCmd = %q", p.DevCmd)
+	}
+}
+
+func TestDetect_FastAPI(t *testing.T) {
+	dir := setupProject(t, map[string]string{
+		"requirements.txt": "fastapi\nuvicorn",
+		"main.py":          "from fastapi import FastAPI",
+	})
+	p, err := Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Framework != "fastapi" {
+		t.Errorf("Framework = %q, want fastapi", p.Framework)
+	}
+	if p.Port != 8000 {
+		t.Errorf("Port = %d, want 8000", p.Port)
+	}
+	if p.DevCmd != "uvicorn main:app --host 0.0.0.0 --port 8000" {
+		t.Errorf("DevCmd = %q", p.DevCmd)
+	}
+}
+
+func TestDetect_Poetry(t *testing.T) {
+	dir := setupProject(t, map[string]string{
+		"pyproject.toml": "[tool.poetry]\nname = \"myapp\"",
+		"poetry.lock":    "",
+	})
+	p, err := Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.PackageMgr != "poetry" {
+		t.Errorf("PackageMgr = %q, want poetry", p.PackageMgr)
+	}
+	if p.InstallCmd != "poetry install" {
+		t.Errorf("InstallCmd = %q", p.InstallCmd)
+	}
+}
+
+func TestDetect_Pipenv(t *testing.T) {
+	dir := setupProject(t, map[string]string{
+		"Pipfile": "[packages]\nflask = \"*\"",
+	})
+	p, err := Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.PackageMgr != "pipenv" {
+		t.Errorf("PackageMgr = %q, want pipenv", p.PackageMgr)
+	}
+}
+
+func TestDetect_Streamlit(t *testing.T) {
+	dir := setupProject(t, map[string]string{
+		"requirements.txt": "streamlit\npandas",
+		"app.py":           "import streamlit",
+	})
+	p, err := Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Framework != "streamlit" {
+		t.Errorf("Framework = %q, want streamlit", p.Framework)
+	}
+	if p.Port != 8501 {
+		t.Errorf("Port = %d, want 8501", p.Port)
+	}
+}
+
+func TestDetect_PythonOverNode(t *testing.T) {
+	// Node detector is registered first, but if only Python files exist, Python wins
+	dir := setupProject(t, map[string]string{
+		"requirements.txt": "flask",
+	})
+	p, err := Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Runtime != "python" {
+		t.Errorf("Runtime = %q, want python (no package.json)", p.Runtime)
+	}
+}

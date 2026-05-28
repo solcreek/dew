@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type Project struct {
@@ -53,6 +54,7 @@ func Detect(dir string) (*Project, error) {
 
 func init() {
 	Register(&nodeDetector{})
+	Register(&pythonDetector{})
 }
 
 func exists(path string) bool {
@@ -226,4 +228,134 @@ func readDeps(dir string) map[string]string {
 
 func readScripts(dir string) map[string]string {
 	return readPkgJSON(dir).Scripts
+}
+
+// ── Python detector ──
+
+type pythonDetector struct{}
+
+func (d *pythonDetector) Name() string { return "python" }
+
+func (d *pythonDetector) Match(dir string) bool {
+	return exists(filepath.Join(dir, "pyproject.toml")) ||
+		exists(filepath.Join(dir, "requirements.txt")) ||
+		exists(filepath.Join(dir, "setup.py")) ||
+		exists(filepath.Join(dir, "Pipfile"))
+}
+
+func (d *pythonDetector) Detect(dir string) *Project {
+	p := &Project{
+		Runtime: "python",
+		Profile: "python",
+	}
+
+	p.PackageMgr = detectPythonPkgMgr(dir)
+	p.Framework = detectPythonFramework(dir)
+	p.InstallCmd = buildPythonInstallCmd(p.PackageMgr, dir)
+	p.DevCmd = buildPythonDevCmd(p.Framework, dir)
+	p.Port = defaultPythonPort(p.Framework)
+
+	return p
+}
+
+func detectPythonPkgMgr(dir string) string {
+	if exists(filepath.Join(dir, "Pipfile")) {
+		return "pipenv"
+	}
+	if exists(filepath.Join(dir, "poetry.lock")) {
+		return "poetry"
+	}
+	if exists(filepath.Join(dir, "uv.lock")) {
+		return "uv"
+	}
+	return "pip"
+}
+
+func detectPythonFramework(dir string) string {
+	// Check requirements.txt for framework hints
+	for _, reqFile := range []string{"requirements.txt", "pyproject.toml", "setup.py"} {
+		data, err := os.ReadFile(filepath.Join(dir, reqFile))
+		if err != nil {
+			continue
+		}
+		content := string(data)
+		if contains(content, "django") {
+			return "django"
+		}
+		if contains(content, "flask") {
+			return "flask"
+		}
+		if contains(content, "fastapi") || contains(content, "uvicorn") {
+			return "fastapi"
+		}
+		if contains(content, "streamlit") {
+			return "streamlit"
+		}
+	}
+
+	if exists(filepath.Join(dir, "manage.py")) {
+		return "django"
+	}
+	if exists(filepath.Join(dir, "app.py")) {
+		return "flask"
+	}
+
+	return "python"
+}
+
+func contains(s, sub string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(sub))
+}
+
+func buildPythonInstallCmd(mgr string, dir string) string {
+	switch mgr {
+	case "poetry":
+		return "poetry install"
+	case "pipenv":
+		return "pipenv install"
+	case "uv":
+		return "uv sync"
+	default:
+		if exists(filepath.Join(dir, "requirements.txt")) {
+			return "pip install -r requirements.txt"
+		}
+		if exists(filepath.Join(dir, "pyproject.toml")) {
+			return "pip install -e ."
+		}
+		return "pip install -e ."
+	}
+}
+
+func buildPythonDevCmd(framework string, dir string) string {
+	switch framework {
+	case "django":
+		return "python manage.py runserver 0.0.0.0:8000"
+	case "flask":
+		return "flask run --host=0.0.0.0"
+	case "fastapi":
+		return "uvicorn main:app --host 0.0.0.0 --port 8000"
+	case "streamlit":
+		return "streamlit run app.py --server.address 0.0.0.0"
+	default:
+		if exists(filepath.Join(dir, "app.py")) {
+			return "python app.py"
+		}
+		if exists(filepath.Join(dir, "main.py")) {
+			return "python main.py"
+		}
+		return "python -m http.server 8000"
+	}
+}
+
+func defaultPythonPort(framework string) int {
+	switch framework {
+	case "django", "fastapi":
+		return 8000
+	case "flask":
+		return 5000
+	case "streamlit":
+		return 8501
+	default:
+		return 8000
+	}
 }

@@ -89,12 +89,18 @@ echo "Agent: $(ls -lh "${WORK_DIR}/usr/local/bin/dew-agent" | awk '{print $5}')"
 # --- Step 4a: Node.js marker (node and standard profiles) ---
 # Node.js is installed at first boot via apk add (avoids cross-platform APK extraction).
 # A marker file tells init-stage2 to install Node.js + build tools.
+# --- Step 4a: Profile markers ---
+if [ "$PROFILE" = "python" ]; then
+    echo "--- Step 4a: Python marker ---"
+    touch "${WORK_DIR}/.dew-python-profile"
+fi
 if [ "$PROFILE" = "node" ] || [ "$PROFILE" = "standard" ]; then
     echo "--- Step 4a: Node.js marker ---"
     touch "${WORK_DIR}/.dew-node-profile"
-    echo "Node.js: will install at first boot via apk add"
+fi
 
-    # e2fsprogs for disk formatting (switch_root)
+# e2fsprogs for any profile that uses disk (switch_root needs mkfs.ext4)
+if [ "$PROFILE" != "minimal" ]; then
     echo "Installing e2fsprogs..."
     E2FS_PKGS="e2fsprogs e2fsprogs-libs libcom_err libuuid libblkid libeconf"
     for pkg in $E2FS_PKGS; do
@@ -237,6 +243,7 @@ if [ -b /dev/vda ]; then
         cp -a /bin /etc /lib /opt /sbin /usr /var /mnt/root/ 2>/dev/null || true
         cp /init-stage2 /mnt/root/init-stage2
         [ -f /.dew-node-profile ] && cp /.dew-node-profile /mnt/root/.dew-node-profile
+        [ -f /.dew-python-profile ] && cp /.dew-python-profile /mnt/root/.dew-python-profile
         chmod 755 /mnt/root/init-stage2
         mkdir -p /mnt/root/dev /mnt/root/proc /mnt/root/sys \
                  /mnt/root/run /mnt/root/tmp /mnt/root/data \
@@ -248,6 +255,7 @@ if [ -b /dev/vda ]; then
     cp /init-stage2 /mnt/root/init-stage2
     chmod 755 /mnt/root/init-stage2
     [ -f /.dew-node-profile ] && cp /.dew-node-profile /mnt/root/.dew-node-profile
+    [ -f /.dew-python-profile ] && cp /.dew-python-profile /mnt/root/.dew-python-profile
 
     # Bind-mount virtual filesystems into new root
     mount --move /dev /mnt/root/dev
@@ -338,12 +346,19 @@ echo "dew ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/dew 2>/dev/null || true
 chmod 440 /etc/sudoers.d/dew 2>/dev/null || true
 
 # Node.js (node/standard profile, installed once, cached on disk)
+# Install runtime on first boot (cached on disk for subsequent boots)
 if [ -f /.dew-node-profile ] && ! command -v node >/dev/null 2>&1; then
     echo "dew: installing Node.js + build tools (first boot)..."
-    # Reconcile libs after initramfs rootfs copy (musl version mismatch)
     apk update 2>/dev/null || true
     apk upgrade --no-cache musl 2>&1 | tail -1
     apk add --no-cache nodejs npm build-base python3 2>&1 | tail -1
+fi
+
+if [ -f /.dew-python-profile ] && ! command -v python3 >/dev/null 2>&1; then
+    echo "dew: installing Python + pip (first boot)..."
+    apk update 2>/dev/null || true
+    apk upgrade --no-cache musl 2>&1 | tail -1
+    apk add --no-cache python3 py3-pip build-base 2>&1 | tail -1
 fi
 
 # containerd (standard profile, now on ext4 rootfs)

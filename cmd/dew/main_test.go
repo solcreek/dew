@@ -228,6 +228,24 @@ func TestResolveAssets_NodeDefaults(t *testing.T) {
 	}
 }
 
+func TestResolveAssets_PythonDefaults(t *testing.T) {
+	flagProfile = "python"
+	defer func() { flagProfile = "" }()
+
+	cfg := vm.Config{CPUs: 1, MemoryMB: 512, Kernel: "/dev/null", Initrd: "/dev/null"}
+	resolveAssets(&cfg)
+
+	if cfg.MemoryMB != 1024 {
+		t.Errorf("python MemoryMB = %d, want 1024", cfg.MemoryMB)
+	}
+	if cfg.DiskGB != 4 {
+		t.Errorf("python DiskGB = %d, want 4", cfg.DiskGB)
+	}
+	if cfg.DiskPath == "" {
+		t.Error("python DiskPath should be auto-set")
+	}
+}
+
 func TestResolveAssets_StandardDefaults(t *testing.T) {
 	flagProfile = "standard"
 	defer func() { flagProfile = "" }()
