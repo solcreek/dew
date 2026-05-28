@@ -1,13 +1,12 @@
 {
   "name": "@solcreek/dew",
-  "version": "0.1.0",
-  "description": "Ultra-lightweight VM for macOS. Sub-second boot. Hardware-level isolation.",
+  "version": "0.2.0",
+  "description": "Ultra-lightweight VM + deploy tool. One Go binary for local dev and production.",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/solcreek/dew"
   },
-  "os": ["darwin"],
   "bin": {
     "dew": "bin/dew"
   },
