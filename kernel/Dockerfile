@@ -18,16 +18,7 @@ COPY config-turbo .config
 RUN make olddefconfig \
     && sed -i 's/CONFIG_MODULE_SIG=y/CONFIG_MODULE_SIG=n/' .config \
     && sed -i 's/CONFIG_SYSTEM_TRUSTED_KEYRING=y/# CONFIG_SYSTEM_TRUSTED_KEYRING is not set/' .config \
-    && sed -i 's/CONFIG_EXT4_FS=m/CONFIG_EXT4_FS=y/' .config \
-    && sed -i 's/CONFIG_OVERLAY_FS=m/CONFIG_OVERLAY_FS=y/' .config \
-    && sed -i 's/CONFIG_BRIDGE=m/CONFIG_BRIDGE=y/' .config \
-    && sed -i 's/CONFIG_VETH=m/CONFIG_VETH=y/' .config \
-    && sed -i 's/CONFIG_NF_CONNTRACK=m/CONFIG_NF_CONNTRACK=y/' .config \
-    && sed -i 's/CONFIG_NF_NAT=m/CONFIG_NF_NAT=y/' .config \
-    && sed -i 's/CONFIG_IP_NF_IPTABLES=m/CONFIG_IP_NF_IPTABLES=y/' .config \
-    && sed -i 's/CONFIG_IP_NF_FILTER=m/CONFIG_IP_NF_FILTER=y/' .config \
-    && sed -i 's/CONFIG_IP_NF_NAT=m/CONFIG_IP_NF_NAT=y/' .config \
-    && sed -i 's/CONFIG_PACKET=m/CONFIG_PACKET=y/' .config \
+    && sed -i 's/=m$/=y/' .config \
     && make -j"$(nproc)" bzImage \
     && cp arch/x86/boot/bzImage /vmlinuz-turbo
 
