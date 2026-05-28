@@ -82,6 +82,18 @@ Standard/node profiles use `switch_root` to ext4 disk because containerd's overl
 
 `dew up` auto-selects profile via `detect.Detect()`. Assets auto-download from GitHub Releases on first use.
 
+### Kernel strategy
+
+ARM64 (Apple Silicon): Kata pre-built kernel (vmlinux-6.18.15-186, 15.4MB, 30ms boot, monolithic). Download from kata-static release.
+
+x86_64 (Intel Mac): Debian cloud kernel (11MB + 22MB modules) for now. Future: custom monolithic from `kernel/config-dew-x86_64.fragment`.
+
+Never use Alpine virt kernel with non-Alpine modules — CONFIG_MODVERSIONS causes struct mismatch. Monolithic kernels (CONFIG_MODULES off) avoid this entirely.
+
+Apple VZ format: ARM64 = uncompressed Image (4K pages). x86_64 = bzImage.
+
+See `product-planning/dew-kernel-strategy-2026-05.md` for full benchmark data.
+
 ## Conventions
 
 - Commit messages: English, objective facts, no competitor brand names, no Co-Authored-By lines
