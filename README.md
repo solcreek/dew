@@ -84,7 +84,7 @@ dew server create --provider hetzner  # provision VPS ($5/mo)
 dew deploy 5.161.53.168               # deploy with SSE progress
 ```
 
-The server runs `dew-serve` (7.1MB Linux binary) — containerd for isolation, self-signed TLS, health checks, rollback.
+The server runs `dew serve` (7.1MB Linux binary) — containerd for isolation, self-signed TLS, health checks, rollback.
 
 ## Agent integration
 
@@ -109,7 +109,7 @@ Input hardening: rejects path traversal, query injection, control characters. `-
 ```
 macOS/Windows              Linux VPS
 ─────────────              ─────────
-dew (4MB binary)           dew-serve (7MB binary)
+dew (4MB binary)           dew (7MB Linux binary)
 ├── dew up                 ├── HTTP deploy API
 ├── dew app run            ├── containerd + nerdctl
 ├── dew build              ├── self-signed TLS
@@ -174,12 +174,14 @@ Infrastructure:
   dew server create [--provider]  Provision a VPS
   dew server list                 List managed servers
   dew server destroy <name>       Remove a server
+  dew serve                       Run deploy receiver (VPS)
 
 Advanced:
   dew run [--] <cmd>             Execute in ephemeral VM
   dew exec <cmd>                 Execute in running VM
   dew session ...                Persistent VM sessions
   dew assets ...                 Manage VM images
+  dew update                     Update to latest version
 
 Output:
   --json        Machine-readable JSON (all commands)

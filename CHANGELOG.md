@@ -9,46 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`dew update`** — self-update with semver comparison + SHA-256 checksum verification
+- **`dew update`** — self-update with semver comparison + SHA-256 checksum verification. Background check every 24h
+- **`dew app run/stop/list`** — run OSS apps from registry, symmetric verbs
+- **Agent safety** — input validation (path traversal, query injection, control chars), `--dry-run`, structured JSON errors (`{"ok":false,"error":"...","code":"..."}`)
 - **Windows installer** — `install.ps1` (`irm ... | iex`)
 - **install.sh cross-platform** — supports macOS + Linux
+- **CI kernel boot verification** — real Apple VZ boot test on macos-15-intel (x86_64) and macos-latest (ARM64)
+- **116 tests** across 13 packages
 
 ### Fixed
 
-- Version injected from git tag via ldflags (no more manual updates in 3 files)
+- Version injected from git tag via ldflags (single source of truth, no manual updates)
 - npm version auto-synced from GitHub release tag
 - TMPDIR on ext4 for overlay mount (dew-virt kernel)
-- Update check only on user-facing commands (no duplicate notices)
+- Update check only on user-facing commands (no duplicate notices via dew exec)
 - Health check reports `✗ timed out` instead of false `✓`
-- Port forwarding: pre-forward common ports for multi-app
+- Port forwarding: pre-forward common ports for multi-app + correct host:container mapping
+- npm publish waits for Release workflow (no race condition)
 
 ### Changed
 
-- Linux binary renamed `dew-serve` → `dew` (unified CLI name)
+- Linux binary `dew-serve` → `dew` (unified CLI name on all platforms)
 - `dew up` is dev-only; registry apps moved to `dew app run`
-
-## [0.4.2] - 2026-05-29
-
-### Added
-
-- **`dew update`** — self-update to latest version. Background check every 24h notifies when update available
-- **`dew app run/stop/list`** — port forwarding fix, health check failure reporting
-- **Agent safety** — input validation (path traversal, query injection, control chars), `--dry-run`, structured JSON errors
-- **Windows installer** — `install.ps1` for PowerShell (`irm ... | iex`)
-- **Unified CLI name** — `dew` on all platforms (was `dew-serve` on Linux)
-- **108 tests** — consolidated test suite with httptest mock server
-
-### Changed
-
-- **README rewrite** — apps + deploy + share front and center
-- **install.sh** — now supports both macOS and Linux
-- **Version string** — hardcoded in binary (was `0.1.0-dev`)
-
-### Fixed
-
-- Port forwarding: `nerdctl run -p exposedPort:containerPort` (was `containerPort:containerPort`)
-- Health check reports `✗ timed out` instead of false `✓`
-- VM pre-forwards common port range for multi-app support
+- CLI help restructured: Dev → Share → Apps → Deploy → Infrastructure → Advanced
+- Tagline: "run any app, anywhere"
+- README rewritten for v0.4
 
 ## [0.4.0] - 2026-05-29
 
