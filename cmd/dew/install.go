@@ -55,9 +55,17 @@ func cmdInstall(args []string) error {
 		return err
 	}
 
+	runtime := manifest.Runtime
+	if runtime == "" && manifest.DockerImage != "" {
+		runtime = "container"
+	}
+	if runtime == "" && manifest.Type == "static" {
+		runtime = "static"
+	}
+
 	fmt.Fprintf(os.Stderr, "\n  %s v%s\n", manifest.Name, manifest.Version)
 	fmt.Fprintf(os.Stderr, "  %s\n", manifest.Description)
-	fmt.Fprintf(os.Stderr, "  Port: %d | Runtime: %s\n\n", manifest.Port, manifest.Runtime)
+	fmt.Fprintf(os.Stderr, "  Port: %d | Runtime: %s\n\n", manifest.Port, runtime)
 
 	if manifest.DockerImage != "" {
 		exposedPort := manifest.Port
@@ -78,7 +86,6 @@ func cmdInstall(args []string) error {
 			exec.Command(runtime, "rm", "-f", containerName).Run()
 			runArgs := buildRunArgs(containerName, exposedPort, manifest)
 			cmd := exec.Command(runtime, runArgs...)
-			cmd.Stdout = os.Stderr
 			cmd.Stderr = os.Stderr
 			if err := cmd.Run(); err != nil {
 				sp.Fail("start failed")
@@ -90,7 +97,6 @@ func cmdInstall(args []string) error {
 			dewExec := exec.Command(os.Args[0], "exec",
 				fmt.Sprintf("export TMPDIR=/tmp/containerd-tmp && mkdir -p /tmp/containerd-tmp && chmod 1777 /tmp/containerd-tmp && nerdctl rm -f %s 2>/dev/null; nerdctl run -d --name %s -p %d:%d %s",
 					containerName, containerName, manifest.Port, manifest.Port, manifest.DockerImage))
-			dewExec.Stdout = os.Stderr
 			dewExec.Stderr = os.Stderr
 			if err := dewExec.Run(); err != nil {
 				sp.Fail("start failed in VM")
