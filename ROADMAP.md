@@ -69,7 +69,7 @@ run`) and **isolated** (one VM per workload, VM-level isolation,
 deployable as a unit — the default for `dew up`) without forcing either
 model.
 
-## v0.6 — Dashboard + Observability
+## v0.6 — Dashboard + Observability + npm Repackaging
 
 - **Dashboard** — built-in web UI (Go templates + htmx)
 - **`dew app list`** — resource usage (CPU, RAM, network)
@@ -78,6 +78,63 @@ model.
 - **`dew clone <url>`** — git clone + detect + up
 - **Cross-VM service discovery** — DNS-based reachability between named VMs (`my-api.vm.dew.local`), so isolated VMs can still talk when configured
 - **VM-level resource limits** — declarative CPU/RAM caps per VM in `dew.toml`
+
+### npm packaging refactor — `optionalDependencies` per platform
+
+Today the npm package is a 5 KB metadata shell that downloads the
+correct binary in a `postinstall` script. This works but has cost us
+twice already: once when codesign-failure-paths silently broke VM
+support, and once at v0.5.0 when the postinstall re-signed a properly
+notarized binary with ad-hoc and stripped the Developer ID. Move to
+the pattern used by every modern Rust/Go-binary-on-npm tool:
+
+```
+@solcreek/dew                      (main package, ~25 lines, no postinstall)
+  bin/dew                          (Node dispatcher → require.resolve + spawnSync)
+  optionalDependencies:
+    "@solcreek/dew-darwin-arm64": "x.y.z"
+    "@solcreek/dew-darwin-x64":   "x.y.z"
+    "@solcreek/dew-linux-x64":    "x.y.z"
+    "@solcreek/dew-linux-arm64":  "x.y.z"
+    "@solcreek/dew-windows-x64":  "x.y.z"
+
+@solcreek/dew-darwin-arm64         (signed + notarized binary inside)
+  package.json:  os=darwin, cpu=arm64, no scripts
+  bin/dew                          (chmod 755'd at build time in CI)
+```
+
+Adopting this fixes the signing-strip class of bugs by removing the
+postinstall surface entirely — there is no code path on the user's
+machine that touches the binary. npm 7+ ships `optionalDependencies`
+by default, so the typical install is fast and offline-resilient
+after the first run.
+
+Reference patterns to mine for code:
+- **Biome's `bin/biome` dispatcher** — the cleanest 25-line CLI
+  shape, exactly the model we want (CLI not a library)
+- **esbuild's `pkgForSomeOtherPlatform()` error** — best-in-class
+  diagnostic when wrong-arch binary is detected (Docker → host arch
+  mismatch, Rosetta cross-platform copy, etc.)
+- **rolldown's `NAPI_RS_ENFORCE_VERSION_CHECK`** — one-line lockfile-
+  skew defense for when the binding package version drifts from the
+  dispatcher version
+- **biome's `generate-packages.mjs`** — CI step that scaffolds each
+  `@solcreek/dew-<triple>` directory from the built binary, including
+  the critical `chmod 0755` at *publish* time (not at install time)
+
+Notarization detail worth remembering: **npm tarball extraction strips
+macOS extended attributes**, including the `com.apple.quarantine` xattr
+and any externally-attached notarization tickets. For bare Mach-O
+binaries, the notarization staple is embedded **inside the binary**
+via `xcrun stapler staple`, so it survives the round-trip. The CI
+already does the right thing here (notarize then staple); the refactor
+just preserves that property by keeping the binary file untouched in
+the platform package.
+
+Single env override: `DEW_BINARY=/path/to/custom/dew` for local builds
+and testing. No SHA-256 ceremony — npm provenance attestations (already
+enabled) handle supply-chain trust without the per-binary hash table
+that esbuild maintains for its npm-install-fallback path.
 
 ## v0.7 — Agent + Ecosystem
 
