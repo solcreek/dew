@@ -1,6 +1,11 @@
 # Dew
 
-A 4MB tool that boots a Linux VM in under a second.
+[![CI](https://github.com/solcreek/dew/actions/workflows/ci.yml/badge.svg)](https://github.com/solcreek/dew/actions/workflows/ci.yml)
+[![Release](https://github.com/solcreek/dew/actions/workflows/release.yml/badge.svg)](https://github.com/solcreek/dew/releases/latest)
+[![npm](https://img.shields.io/npm/v/@solcreek/dew)](https://www.npmjs.com/package/@solcreek/dew)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+Run any app, anywhere. Dev environments, app runner, deploy tool — one binary.
 
 ```
 $ dew up
