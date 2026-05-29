@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.7] - 2026-05-30
+
+### Added
+
+- **`dew doctor --json`** — structured output with stable error codes
+  (`ad_hoc_entitlement`, `boot_failed`, `missing_asset`, …) so agents
+  can gate on environment checks before attempting VM operations
+- **`dew app run --events`** — NDJSON lifecycle stream (`preparing`,
+  `vm_failed`, `fallback`, `started`, `health`, `done`) so callers see
+  *which* backend actually ran (VM vs host docker fallback) and *why*
+- **`dew app run --no-fallback`** — strict mode that fails closed when
+  the VM cannot start, instead of silently switching to host docker
+- **`backend` field** in `dew app run --json` summary output
+- npm postinstall prints invocation hint (npx / local / global) so
+  users who installed via `npx @solcreek/dew` see the correct command
+  to use, not just bare `dew` which only exists with `npm i -g`
+
+### Fixed
+
+- `ensureDewVM` no longer leaks a raw `{"ok":false,...}` line into
+  the human progress stream when the VM fails. Child stdout/stderr
+  is captured; failure is surfaced via the new structured events
+- Boot test is now skipped when ad-hoc-signed entitlement is detected
+  (it would always fail with the same root cause)
+
+### Notes
+
+- 9 new tests (`doctor_test.go`, `events_test.go`); 114 total
+
 ## [0.4.4] - 2026-05-29
 
 ### Added
