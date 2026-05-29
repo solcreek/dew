@@ -160,6 +160,7 @@ func cmdAppRun(args []string) error {
 	}
 
 	hostPort := 0
+	noFallback := false
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--port", "-p":
@@ -171,11 +172,15 @@ func cmdAppRun(args []string) error {
 			flagDryRun = true
 		case "--json":
 			flagJSON = true
+		case "--events":
+			flagEvents = true
+		case "--no-fallback":
+			noFallback = true
 		}
 	}
 
-	// When --json is set, suppress spinners and other progress output.
-	if flagJSON {
+	// When --json or --events is set, suppress spinners.
+	if suppressProgress() {
 		os.Setenv("DEW_NO_PROGRESS", "1")
 	}
 
@@ -225,9 +230,18 @@ func cmdAppRun(args []string) error {
 
 		// Ensure Dew VM is running with containerd
 		sp.Step("Preparing environment")
+		emitEvent("preparing", map[string]any{"backend": "vm"})
 		vmErr := ensureDewVM(exposedPort, manifest.Port)
+		backend := "vm"
 		if vmErr != nil {
 			sp.Fail(fmt.Sprintf("VM boot failed: %v", vmErr))
+			emitEvent("vm_failed", map[string]any{
+				"error": fmtErr(vmErr),
+				"code":  "vm_boot_failed",
+			})
+			if noFallback {
+				return fmt.Errorf("VM boot failed and --no-fallback set: %w", vmErr)
+			}
 			// Check if any host container runtime is available before falling back
 			runtime := ""
 			if _, err := lookPath("nerdctl"); err == nil {
@@ -236,8 +250,17 @@ func cmdAppRun(args []string) error {
 				runtime = "docker"
 			}
 			if runtime == "" {
+				emitEvent("fallback_unavailable", map[string]any{
+					"reason": "no_host_runtime",
+				})
 				return fmt.Errorf("VM boot failed: %w\n\n  No host container runtime (docker/nerdctl) found as fallback.\n  Try: dew doctor", vmErr)
 			}
+			backend = runtime
+			emitEvent("fallback", map[string]any{
+				"from":   "vm",
+				"to":     runtime,
+				"reason": fmtErr(vmErr),
+			})
 			fmt.Fprintf(os.Stderr, "  Falling back to host %s...\n", runtime)
 			sp.Step(fmt.Sprintf("Starting %s (host %s)", manifest.Name, runtime))
 			exec.Command(runtime, "rm", "-f", containerName).Run()
@@ -246,6 +269,9 @@ func cmdAppRun(args []string) error {
 			cmd.Stderr = os.Stderr
 			if err := cmd.Run(); err != nil {
 				sp.Fail("start failed")
+				emitEvent("start_failed", map[string]any{
+					"backend": runtime, "error": fmtErr(err),
+				})
 				return fmt.Errorf("failed to start %s: %w", manifest.Name, err)
 			}
 		} else {
@@ -257,9 +283,17 @@ func cmdAppRun(args []string) error {
 			dewExec.Stderr = os.Stderr
 			if err := dewExec.Run(); err != nil {
 				sp.Fail("start failed in VM")
+				emitEvent("start_failed", map[string]any{
+					"backend": "vm", "error": fmtErr(err),
+				})
 				return fmt.Errorf("failed to start %s in VM: %w", manifest.Name, err)
 			}
 		}
+		emitEvent("started", map[string]any{
+			"backend":   backend,
+			"container": containerName,
+			"port":      exposedPort,
+		})
 
 		if manifest.HealthCheck != "" {
 			sp.Step("Waiting for healthy")
@@ -278,21 +312,38 @@ func cmdAppRun(args []string) error {
 			}
 			if !healthy {
 				sp.Fail("health check timed out")
+				emitEvent("health", map[string]any{
+					"status": "unhealthy",
+					"url":    fmt.Sprintf("http://localhost:%d%s", exposedPort, manifest.HealthCheck),
+				})
 				fmt.Fprintf(os.Stderr, "  Container started but http://localhost:%d%s is not responding.\n", exposedPort, manifest.HealthCheck)
 				fmt.Fprintf(os.Stderr, "  The app may still be starting. Try opening the URL in a few seconds.\n\n")
 				return nil
 			}
+			emitEvent("health", map[string]any{
+				"status": "ok",
+				"url":    fmt.Sprintf("http://localhost:%d%s", exposedPort, manifest.HealthCheck),
+			})
 		}
 
 		sp.Done(fmt.Sprintf("http://localhost:%d", exposedPort))
 		fmt.Fprintf(os.Stderr, "  %s is running at http://localhost:%d\n\n", manifest.Name, exposedPort)
 
-		if flagJSON {
+		// Final structured result: --json emits the single summary object;
+		// --events already streamed lifecycle events and emits "done" here.
+		appURL := fmt.Sprintf("http://localhost:%d", exposedPort)
+		if flagEvents {
+			emitEvent("done", map[string]any{
+				"app": manifest.Name, "port": exposedPort,
+				"url": appURL, "backend": backend,
+			})
+		} else if flagJSON {
 			json.NewEncoder(os.Stdout).Encode(map[string]any{
-				"ok":   true,
-				"app":  manifest.Name,
-				"port": exposedPort,
-				"url":  fmt.Sprintf("http://localhost:%d", exposedPort),
+				"ok":      true,
+				"app":     manifest.Name,
+				"port":    exposedPort,
+				"url":     appURL,
+				"backend": backend,
 			})
 		}
 		return nil
@@ -372,8 +423,12 @@ func ensureDewVM(hostPort, guestPort int) error {
 		}
 	}
 	cmd := exec.Command(os.Args[0], args...)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
+	// IMPORTANT: do NOT forward child stdout to our stdout/stderr — it would
+	// leak a structured JSON error line into the human progress stream when
+	// --json is passed downstream. Capture and discard; we surface the real
+	// failure via our own structured event / return value.
+	cmd.Stdout = nil
+	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start VM: %w", err)
 	}
