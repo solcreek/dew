@@ -69,13 +69,34 @@ function printInvocationHint() {
 }
 printInvocationHint();
 
-// macOS: codesign with virtualization entitlement
+// macOS: check whether the downloaded binary already has a Developer ID
+// signature. Release binaries (≥v0.5.0) are notarized + Developer-ID-signed
+// in CI, so we MUST NOT re-sign them — `codesign --force -s -` would strip
+// the Developer ID and replace it with an ad-hoc signature, which macOS
+// rejects for the virtualization entitlement.
+//
+// We only fall back to ad-hoc signing if the binary lacks any usable
+// signature (e.g. a custom build from source, or a hypothetical fork).
 if (os.platform() === "darwin" && existsSync(binary) && !binary.endsWith(".exe")) {
-  const entitlements = path.join(__dirname, "entitlements.plist");
-  if (!existsSync(entitlements)) {
-    writeFileSync(
-      entitlements,
-      `<?xml version="1.0" encoding="UTF-8"?>
+  let hasDeveloperID = false;
+  try {
+    const info = execSync(`codesign -dv "${binary}" 2>&1`, { encoding: "utf8" });
+    hasDeveloperID = /Developer ID Application/.test(info) && !/Signature=adhoc/.test(info);
+  } catch (_) {
+    // not signed at all
+  }
+
+  if (hasDeveloperID) {
+    console.log("dew: Developer ID signature detected — leaving binary untouched");
+  } else {
+    console.log("dew: binary is unsigned, falling back to ad-hoc signing");
+    console.log("dew: NOTE — ad-hoc signing means VM commands won't work.");
+    console.log("dew:        download a release binary from https://github.com/solcreek/dew/releases/latest for full functionality.");
+    const entitlements = path.join(__dirname, "entitlements.plist");
+    if (!existsSync(entitlements)) {
+      writeFileSync(
+        entitlements,
+        `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -83,21 +104,15 @@ if (os.platform() === "darwin" && existsSync(binary) && !binary.endsWith(".exe")
     <true/>
 </dict>
 </plist>`
-    );
-  }
-
-  try {
-    execSync(
-      `codesign --entitlements "${entitlements}" --force -s - "${binary}"`,
-      { stdio: "pipe" }
-    );
-    console.log("dew: signed with virtualization entitlement");
-  } catch (e) {
-    console.log("");
-    console.log("dew: ⚠️  codesign failed — VM commands (dew up, dew app run) will not work");
-    console.log("dew: this happens in sandboxed environments (some IDE terminals, CI)");
-    console.log("dew: try running in a regular Terminal/iTerm, or:");
-    console.log(`dew:   codesign --entitlements "${entitlements}" --force -s - "${binary}"`);
-    console.log("");
+      );
+    }
+    try {
+      execSync(
+        `codesign --entitlements "${entitlements}" --force -s - "${binary}"`,
+        { stdio: "pipe" }
+      );
+    } catch (e) {
+      console.log("dew: ⚠️  ad-hoc codesign also failed (sandboxed terminal?)");
+    }
   }
 }
