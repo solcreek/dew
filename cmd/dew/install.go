@@ -166,11 +166,11 @@ func cmdAppRun(args []string) error {
 				return fmt.Errorf("failed to start %s: %w", manifest.Name, err)
 			}
 		} else {
-			// Run inside Dew VM
+			// Run inside Dew VM — map container port to exposedPort inside VM
 			sp.Step(fmt.Sprintf("Starting %s", manifest.Name))
 			dewExec := exec.Command(os.Args[0], "exec",
 				fmt.Sprintf("export TMPDIR=/tmp/containerd-tmp && mkdir -p /tmp/containerd-tmp && chmod 1777 /tmp/containerd-tmp && nerdctl rm -f %s 2>/dev/null; nerdctl run -d --name %s -p %d:%d %s",
-					containerName, containerName, manifest.Port, manifest.Port, manifest.DockerImage))
+					containerName, containerName, exposedPort, manifest.Port, manifest.DockerImage))
 			dewExec.Stderr = os.Stderr
 			if err := dewExec.Run(); err != nil {
 				sp.Fail("start failed in VM")
@@ -180,6 +180,7 @@ func cmdAppRun(args []string) error {
 
 		if manifest.HealthCheck != "" {
 			sp.Step("Waiting for healthy")
+			healthy := false
 			url := fmt.Sprintf("http://localhost:%d%s", exposedPort, manifest.HealthCheck)
 			for i := 0; i < 30; i++ {
 				time.Sleep(time.Second)
@@ -187,9 +188,16 @@ func cmdAppRun(args []string) error {
 				if err == nil {
 					resp.Body.Close()
 					if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+						healthy = true
 						break
 					}
 				}
+			}
+			if !healthy {
+				sp.Fail("health check timed out")
+				fmt.Fprintf(os.Stderr, "  Container started but http://localhost:%d%s is not responding.\n", exposedPort, manifest.HealthCheck)
+				fmt.Fprintf(os.Stderr, "  The app may still be starting. Try opening the URL in a few seconds.\n\n")
+				return nil
 			}
 		}
 
@@ -260,21 +268,27 @@ func fetchManifest(name string) (*appManifest, error) {
 }
 
 func ensureDewVM(hostPort, guestPort int) error {
-	// Check if dew VM daemon socket exists (VM already running)
 	home, _ := os.UserHomeDir()
 	sock := filepath.Join(home, ".local", "state", "dew", "default.sock")
 	if _, err := os.Stat(sock); err == nil {
-		// VM running, check if port is forwarded
 		return nil
 	}
 
-	// Start VM in background with port forwarding
-	cmd := exec.Command(os.Args[0], "start",
+	// Start VM with NAT networking + port forwarding
+	// Multiple apps share one VM; each app gets its own port forward
+	args := []string{"start",
 		"--profile", "standard",
-		"--forward", fmt.Sprintf("%d:%d", hostPort, guestPort),
+		"--forward", fmt.Sprintf("%d:%d", hostPort, hostPort),
 		"--network",
 		"--json",
-	)
+	}
+	// Pre-forward common port range for subsequent apps
+	for _, p := range []int{3000, 3001, 3002, 3003, 3004, 3005, 8080, 8000, 7456, 5230, 2368} {
+		if p != hostPort {
+			args = append(args, "--forward", fmt.Sprintf("%d:%d", p, p))
+		}
+	}
+	cmd := exec.Command(os.Args[0], args...)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
