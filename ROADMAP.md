@@ -48,6 +48,27 @@ macOS. Apple Virtualization.framework. Alpine Linux.
 - **Reverse proxy** — hostname-based routing to app containers
 - **dew-apps tarball builds** — pre-packaged tarballs (10x smaller than Docker images)
 
+### `dew vm` — explicit multi-VM management
+
+Today Dew supports two implicit VM models depending on the command:
+`dew up` boots an ephemeral per-project VM; `dew app run` reuses a
+long-lived "default" VM for all registry apps. Both behaviours stay,
+but v0.5 promotes the distinction to a first-class concept.
+
+- **`dew vm list`** — show all known VMs (name, profile, state, resource usage)
+- **`dew vm create <name> [--profile]`** — create a named, long-lived VM
+- **`dew vm start/stop <name>`** — lifecycle control independent of app commands
+- **`dew vm destroy <name>`** — clean up disk image and config
+- **`dew vm shell <name>`** — interactive shell into a specific VM
+- **`dew app run <app> --vm <name>`** — opt into running an app inside a specific VM (default remains the shared one)
+- **`dew up --vm <name>`** — attach a dev environment to a named VM instead of spawning a new one
+
+This gives users an explicit choice between **shared** (fast subsequent
+starts, one kernel, container-level isolation — the default for `dew app
+run`) and **isolated** (one VM per workload, VM-level isolation,
+deployable as a unit — the default for `dew up`) without forcing either
+model.
+
 ## v0.6 — Dashboard + Observability
 
 - **Dashboard** — built-in web UI (Go templates + htmx)
@@ -55,6 +76,8 @@ macOS. Apple Virtualization.framework. Alpine Linux.
 - **Service provisioning** — postgres, redis as containers via `dew.toml`
 - **Resource limits** — per-app CPU and memory via cgroups
 - **`dew clone <url>`** — git clone + detect + up
+- **Cross-VM service discovery** — DNS-based reachability between named VMs (`my-api.vm.dew.local`), so isolated VMs can still talk when configured
+- **VM-level resource limits** — declarative CPU/RAM caps per VM in `dew.toml`
 
 ## v0.7 — Agent + Ecosystem
 
