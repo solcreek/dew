@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/solcreek/dew/internal/selfupdate"
 	"github.com/solcreek/dew/internal/serve"
 )
 
-const version = "0.4.1"
+const version = "0.4.2"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -17,10 +18,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	go selfupdate.CheckBackground(version)
+
 	var err error
 	switch os.Args[1] {
 	case "serve":
 		err = cmdServe(os.Args[2:])
+	case "update":
+		err = selfupdate.Update(version)
 	case "version":
 		fmt.Printf("dew %s (linux)\n", version)
 	case "help", "--help", "-h":
@@ -77,6 +82,7 @@ Flags:
   --token-file <path>            Token file path
 
 Other:
+  dew update                     Update to latest version
   dew version                    Print version
   dew help                       Show this help
 `)

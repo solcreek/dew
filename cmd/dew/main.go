@@ -24,6 +24,7 @@ import (
 	"github.com/solcreek/dew/internal/daemon"
 	"github.com/solcreek/dew/internal/detect"
 	"github.com/solcreek/dew/internal/progress"
+	"github.com/solcreek/dew/internal/selfupdate"
 	"github.com/solcreek/dew/internal/services"
 	"github.com/solcreek/dew/internal/serialexec"
 	"github.com/solcreek/dew/internal/session"
@@ -32,7 +33,7 @@ import (
 	vsockProto "github.com/solcreek/dew/internal/vsock"
 )
 
-const version = "0.1.0-dev"
+const version = "0.4.2"
 
 var flagJSON bool
 var flagStream bool
@@ -240,6 +241,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	go selfupdate.CheckBackground(version)
+
 	var err error
 	switch os.Args[1] {
 	case "start":
@@ -282,6 +285,8 @@ func main() {
 		err = cmdServe(os.Args[2:])
 	case "server":
 		err = cmdServer(os.Args[2:])
+	case "update":
+		err = selfupdate.Update(version)
 	case "version":
 		fmt.Printf("dew %s\n", version)
 	case "help", "--help", "-h":
@@ -335,6 +340,7 @@ Advanced:
   dew exec <cmd>                 Execute in running VM
   dew session ...                Persistent VM sessions
   dew assets ...                 Manage VM images
+  dew update                     Update to latest version
   dew version                    Print version
 
 Output:
