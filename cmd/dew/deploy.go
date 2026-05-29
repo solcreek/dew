@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/solcreek/dew/internal/progress"
+	"github.com/solcreek/dew/internal/validate"
 )
 
 func cmdDeploy(args []string) error {
@@ -38,6 +39,8 @@ func cmdDeploy(args []string) error {
 			if i < len(args) {
 				tarballPath = args[i]
 			}
+		case "--dry-run":
+			flagDryRun = true
 		default:
 			if !strings.HasPrefix(args[i], "-") {
 				if target == "" {
@@ -48,7 +51,11 @@ func cmdDeploy(args []string) error {
 	}
 
 	if target == "" {
-		return fmt.Errorf("usage: dew deploy <target> [--tarball <path>] [--image <name>] [--app <name>]")
+		return fmt.Errorf("usage: dew deploy <target> [--tarball <path>] [--image <name>] [--app <name>] [--dry-run]")
+	}
+
+	if err := validate.Target(target); err != nil {
+		return err
 	}
 
 	token, err := loadDeployToken(target)
@@ -57,6 +64,19 @@ func cmdDeploy(args []string) error {
 	}
 
 	endpoint := resolveEndpoint(target)
+
+	if flagDryRun {
+		fmt.Fprintf(os.Stderr, "  Dry run:\n")
+		if imageName != "" {
+			fmt.Fprintf(os.Stderr, "  Would deploy image %s to %s\n", imageName, endpoint)
+		} else {
+			t := tarballPath
+			if t == "" { t = "(auto-detect)" }
+			fmt.Fprintf(os.Stderr, "  Would deploy %s to %s\n", t, endpoint)
+		}
+		fmt.Fprintf(os.Stderr, "  No changes made.\n")
+		return nil
+	}
 
 	if imageName != "" {
 		return deployImage(target, endpoint, token, imageName, appName)

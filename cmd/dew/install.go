@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/solcreek/dew/internal/progress"
+	"github.com/solcreek/dew/internal/validate"
 )
 
 const registryBase = "https://raw.githubusercontent.com/solcreek/dew-apps/main"
@@ -86,13 +87,29 @@ func cmdAppList() error {
 
 func cmdAppRun(args []string) error {
 	appName := args[0]
+	if err := validate.AppName(appName); err != nil {
+		return err
+	}
+
 	hostPort := 0
 	for i := 1; i < len(args); i++ {
-		if (args[i] == "--port" || args[i] == "-p") && i+1 < len(args) {
+		switch args[i] {
+		case "--port", "-p":
 			i++
-			fmt.Sscanf(args[i], "%d", &hostPort)
+			if i < len(args) {
+				fmt.Sscanf(args[i], "%d", &hostPort)
+			}
+		case "--dry-run":
+			flagDryRun = true
 		}
 	}
+
+	if hostPort > 0 {
+		if err := validate.Port(hostPort); err != nil {
+			return err
+		}
+	}
+
 	sp := progress.New()
 
 	sp.Step("Fetching manifest")
@@ -113,6 +130,16 @@ func cmdAppRun(args []string) error {
 	fmt.Fprintf(os.Stderr, "\n  %s v%s\n", manifest.Name, manifest.Version)
 	fmt.Fprintf(os.Stderr, "  %s\n", manifest.Description)
 	fmt.Fprintf(os.Stderr, "  Port: %d | Runtime: %s\n\n", manifest.Port, runtime)
+
+	if flagDryRun {
+		exposedPort := manifest.Port
+		if hostPort > 0 { exposedPort = hostPort }
+		fmt.Fprintf(os.Stderr, "  Dry run:\n")
+		fmt.Fprintf(os.Stderr, "  Would pull %s\n", manifest.DockerImage)
+		fmt.Fprintf(os.Stderr, "  Would expose port %d\n", exposedPort)
+		fmt.Fprintf(os.Stderr, "  No containers started.\n")
+		return nil
+	}
 
 	if manifest.DockerImage != "" {
 		exposedPort := manifest.Port

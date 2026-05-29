@@ -38,6 +38,7 @@ var flagJSON bool
 var flagStream bool
 var flagEvents bool
 var flagWith string
+var flagDryRun bool
 var flagProfile string
 
 func dewDataDir() string {
@@ -340,6 +341,7 @@ Output:
   --json        Machine-readable JSON (all commands)
   --events      NDJSON lifecycle stream
   --stream      Stream stdout/stderr
+  --dry-run     Validate without executing (deploy, app run, server create)
 `)
 }
 
