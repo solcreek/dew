@@ -295,9 +295,20 @@ func ensureDewVM(hostPort, guestPort int) error {
 		return fmt.Errorf("start VM: %w", err)
 	}
 
+	// Monitor for early child process death (VZ entitlement failures, etc.)
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+
 	// Wait for VM to be ready
 	for i := 0; i < 60; i++ {
-		time.Sleep(time.Second)
+		select {
+		case err := <-exited:
+			if err != nil {
+				return fmt.Errorf("dew start exited early: %w\n\n  This often means:\n  - The binary is missing the virtualization entitlement (try: dew update)\n  - You're on macOS < 13 (Apple VZ requires macOS 13+)\n  - Another VM is using port forwards (try: dew down)\n", err)
+			}
+			return fmt.Errorf("dew start exited without setting up the VM")
+		case <-time.After(time.Second):
+		}
 		if _, err := os.Stat(sock); err == nil {
 			// Give containerd a moment to start
 			time.Sleep(2 * time.Second)

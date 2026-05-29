@@ -289,6 +289,8 @@ func main() {
 		err = cmdServe(os.Args[2:])
 	case "server":
 		err = cmdServer(os.Args[2:])
+	case "doctor":
+		err = cmdDoctor(os.Args[2:])
 	case "update":
 		err = selfupdate.Update(version)
 	case "version":
@@ -344,6 +346,7 @@ Advanced:
   dew exec <cmd>                 Execute in running VM
   dew session ...                Persistent VM sessions
   dew assets ...                 Manage VM images
+  dew doctor                     Diagnose environment issues
   dew update                     Update to latest version
   dew version                    Print version
 

@@ -68,6 +68,11 @@ if (os.platform() === "darwin" && existsSync(binary) && !binary.endsWith(".exe")
     );
     console.log("dew: signed with virtualization entitlement");
   } catch (e) {
-    console.log("dew: codesign failed (may need manual signing)");
+    console.log("");
+    console.log("dew: ⚠️  codesign failed — VM commands (dew up, dew app run) will not work");
+    console.log("dew: this happens in sandboxed environments (some IDE terminals, CI)");
+    console.log("dew: try running in a regular Terminal/iTerm, or:");
+    console.log(`dew:   codesign --entitlements "${entitlements}" --force -s - "${binary}"`);
+    console.log("");
   }
 }
