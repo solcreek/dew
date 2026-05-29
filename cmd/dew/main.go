@@ -112,8 +112,7 @@ func resolveAssets(cfg *vm.Config) error {
 }
 
 const (
-	releaseBaseURL = "https://github.com/solcreek/dew/releases/download"
-	releaseVersion = "v0.1.0"
+	releaseBaseURL = "https://github.com/solcreek/dew/releases/latest/download"
 )
 
 func downloadAssets(dataDir, profile, kernelPath, initrdPath string) error {
@@ -141,12 +140,12 @@ func downloadAssets(dataDir, profile, kernelPath, initrdPath string) error {
 		name string
 	}{
 		{
-			fmt.Sprintf("%s/%s/vmlinuz-%s", releaseBaseURL, releaseVersion, arch),
+			fmt.Sprintf("%s/vmlinuz-%s", releaseBaseURL, arch),
 			kernelPath,
 			"kernel",
 		},
 		{
-			fmt.Sprintf("%s/%s/initramfs-%s-%s.cpio.gz", releaseBaseURL, releaseVersion, profile, arch),
+			fmt.Sprintf("%s/initramfs-%s-%s.cpio.gz", releaseBaseURL, profile, arch),
 			initrdPath,
 			fmt.Sprintf("initramfs (%s)", profile),
 		},

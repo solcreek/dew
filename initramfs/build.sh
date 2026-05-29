@@ -375,9 +375,10 @@ fi
 if [ -x /usr/local/bin/containerd ]; then
     # iptables needed for CNI bridge networking
     command -v iptables >/dev/null 2>&1 || apk add -q --no-cache iptables 2>/dev/null || true
-    # TMPDIR on ext4 (overlay mount fails on tmpfs in Apple VZ)
-    export TMPDIR=/var/tmp
-    mkdir -p /var/tmp
+    # TMPDIR for nerdctl/containerd scratch mounts
+    export TMPDIR=/tmp/containerd-tmp
+    mkdir -p /tmp/containerd-tmp
+    chmod 1777 /tmp/containerd-tmp
     mkdir -p /run/containerd /var/lib/containerd /var/lib/nerdctl
     containerd >/var/log/containerd.log 2>&1 &
     sleep 0.5

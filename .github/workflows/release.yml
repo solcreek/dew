@@ -24,11 +24,32 @@ jobs:
           GOARCH=amd64 CGO_ENABLED=1 go build -ldflags="-s -w" -o dew-darwin-amd64 ./cmd/dew/ || echo "x86_64 cross-compile skipped"
           [ -f dew-darwin-amd64 ] && codesign --entitlements entitlements.plist --force -s - dew-darwin-amd64 || true
 
-      - name: Upload binaries
+      - name: Build ARM64 initramfs
+        run: |
+          bash initramfs/build.sh minimal
+          bash initramfs/build.sh node
+          bash initramfs/build.sh standard
+          cp initramfs/vmlinuz vmlinuz-aarch64
+          cp initramfs/initramfs-minimal.cpio.gz initramfs-minimal-aarch64.cpio.gz
+          cp initramfs/initramfs-node.cpio.gz initramfs-node-aarch64.cpio.gz
+          cp initramfs/initramfs-standard.cpio.gz initramfs-standard-aarch64.cpio.gz
+
+      - name: Download Kata ARM64 kernel
+        run: |
+          curl -fsSL -o kata-arm64.tar.zst "https://github.com/kata-containers/kata-containers/releases/download/3.28.0/kata-static-3.28.0-arm64.tar.zst"
+          zstd -d kata-arm64.tar.zst
+          tar xf kata-arm64.tar --wildcards "*/vmlinux-*" --strip-components=5 || true
+          mv vmlinux-* vmlinuz-aarch64 2>/dev/null || true
+          rm -f kata-arm64.tar kata-arm64.tar.zst
+
+      - name: Upload binaries + ARM64 assets
         uses: actions/upload-artifact@v6
         with:
           name: macos-binaries
-          path: dew-darwin-*
+          path: |
+            dew-darwin-*
+            vmlinuz-aarch64
+            initramfs-*-aarch64.cpio.gz
 
   build-linux:
     runs-on: ubuntu-latest
