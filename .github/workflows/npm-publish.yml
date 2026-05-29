@@ -22,6 +22,15 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
 
+      - name: Sync version from git tag
+        working-directory: npm
+        run: |
+          # Get version from the tag that triggered the Release workflow
+          VERSION=$(gh api repos/solcreek/dew/releases/latest --jq .tag_name | sed 's/^v//')
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Publish (skip if version exists)
         working-directory: npm
         run: npm publish --provenance --access public || echo "Version already published, skipping"

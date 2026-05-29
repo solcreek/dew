@@ -33,7 +33,7 @@ import (
 	vsockProto "github.com/solcreek/dew/internal/vsock"
 )
 
-const version = "0.4.2"
+var version = "dev"
 
 var flagJSON bool
 var flagStream bool
@@ -241,7 +241,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	go selfupdate.CheckBackground(version)
+	// Only check for updates on user-facing commands, not internal (exec, start)
+	cmd := os.Args[1]
+	if cmd != "exec" && cmd != "start" && cmd != "run" && cmd != "serve" {
+		go selfupdate.CheckBackground(version)
+	}
 
 	var err error
 	switch os.Args[1] {

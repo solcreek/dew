@@ -10,7 +10,7 @@ import (
 	"github.com/solcreek/dew/internal/serve"
 )
 
-const version = "0.4.2"
+var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {

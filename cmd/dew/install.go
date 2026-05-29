@@ -169,7 +169,7 @@ func cmdAppRun(args []string) error {
 			// Run inside Dew VM — map container port to exposedPort inside VM
 			sp.Step(fmt.Sprintf("Starting %s", manifest.Name))
 			dewExec := exec.Command(os.Args[0], "exec",
-				fmt.Sprintf("export TMPDIR=/tmp/containerd-tmp && mkdir -p /tmp/containerd-tmp && chmod 1777 /tmp/containerd-tmp && nerdctl rm -f %s 2>/dev/null; nerdctl run -d --name %s -p %d:%d %s",
+				fmt.Sprintf("export TMPDIR=/var/lib/containerd/tmp && mkdir -p /var/lib/containerd/tmp && nerdctl rm -f %s 2>/dev/null; nerdctl run -d --name %s -p %d:%d %s",
 					containerName, containerName, exposedPort, manifest.Port, manifest.DockerImage))
 			dewExec.Stderr = os.Stderr
 			if err := dewExec.Run(); err != nil {
