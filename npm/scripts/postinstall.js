@@ -21,7 +21,7 @@ if (!existsSync(binary)) {
   if (platform === "darwin") {
     asset = `dew-darwin-${arch}`;
   } else if (platform === "linux") {
-    asset = `dew-serve-linux-${arch}`;
+    asset = `dew-linux-${arch}`;
   } else if (platform === "win32") {
     asset = `dew-windows-x86_64.exe`;
   } else {
