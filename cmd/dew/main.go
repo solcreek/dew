@@ -249,6 +249,10 @@ func main() {
 		err = cmdExec(os.Args[2:])
 	case "install":
 		err = cmdInstall(os.Args[2:])
+	case "app":
+		err = cmdInstall(os.Args[2:])
+	case "apps":
+		err = cmdInstallList()
 	case "build":
 		err = cmdBuild(os.Args[2:])
 	case "deploy":
@@ -295,46 +299,40 @@ func main() {
 func printUsage() {
 	fmt.Fprintf(os.Stderr, `dew — run any app, anywhere
 
-Apps:
-  dew up                         List available apps
-  dew up <app> [--port N]        Run app from registry
-  dew up <dir>                   Run local project
-  dew down                       Stop running app
+Dev:
+  dew up [dir]                   Start dev environment (auto-detect project)
+  dew up --with postgres,redis   Dev with services
+  dew down                       Stop dev environment
+
+Share:
   dew share [port]               Create temporary public HTTPS URL
 
+Apps:
+  Run open-source apps locally — no Docker needed.
+  dew apps                       Browse available apps
+  dew app run <name> [--port N]  Run an app
+  dew app stop <name>            Stop an app
+  dew app list                   Show running apps
+
 Deploy:
-  dew build [dir]                Package app into deploy tarball
+  dew build [dir]                Package deploy tarball
   dew deploy <target>            Deploy to remote server
   dew rollback <target> <app>    Restore previous version
-  dew env set <target> <app> K=V Set environment variables
-  dew env list <target> <app>    List env var names
-  dew auth set <host> <token>    Save deploy credentials
+  dew env ...                    Manage environment variables
+  dew auth ...                   Manage credentials
 
 Infrastructure:
   dew server create [--provider]  Provision a VPS
   dew server list                 List managed servers
   dew server destroy <name>       Remove a server
-  dew serve                       Run deploy receiver (VPS)
+  dew serve                       Run deploy receiver
 
-Advanced (VM):
-  dew start [flags]              Boot a Linux VM
-  dew run [--] <cmd>             Execute command in ephemeral VM
+Advanced:
+  dew run [--] <cmd>             Execute in ephemeral VM
   dew exec <cmd>                 Execute in running VM
-  dew session create/exec/destroy  Persistent VM sessions
-  dew assets pull/list           Manage VM images
-
-Other:
+  dew session ...                Persistent VM sessions
+  dew assets ...                 Manage VM images
   dew version                    Print version
-  dew help                       Show this help
-
-Flags (for start/run):
-  --profile <name>     VM profile: standard, node, python, minimal
-  --port, -p <N>       Host port mapping
-  --forward <h:g>      Forward host:guest port
-  --with <services>    Services alongside app (postgres, redis)
-  --json               Machine-readable JSON output
-  --stream             Stream stdout/stderr
-  --events             NDJSON lifecycle events
 `)
 }
 
@@ -752,22 +750,9 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(remaining) == 0 {
-		// No target — try detect current dir, fall back to registry list
-		proj, err := detect.Detect(".")
-		if err == nil && (proj.Framework != "" || proj.Runtime != "") {
-			remaining = []string{"."}
-		} else {
-			return cmdInstallList()
-		}
-	}
-
-	dir := remaining[0]
-	// Check if target is a registry app name (not a path)
-	if !strings.Contains(dir, "/") && !strings.Contains(dir, ".") {
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			return cmdInstall(remaining)
-		}
+	dir := "."
+	if len(remaining) > 0 {
+		dir = remaining[0]
 	}
 
 	proj, err := detect.Detect(dir)

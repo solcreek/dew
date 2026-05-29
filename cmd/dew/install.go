@@ -35,9 +35,56 @@ type appManifest struct {
 
 func cmdInstall(args []string) error {
 	if len(args) == 0 {
-		return cmdInstallList()
+		fmt.Fprintf(os.Stderr, "usage: dew app <run|stop|list> [args]\n")
+		return nil
 	}
 
+	switch args[0] {
+	case "run":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: dew app run <name> [--port N]")
+		}
+		return cmdAppRun(args[1:])
+	case "stop":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: dew app stop <name>")
+		}
+		return cmdAppStop(args[1])
+	case "list":
+		return cmdAppList()
+	default:
+		// Backward compat: dew app <name> = dew app run <name>
+		return cmdAppRun(args)
+	}
+}
+
+func cmdAppStop(name string) error {
+	runtime := "docker"
+	if _, err := lookPath("nerdctl"); err == nil {
+		runtime = "nerdctl"
+	}
+	containerName := "dew-" + name
+	cmd := exec.Command(runtime, "rm", "-f", containerName)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("stop %s: %w", name, err)
+	}
+	fmt.Fprintf(os.Stderr, "  %s stopped\n", name)
+	return nil
+}
+
+func cmdAppList() error {
+	runtime := "docker"
+	if _, err := lookPath("nerdctl"); err == nil {
+		runtime = "nerdctl"
+	}
+	cmd := exec.Command(runtime, "ps", "--filter", "name=dew-", "--format", "table {{.Names}}\t{{.Status}}\t{{.Ports}}")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func cmdAppRun(args []string) error {
 	appName := args[0]
 	hostPort := 0
 	for i := 1; i < len(args); i++ {
