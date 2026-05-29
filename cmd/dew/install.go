@@ -67,6 +67,7 @@ func cmdInstall(args []string) error {
 		}
 
 		containerName := "dew-" + manifest.Name
+		exec.Command(runtime, "rm", "-f", containerName).Run()
 		exposedPort := manifest.Port
 		if hostPort > 0 {
 			exposedPort = hostPort
