@@ -137,6 +137,7 @@ macOS VMs use a custom monolithic kernel (dew-virt, 11MB x86_64 / 15MB ARM64). A
 
 ## Security
 
+- **Signed + notarized** — Developer ID, hardened runtime, Apple notarization
 - **VM isolation** — Apple Virtualization.framework hardware boundary
 - **Self-signed TLS** — auto-generated ECDSA cert for deploy API
 - **Token hash** — SHA-256 in cloud-init, not plaintext
