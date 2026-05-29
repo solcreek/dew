@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-05-30
+
+**Headline:** the VM actually works.
+
+Previous releases shipped ad-hoc-signed binaries. macOS refuses to honor
+the `com.apple.security.virtualization` restricted entitlement on
+ad-hoc signatures, so `dew app run`, `dew up`, `dew run`, and `dew exec`
+all failed with `VZErrorDomain Code=1` on a fresh install. The host
+Docker fallback masked this for `dew app run`, but the rest of the CLI
+was effectively non-functional. This release fixes the root cause.
+
+### Added
+
+- **Proper Developer ID Application signing** for `dew-darwin-arm64`
+  and `dew-darwin-amd64` release binaries, with hardened runtime and
+  the virtualization entitlement embedded
+- **Apple notarization** for both architectures via `notarytool`
+- **`scripts/setup-signing-keychain.sh`** — CI helper that creates a
+  temp keychain, imports the Developer ID `.p12`, adds the G1/G2
+  intermediate CAs, and grants codesign access without UI prompts
+- **`scripts/codesign.sh`** — signs binaries with Developer ID +
+  hardened runtime + entitlements; falls back to ad-hoc when run
+  without `APPLE_DEVELOPER_ID` (so fork PRs still build)
+- **`scripts/notarize.sh`** — submits via notarytool with a
+  keychain-stored credential profile, so the app-specific password
+  never appears on the process command line
+
+### Changed
+
+- Release workflow now runs sign + notarize as discrete steps and
+  cleans up the keychain in an `if: always()` step
+
+### Required org secrets (set under `solcreek`, visibility = selected)
+
+- `APPLE_DEVELOPER_ID`
+- `APPLE_CERT_P12_BASE64`
+- `APPLE_CERT_P12_PASSWORD`
+- `APPLE_ID`
+- `APPLE_TEAM_ID`
+- `APPLE_APP_PASSWORD`
+
 ## [0.4.7] - 2026-05-30
 
 ### Added

@@ -7,3 +7,23 @@
 /initramfs/work/
 /kernel/vmlinuz-turbo
 /kernel/config-alpine-base
+
+# Secrets — never commit
+.env
+.env.local
+
+# Local build artifacts
+dew-darwin-arm64
+dew-darwin-amd64
+dew-darwin-amd64.zip
+dew-darwin-arm64.zip
+*.p12
+
+# Local VM image/initramfs cache (built via initramfs/build.sh)
+initramfs/initramfs-*.cpio.gz
+initramfs/vmlinuz
+initramfs/vmlinuz.*
+initramfs/alpine-minirootfs-*.tar.gz
+
+# Local test outputs
+my-slide.tar.gz
