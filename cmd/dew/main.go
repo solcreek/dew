@@ -295,7 +295,7 @@ func main() {
 func printUsage() {
 	fmt.Fprintf(os.Stderr, `dew — run any app, anywhere
 
-Getting Started:
+Apps:
   dew up                         List available apps
   dew up <app> [--port N]        Run app from registry
   dew up <dir>                   Run local project
