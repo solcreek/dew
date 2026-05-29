@@ -299,6 +299,8 @@ func main() {
 func printUsage() {
 	fmt.Fprintf(os.Stderr, `dew — run any app, anywhere
 
+Try: dew app run excalidraw --port 3000
+
 Dev:
   dew up [dir]                   Start dev environment (auto-detect project)
   dew up --with postgres,redis   Dev with services
@@ -312,9 +314,9 @@ Apps:
   dew apps                       Browse available apps
   dew app run <name> [--port N]  Run an app
   dew app stop <name>            Stop an app
-  dew app list                   Show running apps
+  dew app list [--json]           Show running apps
 
-Deploy:
+Deploy (to a server from 'dew server create' or any VPS):
   dew build [dir]                Package deploy tarball
   dew deploy <target>            Deploy to remote server
   dew rollback <target> <app>    Restore previous version
@@ -333,6 +335,11 @@ Advanced:
   dew session ...                Persistent VM sessions
   dew assets ...                 Manage VM images
   dew version                    Print version
+
+Output:
+  --json        Machine-readable JSON (all commands)
+  --events      NDJSON lifecycle stream
+  --stream      Stream stdout/stderr
 `)
 }
 
