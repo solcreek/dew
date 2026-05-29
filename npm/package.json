@@ -1,6 +1,6 @@
 {
   "name": "@solcreek/dew",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Ultra-lightweight VM + deploy tool. One Go binary for local dev and production.",
   "license": "MIT",
   "repository": {
@@ -10,7 +10,21 @@
   "bin": {
     "dew": "bin/dew"
   },
+  "files": [
+    "bin/dew",
+    "README.md"
+  ],
   "scripts": {
-    "postinstall": "node scripts/postinstall.js"
+    "test": "node --test test/*.test.mjs"
+  },
+  "optionalDependencies": {
+    "@solcreek/dew-darwin-arm64": "0.6.0",
+    "@solcreek/dew-darwin-x64": "0.6.0",
+    "@solcreek/dew-linux-x64": "0.6.0",
+    "@solcreek/dew-linux-arm64": "0.6.0",
+    "@solcreek/dew-win32-x64": "0.6.0"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

@@ -140,6 +140,9 @@ jobs:
   release:
     needs: [build-macos, build-linux]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write           # required for npm provenance attestations
     steps:
       - uses: actions/checkout@v6
 
@@ -180,8 +183,14 @@ jobs:
           curl -fsSL -o "$DEST/dew" "$URL"
           chmod +x "$DEST/dew"
 
+          # macOS: release binaries are already Developer ID signed + notarized
+          # in CI. Do NOT re-sign (that would strip the Developer ID and break
+          # the virtualization entitlement). Only ad-hoc-sign as a last resort
+          # if no Developer ID signature is present (e.g. a custom build).
           if [ "$OS" = "Darwin" ]; then
-            codesign --entitlements <(printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>com.apple.security.virtualization</key><true/></dict></plist>') --force -s - "$DEST/dew" 2>/dev/null || true
+            if ! codesign -dv "$DEST/dew" 2>&1 | grep -q "Developer ID Application"; then
+              codesign --entitlements <(printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>com.apple.security.virtualization</key><true/></dict></plist>') --force -s - "$DEST/dew" 2>/dev/null || true
+            fi
           fi
 
           echo "dew: installed to $DEST/dew"
@@ -196,3 +205,45 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/*
+
+      # --- npm publish (replaces former npm-publish.yml workflow) ---
+      # Publishes 6 packages in one workflow: 5 per-platform packages
+      # (@solcreek/dew-<triple>) carrying the signed + notarized binaries,
+      # plus the main @solcreek/dew dispatcher pinned to the same version.
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Sanity-test npm dispatcher + scripts
+        working-directory: npm
+        run: npm test
+
+      - name: Sync npm version to git tag
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          node npm/scripts/sync-version.mjs "$VERSION"
+
+      - name: Generate per-platform packages from release binaries
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          node npm/scripts/generate-packages.mjs "$VERSION" artifacts tmp/platform-pkgs
+          ls tmp/platform-pkgs
+
+      - name: Publish per-platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for dir in tmp/platform-pkgs/*/; do
+            echo "::group::Publish $(basename "$dir")"
+            (cd "$dir" && npm publish --provenance --access public) || \
+              echo "Skipped (likely already published)"
+            echo "::endgroup::"
+          done
+
+      - name: Publish main package
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public || echo "Skipped (likely already published)"

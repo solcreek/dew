@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **npm packaging — per-platform via `optionalDependencies`.** The main
+  `@solcreek/dew` package becomes a small Node dispatcher (no postinstall).
+  Each platform binary ships in its own package
+  (`@solcreek/dew-darwin-arm64`, `@solcreek/dew-darwin-x64`,
+  `@solcreek/dew-linux-x64`, `@solcreek/dew-linux-arm64`,
+  `@solcreek/dew-win32-x64`) listed under `optionalDependencies`; npm
+  installs only the one matching `process.platform` / `process.arch`.
+
+  This removes the install-time code path that touched the binary, which
+  caused two incidents in earlier releases (codesign failure silently
+  breaking VM support; v0.5.0 re-signing stripping the Developer ID).
+  The dispatcher does `require.resolve` + `spawnSync`; the bytes inside
+  the Mach-O — including the notarization staple — arrive byte-for-byte
+  from the platform package tarball.
+
+- **`DEW_BINARY=/path/to/dew`** environment variable for local builds and
+  testing, bypassing platform-package resolution.
+
+- **`install.sh` no longer re-signs binaries with Developer ID signatures.**
+  Detects the existing signature before ad-hoc-signing, matching the
+  v0.5.1 fix in the npm path.
+
+### Added
+
+- `npm/scripts/generate-packages.mjs` — scaffolds the 5 per-platform
+  publish directories from CI-built signed + notarized binaries
+- `npm/scripts/sync-version.mjs` — locks main + every `optionalDependency`
+  to one version on tag push
+- `npm/test/` — 14 tests covering the dispatcher (DEW_BINARY override,
+  missing platform package, exit code propagation), package generator
+  (all-present, partial, zero, byte-exact binary copy), and version sync
+
+### Removed
+
+- `npm/scripts/postinstall.js` — replaced by the new platform-package
+  resolution model; nothing on the user's machine touches the binary
+- `.github/workflows/npm-publish.yml` — folded into the Release workflow
+  as a single source of truth for publishing all 6 packages together
+
 ## [0.5.0] - 2026-05-30
 
 **Headline:** the VM actually works.

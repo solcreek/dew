@@ -1,25 +1,87 @@
 #!/usr/bin/env node
-const { execFileSync } = require("child_process");
-const path = require("path");
-const os = require("os");
+"use strict";
+
+// Dispatcher for @solcreek/dew. Resolves the per-platform package installed
+// via npm's optionalDependencies (one of @solcreek/dew-<os>-<cpu>) and
+// spawns its native binary with the user's arguments and stdio.
+//
+// No postinstall. No download. No re-signing. The native binary is shipped
+// inside the matching platform package and arrives via npm's normal install
+// path, which preserves Apple Developer ID + notarization staple intact.
+//
+// Override: DEW_BINARY=/path/to/dew for local builds and testing.
+
 const { existsSync } = require("fs");
+const { spawnSync } = require("child_process");
+const path = require("path");
 
-const binDir = path.join(__dirname);
-let binary;
+const SUPPORTED = [
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-x64",
+  "linux-arm64",
+  "win32-x64",
+];
 
-if (os.platform() === "win32") {
-  binary = path.join(binDir, "dew.exe");
-} else {
-  binary = path.join(binDir, "dew-bin");
+function resolveBinary() {
+  const override = process.env.DEW_BINARY;
+  if (override) {
+    if (!existsSync(override)) {
+      console.error(`dew: DEW_BINARY=${override} does not exist.`);
+      process.exit(1);
+    }
+    return override;
+  }
+
+  const { platform, arch } = process;
+  const triple = `${platform}-${arch}`;
+
+  if (!SUPPORTED.includes(triple)) {
+    console.error(
+      `dew: ${platform}/${arch} is not a supported platform.\n` +
+      `Supported: ${SUPPORTED.join(", ")}.\n` +
+      `If you have built dew from source, set DEW_BINARY=/path/to/dew.`,
+    );
+    process.exit(1);
+  }
+
+  const pkgName = `@solcreek/dew-${triple}`;
+  const binName = platform === "win32" ? "dew.exe" : "dew";
+
+  let pkgRoot;
+  try {
+    pkgRoot = path.dirname(require.resolve(`${pkgName}/package.json`));
+  } catch {
+    console.error(
+      `dew: platform package "${pkgName}" is missing.\n` +
+      `This usually means npm skipped optionalDependencies during install\n` +
+      `(common when --no-optional, --omit=optional, or a wrong\n` +
+      `--os/--cpu/--force combination is used). To fix:\n` +
+      `  npm install --force --os=${platform} --cpu=${arch} @solcreek/dew\n` +
+      `Or set DEW_BINARY=/path/to/dew to use a custom build.`,
+    );
+    process.exit(1);
+  }
+
+  const binPath = path.join(pkgRoot, "bin", binName);
+  if (!existsSync(binPath)) {
+    console.error(
+      `dew: binary missing at ${binPath}.\n` +
+      `The platform package is corrupt; reinstall with:\n` +
+      `  npm rebuild @solcreek/dew`,
+    );
+    process.exit(1);
+  }
+  return binPath;
 }
 
-if (!existsSync(binary)) {
-  console.error("dew: binary not found. Run: npm rebuild @solcreek/dew");
+const result = spawnSync(resolveBinary(), process.argv.slice(2), {
+  stdio: "inherit",
+});
+
+if (result.error) {
+  console.error(`dew: ${result.error.message}`);
   process.exit(1);
 }
 
-try {
-  execFileSync(binary, process.argv.slice(2), { stdio: "inherit" });
-} catch (e) {
-  process.exit(e.status || 1);
-}
+process.exit(result.status ?? 1);

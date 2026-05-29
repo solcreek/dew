@@ -28,3 +28,16 @@ jobs:
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dew-agent-linux-amd64 ./cmd/dew-agent/
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o dew-agent-linux-arm64 ./cmd/dew-agent/
           ls -lh dew-agent-linux-*
+
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Run npm dispatcher + scripts tests
+        working-directory: npm
+        run: npm test
