@@ -1,6 +1,6 @@
 # Roadmap
 
-## v0.1
+## v0.1 — VM Foundation
 
 macOS. Apple Virtualization.framework. Alpine Linux.
 
@@ -10,51 +10,57 @@ macOS. Apple Virtualization.framework. Alpine Linux.
 - Port forwarding, persistent disk, network isolation
 - Auto-download assets on first use
 
-## v0.2 (current)
+## v0.2 — Cross-platform
 
-- **Windows support** — WSL2 backend, `dew.exe` wrapper
-- **Python profile** — Django, Flask, FastAPI, Streamlit detection
-- **`dew up --with postgres,redis`** — services alongside your app
-- **`dew down`** — explicit stop
-- **CLI spinner** — step-by-step progress with 💧 ⚡ branding
-- **Release workflow** — GitHub Actions builds all artifacts on tag push
-- **`dew build`** — package app into deploy tarball with manifest. Static site detection (`type: "static"`). Skips build output from gitignore exclusion.
-- **`dew share`** — temporary public HTTPS URL via Cloudflare Quick Tunnel. Auto-downloads cloudflared on first use.
-- **`dew server create/list/destroy`** — provision VPS via capstan (Hetzner, DigitalOcean, Linode, Vultr). Zero-SSH setup with cloud-init.
-- **`dew share` readiness check** — verify tunnel URL returns 200 before printing. Avoids sharing a URL that 1033s.
+- Windows support (WSL2 backend)
+- Python profile (Django, Flask, FastAPI, Streamlit)
+- `dew up --with postgres,redis` — services alongside app
+- `dew down`, CLI spinner, release workflow
 
-## v0.3
+## v0.3 — Deploy Pipeline
 
-Deploy. One binary for local dev and production.
+- `dew build` — package app for deployment
+- `dew deploy` — tarball + image mode, SSE progress
+- `dew serve` — production deploy receiver with TLS
+- `dew share` — temporary public HTTPS URL
+- `dew server create/list/destroy` — VPS provisioning via capstan
+- `dew auth`, `dew env`, `dew rollback`
+- Self-signed TLS, token hash, constant-time comparison
 
-- **`dew deploy <target>`** — HTTP POST tarball to remote `dew serve`. SSE progress stream.
-- **`dew deploy --image <name>`** — deploy an existing OCI image directly (Docker Hub, ghcr.io). Skips build step. Covers apps that already publish images (Excalidraw, AnythingLLM, Uptime Kuma, etc.).
-- **`dew serve`** — production deploy receiver on VPS. Auto-installs containerd from static binaries. Apps run in containers (base image + bind-mounted tarball, or OCI image directly). Multi-app isolation via namespaces + cgroups. Built-in Go `net/http.FileServer` for `type: "static"` apps (zero container).
-- **`dew auth`** — credential management (`set`, `login`, `list`, `remove`). `crk_` prefixed tokens for secret scanner detection.
-- **`dew env`** — remote env var management. Secrets never travel in the tarball.
-- **`dew rollback`** — restore previous deploy. Zero re-upload.
-- **Built-in reverse proxy** — hostname-based routing to app containers.
-- **ACME / TLS** — automatic Let's Encrypt certificates via certmagic.
-- **`dew domain`** — `add`, `remove`, `list`. DNS verification + auto cert issuance.
-- **`dew.toml`** — project config (port, env vars, services, volumes, scripts). Same file for local dev and production deploy.
+## v0.4 (current) — Apps + CLI Restructure
 
-## v0.4
+- **`dew app run/stop/list`** — run open-source apps from registry
+- **`dew apps`** — browse 11 pre-packaged apps (dew-apps catalog)
+- **`dew-serve` standalone binary** — cross-compiled Linux (7.1MB)
+- **dew-virt kernel** — custom monolithic x86_64 (11MB, zero modules). ARM64 via Kata pre-built (15.4MB, 30ms boot)
+- **CLI restructure** — Dev → Share → Apps → Deploy → Infrastructure → Advanced
+- **Containers inside Dew VM** — no host Docker dependency
+- **Static site detector** — index.html with busybox httpd
+- **npm @solcreek/dew** — auto-download binary via postinstall
 
-Dashboard and polish.
+## v0.5 — Production Ready
 
-- **Dashboard** — built-in web UI (Go templates + htmx, `//go:embed`). App list, logs, resource usage, deploy history, env management.
-- **`dew ps`** — list local VMs and remote apps with resource usage.
-- **`dew logs`** — stream app logs from `dew serve`.
-- **Service provisioning** — postgres, redis, mysql as containers alongside your app. Declared in `dew.toml`, provisioned automatically.
-- **Resource limits** — per-app CPU and memory limits via cgroups.
-- **`dew clone <url>`** — git clone + detect + up in one command.
-- **`dew build --workspace <name>`** — monorepo support. Detect yarn/pnpm/turbo workspaces, build a specific package.
+- **`dew logs`** — stream app logs from `dew serve`
+- **`dew app list --json`** — structured output for agents
+- **ACME / TLS** — automatic Let's Encrypt certificates via certmagic
+- **`dew domain add/remove`** — custom domains with auto cert issuance
+- **`dew.toml`** — project config (port, env, services, volumes)
+- **Reverse proxy** — hostname-based routing to app containers
+- **dew-apps tarball builds** — pre-packaged tarballs (10x smaller than Docker images)
 
-## v0.5
+## v0.6 — Dashboard + Observability
 
-- **Go / Rust / Deno detection** — detect `go.mod`, `Cargo.toml`, `deno.json`.
-- **MCP server** — Dew as a tool provider for AI agents. Direct `dew.exec()`, `dew.deploy()` without subprocess.
-- **Pre-baked runtimes in initramfs** — first boot from 20s to 5s.
-- **Multi-VM** — run multiple dew instances (monorepo: frontend + backend).
-- **`dew share` stable subdomain** — Creek Cloud relay with custom domain (`{app}.share.dewvm.dev`). Quick tunnel as fallback.
-- **Official website** — dewvm.dev with asciinema demos.
+- **Dashboard** — built-in web UI (Go templates + htmx)
+- **`dew app list`** — resource usage (CPU, RAM, network)
+- **Service provisioning** — postgres, redis as containers via `dew.toml`
+- **Resource limits** — per-app CPU and memory via cgroups
+- **`dew clone <url>`** — git clone + detect + up
+
+## v0.7 — Agent + Ecosystem
+
+- **MCP server** — Dew as tool provider for AI agents
+- **Go / Rust / Deno detection**
+- **`dew build --workspace`** — monorepo support
+- **`dew share` stable subdomain** — Creek Cloud relay
+- **Grove desktop app** — Tauri GUI for non-developers
+- **Official website** — dewvm.dev

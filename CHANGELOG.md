@@ -5,23 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-05-29
 
 ### Added
 
-- **`dew build`** — package app into deploy tarball with manifest.json. Detects runtime, runs build command, generates checksum. Static site detection (`type: "static"`) preserves build output even if in .gitignore. Skips node_modules, lock files, .claude/, .agents/, *.db
-- **`dew deploy <target>`** — upload tarball or OCI image to remote `dew serve`. SSE progress streaming. Token resolution from env, credentials file, or flag. Checksum verification. Handles tarball mode (`dew deploy <target>`) and image mode (`dew deploy <target> --image <name>`)
-- **`dew serve`** — production deploy receiver. HTTP API with token-based auth. Accepts tarball uploads with SSE progress (receive → verify → extract → start). Image deploy via JSON body. Endpoints: `/v1/system/health`, `/v1/apps`, `/v1/apps/{app}/deploy`, `/v1/apps/{app}/health`, `DELETE /v1/apps/{app}`
-- **`dew share [port]`** — temporary public HTTPS URL via Cloudflare Quick Tunnel. Auto-downloads cloudflared on first use. Verifies tunnel reachability before printing URL
-- **`dew server create/list/destroy`** — provision VPS from local machine via capstan (Hetzner, DigitalOcean, Linode, Vultr). Zero-SSH setup with cloud-init. Auto-saves credentials
-- **`BuildCmd` and `Entry` fields** in project detection for production builds
+- **CLI restructure** — commands organized into Dev, Share, Apps, Deploy, Infrastructure, Advanced sections
+- **`dew app run/stop/list`** — run open-source apps from dew-apps registry. Separate from `dew up` (dev)
+- **`dew apps`** — browse available apps (11 apps: Excalidraw, Uptime Kuma, Vaultwarden, Ghost, etc.)
+- **`dew build`** — package app for deployment with manifest.json. Static site detection. Skips node_modules, lock files, .claude/, .agents/, *.db
+- **`dew deploy`** — upload tarball or `--image` to remote `dew serve`. SSE progress streaming
+- **`dew serve`** — production deploy receiver with self-signed TLS, process management, static file server, rollback endpoint
+- **`dew share`** — temporary public HTTPS URL via Cloudflare Quick Tunnel. Readiness verification before printing URL
+- **`dew server create/list/destroy`** — provision VPS via capstan (Hetzner, DigitalOcean, Linode, Vultr). Zero-SSH cloud-init setup
+- **`dew auth set/list/remove`** — credential management (JSON storage)
+- **`dew env set/list/remove`** — remote environment variable management
+- **`dew rollback`** — restore previous deploy version
+- **`dew-serve` standalone binary** — cross-compiled for Linux (7.1MB), no Apple VZ dependency
+- **`dew install` runs containers inside Dew VM** — no host Docker dependency. Falls back to host Docker if VM unavailable
+- **Static site detector** — `index.html` detection with busybox httpd
+- **dew-virt kernel** — custom monolithic x86_64 kernel config (11MB, zero modules). ARM64 uses Kata pre-built kernel (15.4MB, 30ms boot)
+- **Self-signed TLS** — ECDSA cert auto-generated, constant-time token verification, cert fingerprint pinning
+- **dew-apps registry** — 11 pre-packaged apps (solcreek/dew-apps, MIT)
 
 ### Fixed
 
-- Tarball packaging crash on `.claude/` and `.agents/` directories (non-regular file handling)
-- Build output directories (`dist/`, `build/`, `.next/`) excluded by .gitignore parsing — now preserved
-- Deploy token printed unmasked in terminal output — now shows prefix + last 4 chars only
-- `dew share` tunnel URL printed before edge connection is reachable — now verifies with HTTP poll
+- Cloud-init stores token hash (SHA-256), not plaintext
+- Deploy token masked in terminal output (prefix + last 4 chars)
+- Tarball crash on `.claude/`/`.agents/` directories
+- Build output dirs (dist/, build/) preserved despite .gitignore
+- `dew share` verifies tunnel reachability before printing URL
+- Credential storage migrated from flat files to JSON
+- npm postinstall downloads binary from GitHub Releases
+- Release workflow: npm publish waits for Release to complete
+- ARM64 kernel + initramfs included in releases
+- Download URL uses `/latest/download/` instead of hardcoded version
+
+### Changed
+
+- Tagline: "run any app, anywhere" (was "ultra-lightweight VM")
+- `dew up` is dev-only (local project). Registry apps moved to `dew app run`
+- Help text reorganized with sections and quick-start hint
 
 ## [0.2.0] - 2026-05-28
 
@@ -67,7 +90,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Homebrew formula (`brew tap solcreek/dew`)
 - GitHub Actions CI (tests + cross-compile) and kernel build workflow
 - Smoke test script for pre-release validation
-- 73 unit tests across 8 packages
 
+[0.4.0]: https://github.com/solcreek/dew/releases/tag/v0.4.0
 [0.2.0]: https://github.com/solcreek/dew/releases/tag/v0.2.0
 [0.1.0]: https://github.com/solcreek/dew/releases/tag/v0.1.0
