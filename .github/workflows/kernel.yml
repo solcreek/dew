@@ -7,7 +7,6 @@ on:
     branches: [main]
   workflow_dispatch:
 
-
 jobs:
   build-x86_64:
     runs-on: ubuntu-latest
@@ -53,3 +52,65 @@ jobs:
         with:
           name: vmlinuz-arm64
           path: vmlinuz-arm64
+
+  verify-x86_64:
+    needs: build-x86_64
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+
+      - name: Download kernel artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: vmlinuz-x86_64
+
+      - name: Build dew + minimal initramfs
+        run: |
+          go build -ldflags="-s -w" -o dew ./cmd/dew/
+          codesign --entitlements entitlements.plist --force -s - dew
+          bash initramfs/build.sh minimal
+          mkdir -p ~/.local/share/dew
+          cp vmlinuz-x86_64 ~/.local/share/dew/vmlinuz
+
+      - name: Boot test
+        run: |
+          echo "=== Boot + exec test ==="
+          RESULT=$(./dew run --json -- uname -r 2>/dev/null)
+          echo "$RESULT"
+          echo "$RESULT" | grep -q "exit_code" || { echo "FAIL: no structured output"; exit 1; }
+          echo "=== Filesystem check ==="
+          ./dew run --json -- cat /proc/filesystems 2>/dev/null | grep -q "ext4" || echo "WARN: ext4 not in /proc/filesystems"
+          echo "=== PASS ==="
+
+  verify-arm64:
+    needs: download-arm64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+
+      - name: Download kernel artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: vmlinuz-arm64
+
+      - name: Build dew + minimal initramfs
+        run: |
+          go build -ldflags="-s -w" -o dew ./cmd/dew/
+          codesign --entitlements entitlements.plist --force -s - dew
+          bash initramfs/build.sh minimal
+          mkdir -p ~/.local/share/dew
+          cp vmlinuz-arm64 ~/.local/share/dew/vmlinuz
+
+      - name: Boot test
+        run: |
+          echo "=== Boot + exec test ==="
+          RESULT=$(./dew run --json -- uname -r 2>/dev/null)
+          echo "$RESULT"
+          echo "$RESULT" | grep -q "exit_code" || { echo "FAIL: no structured output"; exit 1; }
+          echo "=== PASS ==="
