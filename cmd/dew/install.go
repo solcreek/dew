@@ -75,7 +75,7 @@ func cmdInstall(args []string) error {
 		containerName := "dew-" + manifest.Name
 
 		// Ensure Dew VM is running with containerd
-		sp.Step("Preparing VM")
+		sp.Step("Preparing environment")
 		if err := ensureDewVM(exposedPort, manifest.Port); err != nil {
 			// Fallback to host docker if VM unavailable
 			sp.Step(fmt.Sprintf("Starting %s (host)", manifest.Name))

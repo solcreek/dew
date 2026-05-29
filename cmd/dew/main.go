@@ -293,52 +293,48 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, `dew — ultra-lightweight VM (Apple Virtualization.framework)
+	fmt.Fprintf(os.Stderr, `dew — run any app, anywhere
 
-Usage:
-  dew build [dir]                Package app into deploy tarball
-  dew deploy <target>            Deploy tarball or image to dew serve
-  dew rollback <target> <app>   Rollback to previous version
-  dew serve                      Run deploy receiver (production, VPS)
+Getting Started:
+  dew up                         List available apps
+  dew up <app> [--port N]        Run app from registry
+  dew up <dir>                   Run local project
+  dew down                       Stop running app
   dew share [port]               Create temporary public HTTPS URL
-  dew up [target]                Start app (dir, registry name, or GitHub URL)
-  dew up                         List available apps from registry
-  dew start [flags]              Boot a Linux VM (interactive, daemon socket)
-  dew run [flags] [--] <cmd>     Boot, execute command, exit
-  dew exec <cmd>                 Execute in a running VM (via daemon socket)
-  dew session create [flags]     Create a persistent VM session
-  dew session exec <id> <cmd>    Execute in an existing session
-  dew session destroy <id>       Destroy a session
-  dew down                       Stop the running VM
+
+Deploy:
+  dew build [dir]                Package app into deploy tarball
+  dew deploy <target>            Deploy to remote server
+  dew rollback <target> <app>    Restore previous version
   dew env set <target> <app> K=V Set environment variables
   dew env list <target> <app>    List env var names
-  dew env remove <target> <app> <key>  Remove env var
   dew auth set <host> <token>    Save deploy credentials
-  dew auth list                  Show saved credentials
-  dew auth remove <host>         Remove credentials
-  dew server create [flags]      Create a VPS and install dew serve
-  dew server list                List managed servers
-  dew server destroy <name>      Destroy a managed server
-  dew assets pull                Download VM image for current profile
-  dew assets list                Show downloaded assets
+
+Infrastructure:
+  dew server create [--provider]  Provision a VPS
+  dew server list                 List managed servers
+  dew server destroy <name>       Remove a server
+  dew serve                       Run deploy receiver (VPS)
+
+Advanced (VM):
+  dew start [flags]              Boot a Linux VM
+  dew run [--] <cmd>             Execute command in ephemeral VM
+  dew exec <cmd>                 Execute in running VM
+  dew session create/exec/destroy  Persistent VM sessions
+  dew assets pull/list           Manage VM images
+
+Other:
   dew version                    Print version
   dew help                       Show this help
 
-Flags:
-  --kernel <path>      Path to vmlinuz (required)
-  --initrd <path>      Path to initramfs
-  --cpus <n>           vCPUs (default: 1)
-  --memory <mb>        Memory in MB (default: 512)
-  --network            Enable NAT networking
-  --vsock <port>       Enable vsock on this port
-  --share <tag:path>   Share host directory (read-only; tag:hostpath[:rw])
-  --profile <name>      VM profile: standard (default) or minimal
-  --disk <path>         Persistent disk image (created if absent, default 10GB)
-  --forward <h:g>      Forward host port to guest (e.g. 3000:3000)
-  --with <services>    Start services alongside app (e.g. postgres,redis)
-  --stream             Stream stdout/stderr in real time
-  --events             NDJSON event stream (for agent integration)
-  --json               Machine-readable JSON output (run command)
+Flags (for start/run):
+  --profile <name>     VM profile: standard, node, python, minimal
+  --port, -p <N>       Host port mapping
+  --forward <h:g>      Forward host:guest port
+  --with <services>    Services alongside app (postgres, redis)
+  --json               Machine-readable JSON output
+  --stream             Stream stdout/stderr
+  --events             NDJSON lifecycle events
 `)
 }
 
