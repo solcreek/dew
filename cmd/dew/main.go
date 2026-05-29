@@ -296,13 +296,13 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `dew — ultra-lightweight VM (Apple Virtualization.framework)
 
 Usage:
-  dew install [app]              Install app from registry (or list available)
   dew build [dir]                Package app into deploy tarball
   dew deploy <target>            Deploy tarball or image to dew serve
   dew rollback <target> <app>   Rollback to previous version
   dew serve                      Run deploy receiver (production, VPS)
   dew share [port]               Create temporary public HTTPS URL
-  dew up [dir]                   Auto-detect project and start dev environment
+  dew up [target]                Start app (dir, registry name, or GitHub URL)
+  dew up                         List available apps from registry
   dew start [flags]              Boot a Linux VM (interactive, daemon socket)
   dew run [flags] [--] <cmd>     Boot, execute command, exit
   dew exec <cmd>                 Execute in a running VM (via daemon socket)
@@ -756,16 +756,29 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
-	dir := "."
-	if len(remaining) > 0 {
-		dir = remaining[0]
+	if len(remaining) == 0 {
+		// No target — try detect current dir, fall back to registry list
+		proj, err := detect.Detect(".")
+		if err == nil && (proj.Framework != "" || proj.Runtime != "") {
+			remaining = []string{"."}
+		} else {
+			return cmdInstallList()
+		}
+	}
+
+	dir := remaining[0]
+	// Check if target is a registry app name (not a path)
+	if !strings.Contains(dir, "/") && !strings.Contains(dir, ".") {
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			return cmdInstall(remaining)
+		}
 	}
 
 	proj, err := detect.Detect(dir)
 	if err != nil {
 		return err
 	}
-	if proj.Framework == "" {
+	if proj.Framework == "" && proj.Runtime == "" {
 		return fmt.Errorf("no supported project detected in %s", dir)
 	}
 
