@@ -57,6 +57,27 @@ func Detect(dir string) (*Project, error) {
 func init() {
 	Register(&nodeDetector{})
 	Register(&pythonDetector{})
+	Register(&staticDetector{})
+}
+
+// ── Static site detector ──
+
+type staticDetector struct{}
+
+func (d *staticDetector) Name() string { return "static" }
+
+func (d *staticDetector) Match(dir string) bool {
+	return exists(filepath.Join(dir, "index.html"))
+}
+
+func (d *staticDetector) Detect(dir string) *Project {
+	return &Project{
+		Runtime: "static",
+		Profile: "minimal",
+		Port:    8080,
+		Entry:   "index.html",
+		DevCmd:  "python3 -m http.server 8080",
+	}
 }
 
 func exists(path string) bool {
