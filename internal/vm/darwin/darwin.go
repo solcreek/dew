@@ -220,7 +220,8 @@ func (d *DarwinVM) Start(ctx context.Context) error {
 
 	if err := machine.Start(); err != nil {
 		d.state = vm.StateError
-		return fmt.Errorf("dew: start: %w", err)
+		// Don't prefix with "dew:" — caller will add it
+		return fmt.Errorf("VM start failed: %w", err)
 	}
 
 	d.state = vm.StateRunning

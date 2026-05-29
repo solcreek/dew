@@ -23,6 +23,7 @@ import (
 
 	"github.com/solcreek/dew/internal/daemon"
 	"github.com/solcreek/dew/internal/detect"
+	"github.com/solcreek/dew/internal/jsonerr"
 	"github.com/solcreek/dew/internal/progress"
 	"github.com/solcreek/dew/internal/selfupdate"
 	"github.com/solcreek/dew/internal/services"
@@ -241,9 +242,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Only check for updates on user-facing commands, not internal (exec, start)
+	// Only check for updates on user-facing commands, not internal (exec, start).
+	// Skip if --json is anywhere in args — agents don't want noise.
 	cmd := os.Args[1]
-	if cmd != "exec" && cmd != "start" && cmd != "run" && cmd != "serve" {
+	hasJSON := false
+	for _, a := range os.Args[2:] {
+		if a == "--json" {
+			hasJSON = true
+			break
+		}
+	}
+	if !hasJSON && cmd != "exec" && cmd != "start" && cmd != "run" && cmd != "serve" {
 		go selfupdate.CheckBackground(version)
 	}
 
@@ -293,7 +302,7 @@ func main() {
 		err = cmdDoctor(os.Args[2:])
 	case "update":
 		err = selfupdate.Update(version)
-	case "version":
+	case "version", "--version", "-v":
 		fmt.Printf("dew %s\n", version)
 	case "help", "--help", "-h":
 		printUsage()
@@ -303,6 +312,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err != nil {
+		if flagJSON {
+			jsonerr.Exit(err, true)
+		}
 		fmt.Fprintf(os.Stderr, "dew: %v\n", err)
 		os.Exit(1)
 	}

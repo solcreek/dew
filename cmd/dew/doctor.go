@@ -56,7 +56,17 @@ func cmdDoctor(_ []string) error {
 	if csErr != nil {
 		warning("Codesign check", "Could not read entitlements: "+csErr.Error())
 	} else {
-		check("Virtualization entitlement", hasEntitlement, "Run: codesign --entitlements <plist> --force -s - "+self)
+		check("Virtualization entitlement present", hasEntitlement,
+			"Run: codesign --entitlements <plist> --force -s - "+self)
+	}
+
+	// Critical: ad-hoc signatures cannot use restricted entitlements
+	cdInfo, _ := exec.Command("codesign", "-dv", self).CombinedOutput()
+	isAdhoc := strings.Contains(string(cdInfo), "adhoc") ||
+		strings.Contains(string(cdInfo), "Signature=adhoc")
+	if hasEntitlement && isAdhoc {
+		warning("Ad-hoc signature with restricted entitlement",
+			"VZ entitlement requires Developer ID, not ad-hoc. VM start will fail with VZErrorDomain Code=1.")
 	}
 
 	// Kernel + initramfs assets
@@ -79,6 +89,17 @@ func cmdDoctor(_ []string) error {
 	// Memory check
 	out, _ = exec.Command("sysctl", "-n", "hw.memsize").Output()
 	fmt.Printf("  ℹ Memory: %s bytes\n", strings.TrimSpace(string(out)))
+
+	// Real boot test — only if no prior failures + entitlement present
+	if fail == 0 && hasEntitlement {
+		fmt.Println()
+		fmt.Println("  Running boot test (5s)...")
+		bootCmd := exec.Command(self, "run", "--profile", "minimal", "--", "echo", "doctor-ok")
+		bootOut, bootErr := bootCmd.CombinedOutput()
+		bootOk := bootErr == nil && strings.Contains(string(bootOut), "doctor-ok")
+		check("VM boot test", bootOk,
+			"Boot failed. Output:\n    "+strings.ReplaceAll(strings.TrimSpace(string(bootOut)), "\n", "\n    "))
+	}
 
 	fmt.Println()
 	if fail > 0 {

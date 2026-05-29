@@ -7,9 +7,29 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"golang.org/x/term"
 )
 
 var frames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// isTTY returns true if stderr is a terminal. When false, spinners
+// are suppressed (no ANSI control codes), and each Step prints a plain
+// line. This makes captured/piped output clean for agents and CI.
+//
+// Respects NO_COLOR (https://no-color.org/) and CI=1.
+func isTTY() bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	if os.Getenv("CI") != "" {
+		return false
+	}
+	if os.Getenv("DEW_NO_PROGRESS") != "" {
+		return false
+	}
+	return term.IsTerminal(int(os.Stderr.Fd()))
+}
 
 // Spinner displays an animated spinner on stderr.
 type Spinner struct {
@@ -36,7 +56,12 @@ func (s *Spinner) Step(label string) {
 	s.done = make(chan struct{})
 	s.mu.Unlock()
 
-	go s.spin()
+	if isTTY() {
+		go s.spin()
+	} else {
+		// Non-TTY: just emit a plain start line, no spinner.
+		fmt.Fprintf(os.Stderr, "  %s...\n", label)
+	}
 }
 
 func (s *Spinner) spin() {
@@ -68,10 +93,16 @@ func (s *Spinner) finish() {
 	s.stopped = true
 	label := s.label
 	ch := s.done
+	tty := isTTY()
 	s.mu.Unlock()
 
-	close(ch)
-	fmt.Fprintf(os.Stderr, "\r\033[K  %s ✓\n", label)
+	if tty {
+		close(ch)
+		fmt.Fprintf(os.Stderr, "\r\033[K  %s ✓\n", label)
+	} else {
+		// Non-TTY: spinner goroutine wasn't started, just print ✓.
+		fmt.Fprintf(os.Stderr, "  %s ✓\n", label)
+	}
 }
 
 // Fail stops the current spinner and prints ✗.
@@ -84,10 +115,15 @@ func (s *Spinner) Fail(reason string) {
 	s.stopped = true
 	label := s.label
 	ch := s.done
+	tty := isTTY()
 	s.mu.Unlock()
 
-	close(ch)
-	fmt.Fprintf(os.Stderr, "\r\033[K  %s ✗ %s\n", label, reason)
+	if tty {
+		close(ch)
+		fmt.Fprintf(os.Stderr, "\r\033[K  %s ✗ %s\n", label, reason)
+	} else {
+		fmt.Fprintf(os.Stderr, "  %s ✗ %s\n", label, reason)
+	}
 }
 
 // Stop halts the spinner without printing anything.

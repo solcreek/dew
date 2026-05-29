@@ -35,8 +35,22 @@ type appManifest struct {
 }
 
 func cmdInstall(args []string) error {
-	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: dew app <run|stop|list> [args]\n")
+	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
+		fmt.Println(`dew app — run open-source apps from the registry
+
+Usage:
+  dew app run <name> [--port N] [--dry-run] [--json]    Run an app
+  dew app stop <name>                                    Stop an app
+  dew app list [--json]                                  Show running apps
+
+Browse:
+  dew apps                                              List available apps
+
+Examples:
+  dew app run excalidraw --port 3000
+  dew app run ghost --port 2368
+  dew app stop excalidraw
+  dew app list`)
 		return nil
 	}
 
@@ -44,6 +58,20 @@ func cmdInstall(args []string) error {
 	case "run":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: dew app run <name> [--port N]")
+		}
+		if args[1] == "--help" || args[1] == "-h" {
+			fmt.Println(`dew app run — run an app from the registry
+
+Usage:
+  dew app run <name> [--port N] [--dry-run] [--json]
+
+Flags:
+  --port, -p <N>    Host port to expose (default: app's default port)
+  --dry-run         Show what would happen without running
+  --json            Machine-readable JSON output
+
+Browse available apps: dew apps`)
+			return nil
 		}
 		return cmdAppRun(args[1:])
 	case "stop":
@@ -75,10 +103,50 @@ func cmdAppStop(name string) error {
 }
 
 func cmdAppList() error {
+	// Parse --json flag from os.Args (cmdAppList is called without args here)
+	for _, a := range os.Args {
+		if a == "--json" {
+			flagJSON = true
+		}
+	}
+
 	runtime := "docker"
 	if _, err := lookPath("nerdctl"); err == nil {
 		runtime = "nerdctl"
 	}
+	if _, err := lookPath(runtime); err != nil {
+		if flagJSON {
+			fmt.Println(`{"ok":false,"error":"no container runtime found","code":"no_runtime","apps":[]}`)
+			return nil
+		}
+		return fmt.Errorf("no container runtime (docker/nerdctl) found")
+	}
+
+	if flagJSON {
+		cmd := exec.Command(runtime, "ps", "--filter", "name=dew-", "--format", "{{json .}}")
+		out, err := cmd.Output()
+		if err != nil {
+			fmt.Printf(`{"ok":false,"error":%q,"code":"runtime_error","apps":[]}`+"\n", err.Error())
+			return nil
+		}
+		// Output is one JSON object per line; wrap into an array
+		fmt.Print(`{"ok":true,"apps":[`)
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		first := true
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			if !first {
+				fmt.Print(",")
+			}
+			first = false
+			fmt.Print(line)
+		}
+		fmt.Println("]}")
+		return nil
+	}
+
 	cmd := exec.Command(runtime, "ps", "--filter", "name=dew-", "--format", "table {{.Names}}\t{{.Status}}\t{{.Ports}}")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -101,7 +169,14 @@ func cmdAppRun(args []string) error {
 			}
 		case "--dry-run":
 			flagDryRun = true
+		case "--json":
+			flagJSON = true
 		}
+	}
+
+	// When --json is set, suppress spinners and other progress output.
+	if flagJSON {
+		os.Setenv("DEW_NO_PROGRESS", "1")
 	}
 
 	if hostPort > 0 {
@@ -150,13 +225,21 @@ func cmdAppRun(args []string) error {
 
 		// Ensure Dew VM is running with containerd
 		sp.Step("Preparing environment")
-		if err := ensureDewVM(exposedPort, manifest.Port); err != nil {
-			// Fallback to host docker if VM unavailable
-			sp.Step(fmt.Sprintf("Starting %s (host)", manifest.Name))
-			runtime := "docker"
+		vmErr := ensureDewVM(exposedPort, manifest.Port)
+		if vmErr != nil {
+			sp.Fail(fmt.Sprintf("VM boot failed: %v", vmErr))
+			// Check if any host container runtime is available before falling back
+			runtime := ""
 			if _, err := lookPath("nerdctl"); err == nil {
 				runtime = "nerdctl"
+			} else if _, err := lookPath("docker"); err == nil {
+				runtime = "docker"
 			}
+			if runtime == "" {
+				return fmt.Errorf("VM boot failed: %w\n\n  No host container runtime (docker/nerdctl) found as fallback.\n  Try: dew doctor", vmErr)
+			}
+			fmt.Fprintf(os.Stderr, "  Falling back to host %s...\n", runtime)
+			sp.Step(fmt.Sprintf("Starting %s (host %s)", manifest.Name, runtime))
 			exec.Command(runtime, "rm", "-f", containerName).Run()
 			runArgs := buildRunArgs(containerName, exposedPort, manifest)
 			cmd := exec.Command(runtime, runArgs...)
