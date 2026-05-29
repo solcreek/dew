@@ -25,10 +25,14 @@ No Docker. No Homebrew. One 4MB binary.
 ## Install
 
 ```bash
-npx @solcreek/dew --help
-
-# Or download directly
+# macOS / Linux
 curl -fsSL https://github.com/solcreek/dew/releases/latest/download/install.sh | sh
+
+# Windows (PowerShell)
+irm https://github.com/solcreek/dew/releases/latest/download/install.ps1 | iex
+
+# npm (all platforms)
+npx @solcreek/dew --help
 ```
 
 ## What it does
