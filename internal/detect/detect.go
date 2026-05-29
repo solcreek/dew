@@ -76,7 +76,7 @@ func (d *staticDetector) Detect(dir string) *Project {
 		Profile: "minimal",
 		Port:    8080,
 		Entry:   "index.html",
-		DevCmd:  "python3 -m http.server 8080",
+		DevCmd:  "httpd -f -p 8080 -h .",
 	}
 }
 
