@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - 2026-05-29
+
+### Added
+
+- **`dew update`** — self-update with semver comparison + SHA-256 checksum verification
+- **Windows installer** — `install.ps1` (`irm ... | iex`)
+- **install.sh cross-platform** — supports macOS + Linux
+
+### Fixed
+
+- Version injected from git tag via ldflags (no more manual updates in 3 files)
+- npm version auto-synced from GitHub release tag
+- TMPDIR on ext4 for overlay mount (dew-virt kernel)
+- Update check only on user-facing commands (no duplicate notices)
+- Health check reports `✗ timed out` instead of false `✓`
+- Port forwarding: pre-forward common ports for multi-app
+
+### Changed
+
+- Linux binary renamed `dew-serve` → `dew` (unified CLI name)
+- `dew up` is dev-only; registry apps moved to `dew app run`
+
 ## [0.4.2] - 2026-05-29
 
 ### Added
