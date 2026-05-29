@@ -4,7 +4,7 @@ const path = require("path");
 const os = require("os");
 
 const binDir = path.join(__dirname, "..", "bin");
-const binary = path.join(binDir, "dew");
+const binary = path.join(binDir, "dew-bin");
 
 if (!existsSync(binDir)) {
   mkdirSync(binDir, { recursive: true });
@@ -45,7 +45,7 @@ if (!existsSync(binary)) {
 }
 
 // macOS: codesign with virtualization entitlement
-if (os.platform() === "darwin" && existsSync(binary)) {
+if (os.platform() === "darwin" && existsSync(binary) && !binary.endsWith(".exe")) {
   const entitlements = path.join(__dirname, "entitlements.plist");
   if (!existsSync(entitlements)) {
     writeFileSync(

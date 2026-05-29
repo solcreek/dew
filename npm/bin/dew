@@ -1,0 +1,25 @@
+#!/usr/bin/env node
+const { execFileSync } = require("child_process");
+const path = require("path");
+const os = require("os");
+const { existsSync } = require("fs");
+
+const binDir = path.join(__dirname);
+let binary;
+
+if (os.platform() === "win32") {
+  binary = path.join(binDir, "dew.exe");
+} else {
+  binary = path.join(binDir, "dew-bin");
+}
+
+if (!existsSync(binary)) {
+  console.error("dew: binary not found. Run: npm rebuild @solcreek/dew");
+  process.exit(1);
+}
+
+try {
+  execFileSync(binary, process.argv.slice(2), { stdio: "inherit" });
+} catch (e) {
+  process.exit(e.status || 1);
+}
