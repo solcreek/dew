@@ -38,6 +38,13 @@ func cmdInstall(args []string) error {
 	}
 
 	appName := args[0]
+	hostPort := 0
+	for i := 1; i < len(args); i++ {
+		if (args[i] == "--port" || args[i] == "-p") && i+1 < len(args) {
+			i++
+			fmt.Sscanf(args[i], "%d", &hostPort)
+		}
+	}
 	sp := progress.New()
 
 	sp.Step("Fetching manifest")
@@ -60,7 +67,11 @@ func cmdInstall(args []string) error {
 		}
 
 		containerName := "dew-" + manifest.Name
-		runArgs := []string{"run", "-d", "--name", containerName, "-p", fmt.Sprintf("%d:%d", manifest.Port, manifest.Port)}
+		exposedPort := manifest.Port
+		if hostPort > 0 {
+			exposedPort = hostPort
+		}
+		runArgs := []string{"run", "-d", "--name", containerName, "-p", fmt.Sprintf("%d:%d", exposedPort, manifest.Port)}
 
 		for name, path := range manifest.Volumes {
 			hostDir := fmt.Sprintf("%s/dew-data/%s/%s", homeDir(), manifest.Name, name)
@@ -84,7 +95,7 @@ func cmdInstall(args []string) error {
 
 		if manifest.HealthCheck != "" {
 			sp.Step("Waiting for healthy")
-			url := fmt.Sprintf("http://localhost:%d%s", manifest.Port, manifest.HealthCheck)
+			url := fmt.Sprintf("http://localhost:%d%s", exposedPort, manifest.HealthCheck)
 			for i := 0; i < 30; i++ {
 				time.Sleep(time.Second)
 				resp, err := http.Get(url)
@@ -97,15 +108,15 @@ func cmdInstall(args []string) error {
 			}
 		}
 
-		sp.Done(fmt.Sprintf("http://localhost:%d", manifest.Port))
-		fmt.Fprintf(os.Stderr, "  %s is running at http://localhost:%d\n\n", manifest.Name, manifest.Port)
+		sp.Done(fmt.Sprintf("http://localhost:%d", exposedPort))
+		fmt.Fprintf(os.Stderr, "  %s is running at http://localhost:%d\n\n", manifest.Name, exposedPort)
 
 		if flagJSON {
 			json.NewEncoder(os.Stdout).Encode(map[string]any{
 				"ok":   true,
 				"app":  manifest.Name,
-				"port": manifest.Port,
-				"url":  fmt.Sprintf("http://localhost:%d", manifest.Port),
+				"port": exposedPort,
+				"url":  fmt.Sprintf("http://localhost:%d", exposedPort),
 			})
 		}
 		return nil
