@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -59,39 +60,42 @@ func cmdInstall(args []string) error {
 	fmt.Fprintf(os.Stderr, "  Port: %d | Runtime: %s\n\n", manifest.Port, manifest.Runtime)
 
 	if manifest.DockerImage != "" {
-		sp.Step(fmt.Sprintf("Starting %s", manifest.Name))
-
-		runtime := "nerdctl"
-		if _, err := lookPath("nerdctl"); err != nil {
-			runtime = "docker"
-		}
-
-		containerName := "dew-" + manifest.Name
-		exec.Command(runtime, "rm", "-f", containerName).Run()
 		exposedPort := manifest.Port
 		if hostPort > 0 {
 			exposedPort = hostPort
 		}
-		runArgs := []string{"run", "-d", "--name", containerName, "-p", fmt.Sprintf("%d:%d", exposedPort, manifest.Port)}
+		containerName := "dew-" + manifest.Name
 
-		for name, path := range manifest.Volumes {
-			hostDir := fmt.Sprintf("%s/dew-data/%s/%s", homeDir(), manifest.Name, name)
-			os.MkdirAll(hostDir, 0755)
-			runArgs = append(runArgs, "-v", fmt.Sprintf("%s:%s", hostDir, path))
-		}
-
-		for k, v := range manifest.Env {
-			runArgs = append(runArgs, "-e", fmt.Sprintf("%s=%s", k, v))
-		}
-
-		runArgs = append(runArgs, manifest.DockerImage)
-
-		cmd := exec.Command(runtime, runArgs...)
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			sp.Fail("start failed")
-			return fmt.Errorf("failed to start %s: %w", manifest.Name, err)
+		// Ensure Dew VM is running with containerd
+		sp.Step("Preparing VM")
+		if err := ensureDewVM(exposedPort, manifest.Port); err != nil {
+			// Fallback to host docker if VM unavailable
+			sp.Step(fmt.Sprintf("Starting %s (host)", manifest.Name))
+			runtime := "docker"
+			if _, err := lookPath("nerdctl"); err == nil {
+				runtime = "nerdctl"
+			}
+			exec.Command(runtime, "rm", "-f", containerName).Run()
+			runArgs := buildRunArgs(containerName, exposedPort, manifest)
+			cmd := exec.Command(runtime, runArgs...)
+			cmd.Stdout = os.Stderr
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				sp.Fail("start failed")
+				return fmt.Errorf("failed to start %s: %w", manifest.Name, err)
+			}
+		} else {
+			// Run inside Dew VM
+			sp.Step(fmt.Sprintf("Starting %s", manifest.Name))
+			dewExec := exec.Command(os.Args[0], "exec",
+				fmt.Sprintf("export TMPDIR=/tmp/containerd-tmp && mkdir -p /tmp/containerd-tmp && chmod 1777 /tmp/containerd-tmp && nerdctl rm -f %s 2>/dev/null; nerdctl run -d --name %s -p %d:%d %s",
+					containerName, containerName, manifest.Port, manifest.Port, manifest.DockerImage))
+			dewExec.Stdout = os.Stderr
+			dewExec.Stderr = os.Stderr
+			if err := dewExec.Run(); err != nil {
+				sp.Fail("start failed in VM")
+				return fmt.Errorf("failed to start %s in VM: %w", manifest.Name, err)
+			}
 		}
 
 		if manifest.HealthCheck != "" {
@@ -173,6 +177,54 @@ func fetchManifest(name string) (*appManifest, error) {
 		return nil, fmt.Errorf("parse manifest: %w", err)
 	}
 	return &m, nil
+}
+
+func ensureDewVM(hostPort, guestPort int) error {
+	// Check if dew VM daemon socket exists (VM already running)
+	home, _ := os.UserHomeDir()
+	sock := filepath.Join(home, ".local", "state", "dew", "default.sock")
+	if _, err := os.Stat(sock); err == nil {
+		// VM running, check if port is forwarded
+		return nil
+	}
+
+	// Start VM in background with port forwarding
+	cmd := exec.Command(os.Args[0], "start",
+		"--profile", "standard",
+		"--forward", fmt.Sprintf("%d:%d", hostPort, guestPort),
+		"--network",
+		"--json",
+	)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start VM: %w", err)
+	}
+
+	// Wait for VM to be ready
+	for i := 0; i < 60; i++ {
+		time.Sleep(time.Second)
+		if _, err := os.Stat(sock); err == nil {
+			// Give containerd a moment to start
+			time.Sleep(2 * time.Second)
+			return nil
+		}
+	}
+	return fmt.Errorf("VM did not start within 60s")
+}
+
+func buildRunArgs(containerName string, exposedPort int, manifest *appManifest) []string {
+	runArgs := []string{"run", "-d", "--name", containerName, "-p", fmt.Sprintf("%d:%d", exposedPort, manifest.Port)}
+	for _, path := range manifest.Volumes {
+		hostDir := filepath.Join(homeDir(), "dew-data", manifest.Name)
+		os.MkdirAll(hostDir, 0755)
+		runArgs = append(runArgs, "-v", fmt.Sprintf("%s:%s", hostDir, path))
+	}
+	for k, v := range manifest.Env {
+		runArgs = append(runArgs, "-e", fmt.Sprintf("%s=%s", k, v))
+	}
+	runArgs = append(runArgs, manifest.DockerImage)
+	return runArgs
 }
 
 func homeDir() string {
