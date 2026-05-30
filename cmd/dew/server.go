@@ -20,7 +20,7 @@ import (
 
 func cmdServer(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: dew server <create|list|destroy> [flags]\n")
+		fmt.Fprintf(os.Stderr, "usage: dew server <create|list|destroy|start|stop|restart|status> [flags]\n")
 		return nil
 	}
 
@@ -31,9 +31,73 @@ func cmdServer(args []string) error {
 		return cmdServerList(args[1:])
 	case "destroy":
 		return cmdServerDestroy(args[1:])
+	case "start":
+		return cmdServerStart(args[1:])
+	case "stop":
+		return cmdServerStop(args[1:])
+	case "restart":
+		return cmdServerRestart(args[1:])
+	case "status":
+		return cmdServerStatus(args[1:])
 	default:
-		return fmt.Errorf("unknown server subcommand %q (use: create, list, destroy)", args[0])
+		return fmt.Errorf("unknown server subcommand %q (use: create, list, destroy, start, stop, restart, status)", args[0])
 	}
+}
+
+// targetServer bundles the local registry record with a live capstan
+// Provider that's already authenticated. Used by every subcommand that
+// acts on an existing server (destroy / start / stop / restart / status)
+// to keep the lookup + token + provider construction in one place.
+type targetServer struct {
+	rec serverRecord
+	p   capstan.Provider
+}
+
+func lookupAndConnect(target string) (*targetServer, error) {
+	servers, err := loadServers()
+	if err != nil {
+		return nil, err
+	}
+	for i := range servers {
+		if servers[i].Name == target || servers[i].IP == target {
+			rec := servers[i]
+			token, err := loadProviderToken(capstan.ProviderName(rec.Provider))
+			if err != nil {
+				return nil, err
+			}
+			p, err := capstan.New(capstan.ProviderName(rec.Provider), token)
+			if err != nil {
+				return nil, err
+			}
+			return &targetServer{rec: rec, p: p}, nil
+		}
+	}
+	return nil, fmt.Errorf("server %q not found (use: dew server list)", target)
+}
+
+// runAction handles the common pattern: submit a power action, wait for
+// the provider to mark it terminal, print the outcome line. Matches the
+// destroy command's plain-text style — power actions don't produce a URL
+// the way create does, so the spinner Done(url) shape doesn't fit.
+// PowerOff on Hetzner typically takes ~10s end-to-end per bench data;
+// the user sees the "Verbing..." line and then the result.
+func runAction(
+	ctx context.Context,
+	t *targetServer,
+	verbing, doneLabel string,
+	fn func(ctx context.Context, id string) (*capstan.Action, error),
+) error {
+	fmt.Fprintf(os.Stderr, "  %s %s...\n", verbing, t.rec.Name)
+
+	action, err := fn(ctx, t.rec.ID)
+	if err != nil {
+		return err
+	}
+	if _, err := t.p.WaitForAction(ctx, action.ID); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "  Server %s (%s) %s.\n", t.rec.Name, t.rec.IP, doneLabel)
+	return nil
 }
 
 func cmdServerCreate(args []string) error {
@@ -196,44 +260,90 @@ func cmdServerDestroy(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: dew server destroy <name-or-ip>")
 	}
-	target := args[0]
-
-	servers, err := loadServers()
+	t, err := lookupAndConnect(args[0])
 	if err != nil {
 		return err
 	}
 
-	var found *serverRecord
-	for i := range servers {
-		if servers[i].Name == target || servers[i].IP == target {
-			found = &servers[i]
-			break
-		}
-	}
-	if found == nil {
-		return fmt.Errorf("server %q not found (use: dew server list)", target)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	token, err := loadProviderToken(capstan.ProviderName(found.Provider))
+	if err := t.p.Destroy(ctx, t.rec.ID); err != nil {
+		return fmt.Errorf("destroy %s: %w", t.rec.Name, err)
+	}
+	removeServer(t.rec.IP)
+	removeCredentials(t.rec.IP)
+	fmt.Fprintf(os.Stderr, "  Server %s (%s) destroyed.\n", t.rec.Name, t.rec.IP)
+	return nil
+}
+
+func cmdServerStart(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: dew server start <name-or-ip>")
+	}
+	t, err := lookupAndConnect(args[0])
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return runAction(ctx, t, "Powering on", "running", t.p.PowerOn)
+}
 
-	p, err := capstan.New(capstan.ProviderName(found.Provider), token)
+func cmdServerStop(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: dew server stop <name-or-ip>")
+	}
+	t, err := lookupAndConnect(args[0])
+	if err != nil {
+		return err
+	}
+	// PowerOff is graceful ACPI shutdown; bench data shows it
+	// typically takes ~10s end-to-end. 5min covers the long tail.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return runAction(ctx, t, "Powering off", "stopped", t.p.PowerOff)
+}
+
+func cmdServerRestart(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: dew server restart <name-or-ip>")
+	}
+	t, err := lookupAndConnect(args[0])
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return runAction(ctx, t, "Rebooting", "rebooted", t.p.Restart)
+}
+
+func cmdServerStatus(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: dew server status <name-or-ip>")
+	}
+	t, err := lookupAndConnect(args[0])
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := p.Destroy(ctx, found.ID); err != nil {
-		return fmt.Errorf("destroy %s: %w", found.Name, err)
+	srv, err := t.p.Get(ctx, t.rec.ID)
+	if err != nil {
+		return fmt.Errorf("get %s: %w", t.rec.Name, err)
 	}
 
-	removeServer(found.IP)
-	removeCredentials(found.IP)
-
-	fmt.Fprintf(os.Stderr, "  Server %s (%s) destroyed.\n", found.Name, found.IP)
+	fmt.Printf("%-12s %s\n", "Name:", srv.Name)
+	fmt.Printf("%-12s %s\n", "ID:", srv.ID)
+	fmt.Printf("%-12s %s\n", "Status:", srv.Status)
+	fmt.Printf("%-12s %s\n", "IPv4:", srv.PublicIPv4)
+	if srv.PublicIPv6 != "" {
+		fmt.Printf("%-12s %s\n", "IPv6:", srv.PublicIPv6)
+	}
+	fmt.Printf("%-12s %s\n", "Region:", srv.Region)
+	fmt.Printf("%-12s %s\n", "Plan:", srv.Plan)
+	fmt.Printf("%-12s %s\n", "Created:", srv.CreatedAt)
 	return nil
 }
 
