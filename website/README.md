@@ -30,9 +30,14 @@ refresh.
 First time:
 
 ```bash
+cp .env.example .env
+# edit .env: set CLOUDFLARE_ACCOUNT_ID
 pnpm wrangler login
 pnpm wrangler deploy   # uses wrangler.toml; deploys dist/ as static assets
 ```
+
+`account_id` is kept out of `wrangler.toml` on purpose — wrangler reads
+`CLOUDFLARE_ACCOUNT_ID` from the environment. `.env` is gitignored.
 
 After first deploy, attach the `dewvm.dev` custom domain in the Cloudflare
 dashboard → Workers → your worker → Custom Domains.

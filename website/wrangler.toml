@@ -6,6 +6,8 @@
 
 name = "dewvm-www"
 compatibility_date = "2026-05-30"
+# account_id is read from the CLOUDFLARE_ACCOUNT_ID env var (see .env.example).
+# Kept out of source so the legal-entity account ID isn't published.
 
 [assets]
 directory = "./dist"
