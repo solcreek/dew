@@ -59,11 +59,12 @@ jobs:
           fi
 
       - name: Lay out darwin binaries for goreleaser prebuilt builder
-        # .goreleaser.yaml prebuilt.path = dist/dew-darwin-{{ .Arch }}/dew
+        # .goreleaser.yaml prebuilt.path = prebuilt/dew-darwin-{{ .Arch }}/dew
+        # (outside dist/ so `goreleaser release --clean` doesn't wipe them)
         run: |
-          mkdir -p dist/dew-darwin-arm64 dist/dew-darwin-amd64
-          cp dew-darwin-arm64 dist/dew-darwin-arm64/dew
-          [ -f dew-darwin-amd64 ] && cp dew-darwin-amd64 dist/dew-darwin-amd64/dew || true
+          mkdir -p prebuilt/dew-darwin-arm64 prebuilt/dew-darwin-amd64
+          cp dew-darwin-arm64 prebuilt/dew-darwin-arm64/dew
+          [ -f dew-darwin-amd64 ] && cp dew-darwin-amd64 prebuilt/dew-darwin-amd64/dew || true
 
       - name: Build ARM64 initramfs profiles
         run: |
@@ -88,8 +89,8 @@ jobs:
         with:
           name: macos-binaries
           path: |
-            dist/dew-darwin-arm64/dew
-            dist/dew-darwin-amd64/dew
+            prebuilt/dew-darwin-arm64/dew
+            prebuilt/dew-darwin-amd64/dew
             vmlinuz-aarch64
             initramfs-*-aarch64.cpio.gz
           include-hidden-files: false
@@ -173,15 +174,17 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v6
         with:
-          path: tmp-artifacts
+          # Outside the repo tree so goreleaser's "git dirty" check
+          # doesn't trip on the untracked download dir.
+          path: ${{ runner.temp }}/artifacts
           merge-multiple: false
 
       - name: Stage darwin binaries where goreleaser prebuilt expects
         run: |
-          # macos-binaries artifact preserves the `dist/dew-darwin-{arch}/dew` layout
-          mkdir -p dist
-          cp -r tmp-artifacts/macos-binaries/dist/* dist/
-          ls -la dist/dew-darwin-*/
+          # macos-binaries artifact preserves the `prebuilt/dew-darwin-{arch}/dew` layout
+          mkdir -p prebuilt
+          cp -r ${{ runner.temp }}/artifacts/macos-binaries/prebuilt/* prebuilt/
+          ls -la prebuilt/dew-darwin-*/
 
       - name: Mint short-lived token for homebrew-tap
         # Org-owned GitHub App `solcreek-tap-publisher`, installed only on
@@ -216,20 +219,21 @@ jobs:
         # release goreleaser just created.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACTS: ${{ runner.temp }}/artifacts
         run: |
           gh release upload "$GITHUB_REF_NAME" \
-            tmp-artifacts/macos-binaries/vmlinuz-aarch64 \
-            tmp-artifacts/macos-binaries/initramfs-minimal-aarch64.cpio.gz \
-            tmp-artifacts/macos-binaries/initramfs-node-aarch64.cpio.gz \
-            tmp-artifacts/macos-binaries/initramfs-standard-aarch64.cpio.gz \
-            tmp-artifacts/linux-assets/dew-agent-linux-amd64 \
-            tmp-artifacts/linux-assets/dew-agent-linux-arm64 \
-            tmp-artifacts/linux-assets/dew-windows-x86_64.exe \
-            tmp-artifacts/linux-assets/vmlinuz-x86_64 \
-            tmp-artifacts/linux-assets/initramfs-minimal-x86_64.cpio.gz \
-            tmp-artifacts/linux-assets/initramfs-node-x86_64.cpio.gz \
-            tmp-artifacts/linux-assets/initramfs-standard-x86_64.cpio.gz \
-            tmp-artifacts/linux-assets/dew-rootfs-x86_64.tar.gz \
+            "$ARTIFACTS/macos-binaries/vmlinuz-aarch64" \
+            "$ARTIFACTS/macos-binaries/initramfs-minimal-aarch64.cpio.gz" \
+            "$ARTIFACTS/macos-binaries/initramfs-node-aarch64.cpio.gz" \
+            "$ARTIFACTS/macos-binaries/initramfs-standard-aarch64.cpio.gz" \
+            "$ARTIFACTS/linux-assets/dew-agent-linux-amd64" \
+            "$ARTIFACTS/linux-assets/dew-agent-linux-arm64" \
+            "$ARTIFACTS/linux-assets/dew-windows-x86_64.exe" \
+            "$ARTIFACTS/linux-assets/vmlinuz-x86_64" \
+            "$ARTIFACTS/linux-assets/initramfs-minimal-x86_64.cpio.gz" \
+            "$ARTIFACTS/linux-assets/initramfs-node-x86_64.cpio.gz" \
+            "$ARTIFACTS/linux-assets/initramfs-standard-x86_64.cpio.gz" \
+            "$ARTIFACTS/linux-assets/dew-rootfs-x86_64.tar.gz" \
             --clobber
 
       - name: compute artifact hashes for SLSA

@@ -31,13 +31,14 @@ builds:
     main: ./cmd/dew
     binary: dew
     # build-macos job pre-builds + signs + notarizes the darwin
-    # binaries; goreleaser only archives them here. The job places
-    # the binaries at the path specified by prebuilt.path.
+    # binaries; goreleaser only archives them here. Path is OUTSIDE
+    # `dist/` so `--clean` doesn't wipe the pre-staged binaries before
+    # archiving runs.
     builder: prebuilt
     goos: [darwin]
     goarch: [amd64, arm64]
     prebuilt:
-      path: dist/dew-darwin-{{ .Arch }}/dew
+      path: prebuilt/dew-darwin-{{ .Arch }}/dew
 
   - id: dew-linux
     main: ./cmd/dew
