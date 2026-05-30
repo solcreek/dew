@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-05-30
+
+### Fixed
+
+- **No more silent fallback to a wrong-profile initramfs.** When
+  `--profile X` was specified and `initramfs-X.cpio.gz` was missing
+  from the asset dir, `resolveAssets` quietly substituted the
+  unprefixed `initramfs.cpio.gz` (typically the minimal profile,
+  bundled by older versions or left over from a different run). The
+  VM then kernel-panicked early in boot: `/init: mkfs.ext4: not
+  found` (because minimal has no e2fsprogs), the disk init failed,
+  `switch_root` exited, init died. The user saw a generic "VM boot
+  failed: exited early" with no hint at the asset mismatch.
+
+  Now the profile-specific path is pinned. If the file is missing,
+  the existing auto-download block fetches `initramfs-X-<arch>.cpio.gz`
+  from the GH Release matching this binary's version, or fails with
+  a clear error.
+
+  Hits anyone who's manually deleted `~/.local/share/dew/initramfs-standard.cpio.gz`
+  or installed dew via an older bundler that only shipped the minimal
+  asset. Fresh installs were already fine (both files missing → auto-download).
+
 ## [0.7.2] - 2026-05-30
 
 ### Fixed

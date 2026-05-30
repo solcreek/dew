@@ -87,10 +87,17 @@ func resolveAssets(cfg *vm.Config) error {
 		cfg.Kernel = filepath.Join(dataDir, "vmlinuz")
 	}
 	if cfg.Initrd == "" {
+		// Pin to the profile-specific initramfs. If it's missing, the
+		// auto-download block below pulls the matching one from GH Release.
+		//
+		// Earlier behavior fell back to `initramfs.cpio.gz` (the unprefixed
+		// file, typically the minimal profile bundled by older versions or
+		// left over from a different profile run). Using a minimal initramfs
+		// for `--profile standard` kernel-panics at boot — `mkfs.ext4: not
+		// found`, no containerd, no e2fsprogs. The fallback masked a real
+		// missing-asset condition; force download instead so the user gets
+		// a working setup or a clear download error.
 		cfg.Initrd = filepath.Join(dataDir, "initramfs-"+profile+".cpio.gz")
-		if _, err := os.Stat(cfg.Initrd); err != nil {
-			cfg.Initrd = filepath.Join(dataDir, "initramfs.cpio.gz")
-		}
 	}
 	// Auto-download assets on first use
 	needDownload := false
