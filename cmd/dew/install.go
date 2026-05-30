@@ -232,7 +232,7 @@ func cmdAppRun(args []string) error {
 		// Ensure Dew VM is running with containerd
 		sp.Step("Preparing environment")
 		emitEvent("preparing", map[string]any{"backend": "vm"})
-		vmErr := ensureDewVM(exposedPort, manifest.Port)
+		vmErr := ensureDewVM(exposedPort, manifest.Port, sp)
 		backend := "vm"
 		if vmErr != nil {
 			sp.Fail(fmt.Sprintf("VM boot failed: %v", vmErr))
@@ -402,7 +402,7 @@ func fetchManifest(name string) (*appManifest, error) {
 	return &m, nil
 }
 
-func ensureDewVM(hostPort, guestPort int) error {
+func ensureDewVM(hostPort, guestPort int, sp *progress.Spinner) error {
 	home, _ := os.UserHomeDir()
 	sock := filepath.Join(home, ".local", "state", "dew", "default.sock")
 	if _, err := os.Stat(sock); err == nil {
@@ -449,8 +449,13 @@ func ensureDewVM(hostPort, guestPort int) error {
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 
-	// Wait for VM to be ready
-	for i := 0; i < 60; i++ {
+	// Wait for VM to be ready. Cold-start (no cached assets + fresh disk)
+	// needs ~60-120s: ~30s to download 146MB of vmlinuz + initramfs from
+	// GH Release on first use, ~30-60s for first-boot disk init (mkfs +
+	// copy rootfs + switch_root + containerd). Hot-start is sub-5s.
+	// Generous 300s ceiling covers cold + slow networks.
+	const timeoutSec = 300
+	for i := 0; i < timeoutSec; i++ {
 		select {
 		case err := <-exited:
 			if err != nil {
@@ -464,8 +469,23 @@ func ensureDewVM(hostPort, guestPort int) error {
 			time.Sleep(2 * time.Second)
 			return nil
 		}
+		// Heuristic progress messages so the user isn't staring at a
+		// black "Preparing environment..." for minutes on first run.
+		// Times tuned for cold + first-boot path.
+		if sp != nil {
+			switch i {
+			case 15:
+				sp.Step("Downloading VM assets (~146MB, first run only)")
+			case 60:
+				sp.Step("Booting VM")
+			case 120:
+				sp.Step("First-time disk init (formatting + populating rootfs)")
+			case 200:
+				sp.Step("Still working — slow network or first-boot setup")
+			}
+		}
 	}
-	return fmt.Errorf("VM did not start within 60s")
+	return fmt.Errorf("VM did not start within %ds", timeoutSec)
 }
 
 func buildRunArgs(containerName string, exposedPort int, manifest *appManifest) []string {

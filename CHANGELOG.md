@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-05-30
+
+### Fixed
+
+- **`dew app run` no longer times out on cold first run.** The
+  ensureDewVM polling timeout was 60s, which is roughly the time
+  needed JUST to download the 146MB VM assets (vmlinuz + standard
+  initramfs) from GH Release on first use — before the VM even starts
+  booting. Cold-start total is typically 60-120s (download + first-boot
+  disk init), which exceeded the timeout and surfaced as
+  `VM did not start within 60s` even though the VM was on its way up.
+  Bumped to 300s ceiling — covers cold + slow networks; hot-start
+  (sock already exists) returns sub-5s as before.
+
+### Changed
+
+- **Cold-start now shows what's happening.** ensureDewVM streams
+  heuristic progress messages to the spinner during the wait:
+  *Downloading VM assets (~146MB, first run only)* at +15s,
+  *Booting VM* at +60s, *First-time disk init (formatting + populating
+  rootfs)* at +120s, *Still working — slow network or first-boot setup*
+  at +200s. Subsequent runs (sock immediate) skip these entirely.
+
 ## [0.7.3] - 2026-05-30
 
 ### Fixed
