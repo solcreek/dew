@@ -1,0 +1,144 @@
+# goreleaser config for dew.
+#
+# Triggered by .github/workflows/release.yml on `v*` tag push. Produces:
+#   - darwin/amd64, darwin/arm64 host CLI (signed + notarized; built
+#     externally by the build-macos job and consumed here as prebuilt
+#     because notarization needs to happen before archiving)
+#   - linux/amd64, linux/arm64 host CLI (built by goreleaser directly)
+#   - per-arch tar.gz archives + checksums.txt
+#   - cosign keyless signature on checksums.txt
+#   - auto-PR to solcreek/homebrew-tap with the new formula
+#
+# What goreleaser does NOT manage in this repo:
+#   - dew-agent linux binary (guest agent inside the VM) — built by
+#     the release workflow and uploaded as additional release assets
+#   - initramfs cpio archives + kernel — same
+#   - npm publish — handled by a separate workflow step that consumes
+#     the goreleaser-produced tarballs at runtime (the npm package
+#     itself is a thin dispatcher that downloads from this release)
+
+version: 2
+
+project_name: dew
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: dew-darwin
+    main: ./cmd/dew
+    binary: dew
+    # build-macos job pre-builds + signs + notarizes the darwin
+    # binaries; goreleaser only archives them here. The job places
+    # the binaries at the path specified by prebuilt.path.
+    builder: prebuilt
+    goos: [darwin]
+    goarch: [amd64, arm64]
+    prebuilt:
+      path: dist/dew-darwin-{{ .Arch }}/dew
+
+  - id: dew-linux
+    main: ./cmd/dew
+    binary: dew
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    goos: [linux]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: default
+    name_template: >-
+      {{- .ProjectName }}_{{ .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    formats: [tar.gz]
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+# Keyless cosign signing for checksums.txt. Signs the bytes that pin
+# every binary's SHA256 — verifying one signature transitively covers
+# every artifact in the release. Uses GitHub Actions OIDC; Fulcio +
+# Rekor record the attestation. install.sh and the npm dispatcher
+# both verify this chain against
+# https://github.com/solcreek/dew/.github/workflows/release.yml
+# as the expected signer identity.
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: checksum
+    env:
+      - COSIGN_EXPERIMENTAL=1
+
+# Brew formula auto-PR to solcreek/homebrew-tap.
+# Tap repo (solcreek/homebrew-tap) must exist and have a CI token
+# granting write access — see docs/RELEASING.md for setup.
+brews:
+  - name: dew
+    repository:
+      owner: solcreek
+      name: homebrew-tap
+      branch: "dew-{{ .Tag }}"
+      pull_request:
+        enabled: true
+    directory: Formula
+    homepage: "https://dewvm.dev"
+    description: "Ultra-lightweight VM + deploy tool. One Go binary for local dev and production."
+    license: "MIT"
+    skip_upload: auto   # don't push formula on prerelease tags
+    install: |
+      bin.install "dew"
+    test: |
+      system "#{bin}/dew", "--version"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot+{{.ShortCommit}}"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "merge conflict"
+      - Merge pull request
+      - Merge remote-tracking branch
+      - Merge branch
+
+release:
+  github:
+    owner: solcreek
+    name: dew
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
+  header: |
+    `dew` {{ .Tag }} — ultra-lightweight VM + deploy tool.
+
+    Install:
+    - **macOS / Linux:** `curl -fsSL https://dewvm.dev/install.sh | sh`
+    - **Homebrew:** `brew install solcreek/tap/dew`
+    - **npm:** `npm i -g @solcreek/dew`
+
+    See [CHANGELOG.md](https://github.com/solcreek/dew/blob/{{ .Tag }}/CHANGELOG.md) for details.
+  footer: |
+    ---
+    Full diff: https://github.com/solcreek/dew/compare/{{ .PreviousTag }}...{{ .Tag }}

@@ -1,87 +1,215 @@
 #!/usr/bin/env node
 "use strict";
 
-// Dispatcher for @solcreek/dew. Resolves the per-platform package installed
-// via npm's optionalDependencies (one of @solcreek/dew-<os>-<cpu>) and
-// spawns its native binary with the user's arguments and stdio.
+// Thin dispatcher for @solcreek/dew.
 //
-// No postinstall. No download. No re-signing. The native binary is shipped
-// inside the matching platform package and arrives via npm's normal install
-// path, which preserves Apple Developer ID + notarization staple intact.
+// First run downloads the matching native binary from the GitHub Release
+// for this package version, verifies SHA256 against checksums.txt, and
+// caches in DEW_CACHE_DIR. Subsequent runs spawn the cached binary directly.
+//
+// We don't ship the binary inside the npm package — it lives in
+// goreleaser-produced tarballs on GH Releases. This keeps the npm tarball
+// tiny (no binary bytes touched by npm install), avoids per-platform
+// publish setups, and lets brew/install.sh/direct download all consume
+// the same exact bytes from one canonical source.
 //
 // Override: DEW_BINARY=/path/to/dew for local builds and testing.
+// Override: DEW_CACHE_DIR=/path overrides the cache location.
+// Set DEW_VERIFY_COSIGN=1 to hard-require cosign signature verification.
 
-const { existsSync } = require("fs");
-const { spawnSync } = require("child_process");
+const fs = require("fs");
 const path = require("path");
+const os = require("os");
+const https = require("https");
+const crypto = require("crypto");
+const zlib = require("zlib");
+const { spawnSync } = require("child_process");
+const { pipeline } = require("stream/promises");
+const { createWriteStream, createReadStream } = require("fs");
 
-const SUPPORTED = [
-  "darwin-arm64",
-  "darwin-x64",
-  "linux-x64",
-  "linux-arm64",
-  "win32-x64",
-];
+const pkg = require("../package.json");
+const VERSION = pkg.version;
+const REPO = "solcreek/dew";
 
-function resolveBinary() {
-  const override = process.env.DEW_BINARY;
-  if (override) {
-    if (!existsSync(override)) {
-      console.error(`dew: DEW_BINARY=${override} does not exist.`);
-      process.exit(1);
-    }
-    return override;
-  }
+const SUPPORTED = {
+  "darwin-arm64": { goos: "darwin",  goarch: "arm64", binName: "dew" },
+  "darwin-x64":   { goos: "darwin",  goarch: "amd64", binName: "dew" },
+  "linux-x64":    { goos: "linux",   goarch: "amd64", binName: "dew" },
+  "linux-arm64":  { goos: "linux",   goarch: "arm64", binName: "dew" },
+  "win32-x64":    { goos: "windows", goarch: "amd64", binName: "dew.exe" },
+};
 
-  const { platform, arch } = process;
-  const triple = `${platform}-${arch}`;
-
-  if (!SUPPORTED.includes(triple)) {
-    console.error(
-      `dew: ${platform}/${arch} is not a supported platform.\n` +
-      `Supported: ${SUPPORTED.join(", ")}.\n` +
-      `If you have built dew from source, set DEW_BINARY=/path/to/dew.`,
-    );
-    process.exit(1);
-  }
-
-  const pkgName = `@solcreek/dew-${triple}`;
-  const binName = platform === "win32" ? "dew.exe" : "dew";
-
-  let pkgRoot;
-  try {
-    pkgRoot = path.dirname(require.resolve(`${pkgName}/package.json`));
-  } catch {
-    console.error(
-      `dew: platform package "${pkgName}" is missing.\n` +
-      `This usually means npm skipped optionalDependencies during install\n` +
-      `(common when --no-optional, --omit=optional, or a wrong\n` +
-      `--os/--cpu/--force combination is used). To fix:\n` +
-      `  npm install --force --os=${platform} --cpu=${arch} @solcreek/dew\n` +
-      `Or set DEW_BINARY=/path/to/dew to use a custom build.`,
-    );
-    process.exit(1);
-  }
-
-  const binPath = path.join(pkgRoot, "bin", binName);
-  if (!existsSync(binPath)) {
-    console.error(
-      `dew: binary missing at ${binPath}.\n` +
-      `The platform package is corrupt; reinstall with:\n` +
-      `  npm rebuild @solcreek/dew`,
-    );
-    process.exit(1);
-  }
-  return binPath;
-}
-
-const result = spawnSync(resolveBinary(), process.argv.slice(2), {
-  stdio: "inherit",
-});
-
-if (result.error) {
-  console.error(`dew: ${result.error.message}`);
+function fatal(msg) {
+  process.stderr.write(`dew: ${msg}\n`);
   process.exit(1);
 }
 
-process.exit(result.status ?? 1);
+function cacheDir() {
+  if (process.env.DEW_CACHE_DIR) return process.env.DEW_CACHE_DIR;
+  const xdg = process.env.XDG_DATA_HOME;
+  const base = xdg || path.join(os.homedir(), ".local", "share");
+  return path.join(base, "dew", "bin", VERSION);
+}
+
+function get(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        return resolve(get(res.headers.location));
+      }
+      if (res.statusCode !== 200) {
+        return reject(new Error(`HTTP ${res.statusCode} ${url}`));
+      }
+      resolve(res);
+    }).on("error", reject);
+  });
+}
+
+async function downloadTo(url, destPath) {
+  const res = await get(url);
+  await pipeline(res, createWriteStream(destPath));
+}
+
+async function fetchText(url) {
+  const res = await get(url);
+  let body = "";
+  for await (const chunk of res) body += chunk;
+  return body;
+}
+
+function sha256OfFile(p) {
+  const h = crypto.createHash("sha256");
+  return new Promise((resolve, reject) => {
+    const s = createReadStream(p);
+    s.on("data", (d) => h.update(d));
+    s.on("end", () => resolve(h.digest("hex")));
+    s.on("error", reject);
+  });
+}
+
+// Extract a single named file from a tar.gz with no native deps.
+// Tar layout: 512-byte header, payload padded to 512.
+function extractTarGz(archivePath, outDir, binName) {
+  const buf = zlib.gunzipSync(fs.readFileSync(archivePath));
+  let off = 0;
+  while (off + 512 <= buf.length) {
+    const header = buf.subarray(off, off + 512);
+    const nameRaw = header.subarray(0, 100).toString("utf8").replace(/\0.*$/, "");
+    if (!nameRaw) { off += 512; continue; }
+    const sizeOctal = header.subarray(124, 136).toString("utf8").replace(/[\0 ]+$/, "");
+    const size = parseInt(sizeOctal, 8) || 0;
+    const typeflag = String.fromCharCode(header[156]) || "0";
+    const dataStart = off + 512;
+    const dataEnd = dataStart + size;
+    if ((typeflag === "0" || typeflag === "") && path.basename(nameRaw) === binName) {
+      const dest = path.join(outDir, binName);
+      fs.writeFileSync(dest, buf.subarray(dataStart, dataEnd));
+      fs.chmodSync(dest, 0o755);
+      return true;
+    }
+    off = dataEnd + (size % 512 === 0 ? 0 : 512 - (size % 512));
+  }
+  return false;
+}
+
+async function maybeVerifyCosign(dir, sumsBody) {
+  const verifyMode = process.env.DEW_VERIFY_COSIGN || "";
+  const cosignAvailable = spawnSync("cosign", ["version"], { stdio: "ignore" }).status === 0;
+  if (verifyMode !== "1" && !cosignAvailable) return;
+
+  const base = `https://github.com/${REPO}/releases/download/v${VERSION}`;
+  const sumsPath = path.join(dir, "checksums.txt");
+  const sigPath  = path.join(dir, "checksums.txt.sig");
+  const pemPath  = path.join(dir, "checksums.txt.pem");
+  fs.writeFileSync(sumsPath, sumsBody);
+  try {
+    await downloadTo(`${base}/checksums.txt.sig`, sigPath);
+    await downloadTo(`${base}/checksums.txt.pem`, pemPath);
+  } catch (e) {
+    if (verifyMode === "1") fatal(`cosign sig fetch failed: ${e.message}`);
+    process.stderr.write("dew: cosign verification skipped (signature absent)\n");
+    return;
+  }
+  const r = spawnSync("cosign", [
+    "verify-blob",
+    "--certificate", pemPath,
+    "--signature",   sigPath,
+    "--certificate-identity-regexp",
+      `^https://github.com/${REPO}/\\.github/workflows/release\\.yml@refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+`,
+    "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
+    sumsPath,
+  ], { stdio: verifyMode === "1" ? "inherit" : "pipe" });
+  if (r.status !== 0) {
+    if (verifyMode === "1") fatal("cosign verification failed");
+    process.stderr.write("dew: cosign verification failed (continuing — set DEW_VERIFY_COSIGN=1 to enforce)\n");
+    return;
+  }
+  process.stderr.write("dew: cosign verified\n");
+}
+
+async function ensureBinary() {
+  const triple = `${process.platform}-${process.arch}`;
+  const spec = SUPPORTED[triple];
+  if (!spec) {
+    fatal(
+      `${process.platform}/${process.arch} is not a supported platform.\n` +
+      `Supported: ${Object.keys(SUPPORTED).join(", ")}.\n` +
+      `If you have built dew from source, set DEW_BINARY=/path/to/dew.`,
+    );
+  }
+
+  const dir = cacheDir();
+  const binPath = path.join(dir, spec.binName);
+  if (fs.existsSync(binPath)) return binPath;
+
+  fs.mkdirSync(dir, { recursive: true });
+  const tarName = `dew_${VERSION}_${spec.goos}_${spec.goarch}.tar.gz`;
+  const base    = `https://github.com/${REPO}/releases/download/v${VERSION}`;
+  const tarUrl  = `${base}/${tarName}`;
+  const sumUrl  = `${base}/checksums.txt`;
+  const tarPath = path.join(dir, tarName);
+
+  process.stderr.write(`dew: downloading ${tarName}\n`);
+  try {
+    await downloadTo(tarUrl, tarPath);
+  } catch (e) {
+    fatal(`download failed: ${e.message}\n  Set DEW_BINARY=/path/to/dew to bypass.`);
+  }
+
+  process.stderr.write(`dew: verifying checksum\n`);
+  let sums;
+  try { sums = await fetchText(sumUrl); }
+  catch (e) { fatal(`could not fetch checksums.txt: ${e.message}`); }
+  const line = sums.split("\n").find((l) => l.endsWith(`  ${tarName}`));
+  if (!line) fatal(`checksums.txt has no entry for ${tarName}`);
+  const expected = line.split(/\s+/)[0];
+  const actual = await sha256OfFile(tarPath);
+  if (actual !== expected) {
+    fs.unlinkSync(tarPath);
+    fatal(`checksum mismatch for ${tarName}\n  expected ${expected}\n  got      ${actual}`);
+  }
+
+  await maybeVerifyCosign(dir, sums);
+
+  process.stderr.write(`dew: extracting\n`);
+  if (!extractTarGz(tarPath, dir, spec.binName)) {
+    fatal(`tarball missing ${spec.binName}`);
+  }
+  fs.unlinkSync(tarPath);
+  return binPath;
+}
+
+(async () => {
+  const override = process.env.DEW_BINARY;
+  let bin;
+  if (override) {
+    if (!fs.existsSync(override)) fatal(`DEW_BINARY=${override} does not exist`);
+    bin = override;
+  } else {
+    bin = await ensureBinary();
+  }
+  const result = spawnSync(bin, process.argv.slice(2), { stdio: "inherit" });
+  if (result.error) fatal(result.error.message);
+  process.exit(result.status === null ? 1 : result.status);
+})().catch((e) => fatal(e.message));
