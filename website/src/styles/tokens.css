@@ -1,0 +1,263 @@
+/* =========================================================================
+   Loopwise Design System — tokens + semantic vars
+   Drop this file into any Loopwise project: <link rel="stylesheet" href="colors_and_type.css">
+   ========================================================================= */
+
+/* --- Fonts (Geist Sans + Geist Mono via Google Fonts) ------------------- */
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap');
+
+:root {
+  /* ============ COLOR TOKENS ============ */
+
+  /* Brand */
+  --ink:        #0A0A0A;   /* primary text, primary surfaces in dark mode */
+  --paper:      #FAFAF7;   /* warm off-white body background */
+  --paper-pure: #FFFFFF;   /* deepest contrast moments only */
+
+  /* Warm-grey neutral scale */
+  --n-50:       #F5F5F2;
+  --n-100:      #ECECE7;
+  --n-150:      #DEDEDA;   /* dividers */
+  --n-200:      #D2D2CD;   /* default border */
+  --n-300:      #B5B5AF;
+  --n-400:      #8E8E88;
+  --n-500:      #6B6B66;   /* secondary text */
+  --n-600:      #4A4A46;
+  --n-700:      #2F2F2C;
+  --n-800:      #1C1C1A;
+  --n-900:      #0F0F0E;
+
+  /* Accent — electric lime / chartreuse */
+  --lime:       #C6FF3D;
+  --lime-ink:   #0A0A0A;   /* text color when sitting ON --lime */
+  --lime-soft:  #EFFFC9;   /* faint wash */
+
+  /* Semantic */
+  --success:    #3DAA5A;
+  --warning:    #E8A33D;
+  --danger:     #D8483A;
+  --info:       var(--ink);
+
+  /* Surface aliases */
+  --bg:         var(--paper);
+  --bg-elev:    var(--paper-pure);
+  --bg-muted:   var(--n-50);
+  --fg:         var(--ink);
+  --fg-muted:   var(--n-500);
+  --fg-subtle:  var(--n-400);
+  --border:     var(--n-200);
+  --border-strong: var(--n-300);
+  --divider:    var(--n-150);
+
+  /* ============ TYPE TOKENS ============ */
+  --font-sans:  'Geist', ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono:  'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  /* Modular scale, ratio 1.25 */
+  --t-12: 12px;
+  --t-14: 14px;
+  --t-16: 16px;
+  --t-20: 20px;
+  --t-25: 25px;
+  --t-31: 31px;
+  --t-39: 39px;
+  --t-49: 49px;
+  --t-61: 61px;
+  --t-76: 76px;
+
+  /* Line heights */
+  --lh-tight:   1.1;
+  --lh-display: 1.2;
+  --lh-body:    1.5;
+  --lh-mono:    1.4;
+
+  /* Tracking */
+  --tr-display: -0.02em;
+  --tr-body:    0;
+  --tr-mono:    0.02em;
+  --tr-eyebrow: 0.08em;
+
+  /* Weights */
+  --w-regular:  400;
+  --w-medium:   500;
+  --w-semibold: 600;
+
+  /* ============ SPACING — 4px base ============ */
+  --s-0:  0;
+  --s-1:  4px;
+  --s-2:  8px;
+  --s-3:  12px;
+  --s-4:  16px;
+  --s-5:  24px;
+  --s-6:  32px;
+  --s-7:  48px;
+  --s-8:  64px;
+  --s-9:  96px;
+
+  /* ============ RADIUS ============ */
+  --r-sm:   4px;
+  --r-md:   6px;
+  --r-lg:   8px;     /* used very sparingly */
+  --r-pill: 9999px;
+
+  /* ============ SHADOWS ============ */
+  --shadow-sm: 0 1px 2px rgba(10, 10, 10, 0.04);
+  --shadow-md: 0 8px 24px -8px rgba(10, 10, 10, 0.12);
+  --shadow-focus: 0 0 0 3px rgba(198, 255, 61, 0.45);
+
+  /* ============ MOTION ============ */
+  --ease:      cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast:  100ms;
+  --dur:       150ms;
+  --dur-slow:  220ms;
+
+  /* ============ LAYOUT ============ */
+  --content-max: 1200px;
+  --read-max:    680px;
+  --nav-h:       64px;
+}
+
+/* --- Dark mode ---------------------------------------------------------- */
+[data-theme="dark"] {
+  --ink:        #FAFAF7;
+  --paper:      #0A0A0A;
+  --paper-pure: #000000;
+
+  --n-50:       #18181A;
+  --n-100:      #1F1F22;
+  --n-150:      #2A2A2D;
+  --n-200:      #3A3A3D;
+  --n-300:      #54545A;
+  --n-400:      #7C7C82;
+  --n-500:      #A0A09A;
+  --n-600:      #C4C4BE;
+  --n-700:      #E0E0DA;
+  --n-800:      #ECECE7;
+  --n-900:      #F5F5F2;
+
+  --lime-soft:  #1F2A0A;
+  --shadow-md:  0 8px 24px -8px rgba(0, 0, 0, 0.5);
+}
+
+/* =========================================================================
+   SEMANTIC ELEMENT STYLES
+   Apply these by adding the class, OR rely on element selectors below.
+   ========================================================================= */
+
+html {
+  font-family: var(--font-sans);
+  font-size: var(--t-16);
+  line-height: var(--lh-body);
+  color: var(--fg);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Headings — sentence case, tight tracking */
+h1, .h1 {
+  font-family: var(--font-sans);
+  font-size: var(--t-49);
+  font-weight: var(--w-semibold);
+  line-height: var(--lh-display);
+  letter-spacing: var(--tr-display);
+  margin: 0;
+}
+h2, .h2 {
+  font-size: var(--t-39);
+  font-weight: var(--w-semibold);
+  line-height: var(--lh-display);
+  letter-spacing: var(--tr-display);
+  margin: 0;
+}
+h3, .h3 {
+  font-size: var(--t-25);
+  font-weight: var(--w-semibold);
+  line-height: var(--lh-display);
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+h4, .h4 {
+  font-size: var(--t-20);
+  font-weight: var(--w-medium);
+  line-height: var(--lh-display);
+  margin: 0;
+}
+
+/* Body */
+p, .body {
+  font-size: var(--t-16);
+  line-height: var(--lh-body);
+  margin: 0;
+}
+.body-lg {
+  font-size: var(--t-20);
+  line-height: var(--lh-body);
+  color: var(--fg-muted);
+}
+.body-sm {
+  font-size: var(--t-14);
+  line-height: var(--lh-body);
+}
+.caption {
+  font-size: var(--t-12);
+  line-height: var(--lh-body);
+  color: var(--fg-muted);
+}
+
+/* Mono — code & inline */
+code, kbd, samp, pre, .mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "ss01", "cv11";
+}
+pre {
+  font-size: var(--t-14);
+  line-height: var(--lh-mono);
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--s-4) var(--s-5);
+  overflow-x: auto;
+  margin: 0;
+}
+code:not(pre code) {
+  font-size: 0.9em;
+  background: var(--bg-muted);
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+}
+
+/* The signature mono eyebrow: `01 — WHY` */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--t-12);
+  font-weight: var(--w-medium);
+  text-transform: uppercase;
+  letter-spacing: var(--tr-eyebrow);
+  color: var(--fg-muted);
+}
+
+/* Links */
+a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  transition: text-decoration-thickness var(--dur) var(--ease);
+}
+a:hover { text-decoration-thickness: 2px; }
+
+/* Selection */
+::selection {
+  background: var(--lime);
+  color: var(--lime-ink);
+}
+
+/* Focus — lime ring */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+  border-radius: var(--r-sm);
+}

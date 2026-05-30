@@ -1,0 +1,384 @@
+---
+// Dew landing page — Loopwise design system, ink/lime, Geist Sans + Mono.
+// Original prototype from dewvm/project/Dew Landing.html (handoff bundle).
+// Production cuts: 2 alternate hero variants dropped (kept "split" — the
+// default); dev-only tweaks panel + React UMD + Babel scripts dropped.
+
+import '../styles/tokens.css'
+import '../styles/site.css'
+
+// Build-time fetch — bake current GitHub state into the static output so the
+// page doesn't need SSR. Re-run on every dew release via CI to refresh.
+// Defaults gracefully if the API call fails (rate limit, network, repo private).
+async function repoMeta() {
+  try {
+    const [release, repo] = await Promise.all([
+      fetch('https://api.github.com/repos/solcreek/dew/releases/latest', {
+        headers: { 'User-Agent': 'dewvm-website-build' },
+      }).then((r) => (r.ok ? r.json() : null)),
+      fetch('https://api.github.com/repos/solcreek/dew', {
+        headers: { 'User-Agent': 'dewvm-website-build' },
+      }).then((r) => (r.ok ? r.json() : null)),
+    ])
+    return {
+      version: release?.tag_name ?? 'v0.5.1',
+      stars: repo?.stargazers_count ?? 0,
+    }
+  } catch {
+    return { version: 'v0.5.1', stars: 0 }
+  }
+}
+
+const { version, stars } = await repoMeta()
+---
+
+<!doctype html>
+<html lang="en" data-theme="dark" data-motion="on">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dew — run any app, anywhere</title>
+    <meta name="description" content="Ultra-lightweight VM + deploy tool. One 4MB Go binary for local dev and production. No Docker. MIT licensed." />
+    <meta property="og:title" content="Dew — run any app, anywhere" />
+    <meta property="og:description" content="Dev environments, an app runner, and a deploy tool — in a single 4 MB binary. No Docker. No Homebrew." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://dewvm.dev" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <!-- FOUC prevention: apply saved theme before paint so the page doesn't
+         flash dark-then-light (or vice versa). Mirrors localStorage key
+         used by /scripts/app.js. -->
+    <script is:inline>
+      try {
+        var t = localStorage.getItem('dew-theme')
+        if (t) document.documentElement.setAttribute('data-theme', t)
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <!-- ============================================================ NAV -->
+    <header class="nav">
+      <div class="wrap">
+        <a class="brand" href="#top" aria-label="Dew home">
+          <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+            <path d="M16 3 C16 3 6 14.5 6 21 a10 10 0 0 0 20 0 C26 14.5 16 3 16 3 Z" fill="var(--lime)"></path>
+            <path d="M12 19 a4 4 0 0 0 2 4" fill="none" stroke="var(--ink)" stroke-width="1.8" stroke-linecap="round" opacity="0.5"></path>
+          </svg>
+          <span class="name">dew</span>
+          <span class="ver">{version}</span>
+        </a>
+        <nav class="nav-links">
+          <a class="nav-link" href="#what">Features</a>
+          <a class="nav-link" href="#devenv">Dev</a>
+          <a class="nav-link" href="#architecture">Architecture</a>
+          <a class="nav-link" href="#install">Install</a>
+          <button class="icon-btn" id="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
+            <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <circle cx="12" cy="12" r="4"></circle>
+              <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+            </svg>
+          </button>
+          <a class="btn btn-ghost" href="https://github.com/solcreek/dew" target="_blank" rel="noopener" style="gap:8px">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.5a10.5 10.5 0 0 0-3.32 20.46c.52.1.71-.23.71-.5v-1.76c-2.92.63-3.54-1.4-3.54-1.4-.48-1.22-1.17-1.55-1.17-1.55-.96-.65.07-.64.07-.64 1.06.08 1.62 1.09 1.62 1.09.94 1.62 2.47 1.15 3.07.88.1-.68.37-1.15.67-1.41-2.33-.27-4.78-1.17-4.78-5.18 0-1.15.41-2.08 1.08-2.82-.11-.27-.47-1.34.1-2.79 0 0 .88-.28 2.88 1.07a9.96 9.96 0 0 1 5.24 0c2-1.35 2.88-1.07 2.88-1.07.57 1.45.21 2.52.1 2.79.67.74 1.08 1.67 1.08 2.82 0 4.02-2.45 4.9-4.79 5.16.38.33.71.97.71 1.96v2.91c0 .28.19.61.72.5A10.5 10.5 0 0 0 12 1.5Z"></path></svg>
+            <span>GitHub</span>
+            <span style="font-family:var(--font-mono);color:var(--fg-muted);font-size:12px">★ {stars}</span>
+          </a>
+          <a class="btn btn-ink" href="#install"><span>Install</span> <span class="arr">→</span></a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="top">
+      <!-- ============================================================ HERO -->
+      <section class="hero band dotgrid" id="hero" data-hero="split" style="border-top:none">
+        <div class="wrap">
+          <div class="hero-variant hv-split">
+            <div class="hero-grid">
+              <div class="reveal is-in">
+                <div class="eyebrow"><span class="num">01</span> — One binary</div>
+                <h1 style="margin-top:16px">Run any app,<br />anywhere.</h1>
+                <p class="lede">Dev environments, an app runner, and a deploy tool — in a single 4&nbsp;MB binary. No Docker. No Homebrew.</p>
+                <div class="cta-row">
+                  <a class="btn btn-lime btn-lg" href="#install">Install dew <span class="arr">→</span></a>
+                  <a class="btn btn-ghost btn-lg" href="https://github.com/solcreek/dew" target="_blank" rel="noopener">View on GitHub</a>
+                </div>
+                <p class="note">curl -fsSL dew.sh/install | sh &nbsp;·&nbsp; macOS · Linux · Windows</p>
+                <div class="trust">
+                  <div class="item"><span class="k">4MB</span><span class="v">single binary</span></div>
+                  <div class="item"><span class="k">30ms</span><span class="v">VM boot</span></div>
+                  <div class="item"><span class="k">0</span><span class="v">Docker required</span></div>
+                </div>
+              </div>
+              <div class="reveal is-in d1">
+                <div class="term" data-term="split">
+                  <div class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">~/my-vite-app — dew</span></div>
+                  <div class="term-body" data-term-body></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ WHAT IT DOES -->
+      <section class="band" id="what">
+        <div class="wrap">
+          <div class="sec-head reveal">
+            <div class="eyebrow"><span class="num">02</span> — What it does</div>
+            <h2>Four jobs, one tool.</h2>
+            <p>Dew collapses the dev-to-prod toolchain into a single binary that runs everything inside a lightweight VM.</p>
+          </div>
+          <div class="cards">
+            <div class="card feat reveal">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m18 16 4-4-4-4M6 8l-4 4 4 4M14.5 4l-5 16"></path></svg>
+              <h3>Dev environments</h3>
+              <p>Auto-detect your project, boot a VM, install, and start with hot reload. <span style="color:var(--lime)">dew up</span> and you're running.</p>
+              <div class="more">→ Vite · Next · Astro · Django · Flask</div>
+            </div>
+            <div class="card reveal d1">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"></rect><path d="M9 8l3 4-3 4M14 16h2"></path></svg>
+              <h3>Run open-source apps</h3>
+              <p>Browse a catalog and run Ghost, Uptime Kuma and more in an isolated VM. No Docker required.</p>
+              <div class="more">→ dew app run ghost</div>
+            </div>
+            <div class="card reveal d2">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 12v8h16v-8M16 6l-4-4-4 4M12 2v14"></path></svg>
+              <h3>Share instantly</h3>
+              <p>A temporary public HTTPS URL for any local port. Zero config, zero account.</p>
+              <div class="more">→ dew share 3000</div>
+            </div>
+            <div class="card reveal">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 12 12 2 2 12M5 9v11h14V9"></path><path d="M9 20v-6h6v6"></path></svg>
+              <h3>Deploy to a VPS</h3>
+              <p>Build locally, deploy to any VPS with SSE progress, health checks and rollback. No Docker on the server.</p>
+              <div class="more">→ dew deploy 5.161.53.168</div>
+            </div>
+            <div class="card reveal d1">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 8h10M7 12h10M7 16h6"></path><rect x="3" y="3" width="18" height="18" rx="2"></rect></svg>
+              <h3>Agent-native</h3>
+              <p>Every command supports <span class="chip">--json</span> and <span class="chip">--dry-run</span>. Built for scripts and AI agents.</p>
+              <div class="more">→ --events NDJSON stream</div>
+            </div>
+            <div class="card reveal d2">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2 4 6v6c0 5 3.4 8 8 10 4.6-2 8-5 8-10V6Z"></path><path d="m9 12 2 2 4-4"></path></svg>
+              <h3>Isolated &amp; signed</h3>
+              <p>Apps run behind a hardware VM boundary. Signed, notarized, network off by default.</p>
+              <div class="more">→ Apple Virtualization.framework</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ DEV ENV -->
+      <section class="band dotgrid" id="devenv">
+        <div class="wrap">
+          <div class="split">
+            <div class="copy-col reveal">
+              <div class="eyebrow"><span class="num">03</span> — Dev environments</div>
+              <h2 style="margin-top:16px">Detect, boot, install,<br />start.</h2>
+              <p style="color:var(--fg-muted);font-size:var(--t-20);margin-top:16px;max-width:42ch"><span class="chip">dew up</span> reads your project, picks the right profile, and boots an isolated VM — your host stays clean.</p>
+              <ol class="steplist">
+                <li><span class="n">1</span><span><b>Detects</b> <span class="d">— Vite, Next, Astro, Nuxt, SvelteKit, Django, Flask, FastAPI, static HTML.</span></span></li>
+                <li><span class="n">2</span><span><b>Boots a VM</b> <span class="d">— Apple VZ on macOS, WSL2 on Windows. 30ms cold start.</span></span></li>
+                <li><span class="n">3</span><span><b>Installs &amp; serves</b> <span class="d">— dependencies resolved inside the VM, hot reload wired to your editor.</span></span></li>
+                <li><span class="n">4</span><span><b>Add services</b> <span class="d">— <span class="chip">dew up --with postgres,redis</span> attaches data stores on demand.</span></span></li>
+              </ol>
+            </div>
+            <div class="reveal d1">
+              <div class="term" data-term="devenv">
+                <div class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">~/my-vite-app — dew up --with postgres</span></div>
+                <div class="term-body" data-term-body style="min-height:236px"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ ARCHITECTURE -->
+      <section class="band" id="architecture">
+        <div class="wrap">
+          <div class="sec-head reveal">
+            <div class="eyebrow"><span class="num">04</span> — Architecture</div>
+            <h2>Same binary on both ends.</h2>
+            <p>Your machine runs the client; the VPS runs <span class="chip">dew serve</span>. The deploy travels over one HTTP API.</p>
+          </div>
+          <div class="arch reveal d1">
+            <div class="arch-col">
+              <div class="head"><span class="lab">macOS / Windows</span><span class="size">4 MB</span></div>
+              <div class="arch-row"><span class="b"></span>dew up</div>
+              <div class="arch-row"><span class="b"></span>dew app run</div>
+              <div class="arch-row"><span class="b"></span>dew build</div>
+              <div class="arch-row hl"><span class="b"></span>dew deploy</div>
+              <div class="arch-row"><span class="b"></span>dew share</div>
+              <div class="arch-row"><span class="b"></span>Apple VZ / WSL2 VM</div>
+            </div>
+            <div class="arch-link">
+              <span class="line"></span>
+              <span class="dep">deploy →</span>
+              <span class="line"></span>
+            </div>
+            <div class="arch-col">
+              <div class="head"><span class="lab">Linux VPS</span><span class="size">7 MB</span></div>
+              <div class="arch-row"><span class="b"></span>HTTP deploy API</div>
+              <div class="arch-row"><span class="b"></span>containerd + nerdctl</div>
+              <div class="arch-row"><span class="b"></span>self-signed TLS</div>
+              <div class="arch-row"><span class="b"></span>process management</div>
+              <div class="arch-row hl"><span class="b"></span>health check + rollback</div>
+              <div class="arch-row"><span class="b"></span>dew serve</div>
+            </div>
+          </div>
+
+          <!-- profiles -->
+          <div class="sec-head reveal" style="margin-top:96px">
+            <div class="eyebrow"><span class="num">·</span> Image profiles</div>
+            <h3 style="margin-top:14px">Pick a profile, pay for the size you use.</h3>
+          </div>
+          <div class="reveal d1" style="border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden">
+            <table class="ptable">
+              <thead><tr><th>Profile</th><th>Contents</th><th>Size</th><th>RAM</th></tr></thead>
+              <tbody>
+                <tr><td class="prof">minimal</td><td>Alpine + exec agent</td><td class="num">5 MB</td><td class="num">512 MB</td></tr>
+                <tr><td class="prof">node</td><td>+ Node.js, npm, build tools</td><td class="num">31 MB</td><td class="num">1 GB</td></tr>
+                <tr><td class="prof">python</td><td>+ Python 3, pip</td><td class="num">31 MB</td><td class="num">1 GB</td></tr>
+                <tr class="hl"><td class="prof">standard</td><td>+ containerd, nerdctl, runc</td><td class="num">129 MB</td><td class="num">2 GB</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ AGENT -->
+      <section class="band dotgrid" id="agent">
+        <div class="wrap">
+          <div class="split">
+            <div class="copy-col reveal">
+              <div class="eyebrow"><span class="num">05</span> — Agent integration</div>
+              <h2 style="margin-top:16px">Readable by humans.<br />Parseable by agents.</h2>
+              <p style="color:var(--fg-muted);font-size:var(--t-20);margin-top:16px;max-width:42ch">Every command emits structured JSON on <span class="chip">--json</span>, validates with <span class="chip">--dry-run</span>, and streams lifecycle events as NDJSON.</p>
+              <div class="sgrid" style="grid-template-columns:1fr;margin-top:24px">
+                <div class="sitem" style="border-top:none">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18l6-6-6-6"></path></svg>
+                  <div><div class="t">Input hardening</div><div class="s">Rejects path traversal, query injection and control characters.</div></div>
+                </div>
+                <div class="sitem">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18l6-6-6-6"></path></svg>
+                  <div><div class="t">Dry-run everything</div><div class="s">Validate a deploy without touching the server.</div></div>
+                </div>
+              </div>
+            </div>
+            <div class="reveal d1">
+              <div class="term" style="box-shadow:var(--shadow-md)">
+                <div class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">dew app run ghost --json</span></div>
+<pre class="term-body" style="white-space:pre;overflow-x:auto"><span class="c-prompt">$</span> <span class="c-cmd">dew app run ghost --port 3000 --json</span>
+<span class="c-mut">{`{`}</span>
+  <span class="c-mut">"ok":</span> <span class="c-ok">true</span><span class="c-mut">,</span>
+  <span class="c-mut">"app":</span> <span class="c-url">"ghost"</span><span class="c-mut">,</span>
+  <span class="c-mut">"port":</span> 3000<span class="c-mut">,</span>
+  <span class="c-mut">"url":</span> <span class="c-url">"http://localhost:3000"</span>
+<span class="c-mut">{`}`}</span>
+
+<span class="c-prompt">$</span> <span class="c-cmd">dew deploy prod --dry-run</span>
+<span class="c-mut">Would deploy my-app.tar.gz → https://prod:9080</span>
+<span class="c-lime">No changes made.</span></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ SECURITY -->
+      <section class="band" id="security">
+        <div class="wrap">
+          <div class="sec-head reveal">
+            <div class="eyebrow"><span class="num">06</span> — Security</div>
+            <h2>Isolated by default.</h2>
+            <p>Apps never touch your host directly. The boundary is hardware, not a sandbox flag.</p>
+          </div>
+          <div class="sgrid reveal d1">
+            <div class="sitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2 4 6v6c0 5 3.4 8 8 10 4.6-2 8-5 8-10V6Z"></path></svg><div><div class="t">VM isolation</div><div class="s">Apple Virtualization.framework hardware boundary.</div></div></div>
+            <div class="sitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2 4 6v6c0 5 3.4 8 8 10 4.6-2 8-5 8-10V6Z"></path><path d="m9 12 2 2 4-4"></path></svg><div><div class="t">Signed + notarized</div><div class="s">Developer ID, hardened runtime, Apple notarization.</div></div></div>
+            <div class="sitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg><div><div class="t">Self-signed TLS</div><div class="s">Auto-generated ECDSA cert for the deploy API.</div></div></div>
+            <div class="sitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg><div><div class="t">Constant-time tokens</div><div class="s">SHA-256 hashes, timing-safe verification.</div></div></div>
+            <div class="sitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12.55a11 11 0 0 1 14 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"></path><line x1="2" y1="2" x2="22" y2="22"></line></svg><div><div class="t">Network off by default</div><div class="s">No NIC unless you pass <span class="chip">--network</span>.</div></div></div>
+            <div class="sitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M16 18l-4 4-4-4M8 6l4-4 4 4"></path></svg><div><div class="t">Capability drop</div><div class="s">Guest agent drops root after vsock bind.</div></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ INSTALL -->
+      <section class="band dotgrid" id="install">
+        <div class="wrap-narrow" style="text-align:center">
+          <div class="reveal">
+            <div class="eyebrow" style="justify-content:center"><span class="num">07</span> — Install</div>
+            <h2 style="margin-top:16px">No credit card. No account.<br />One command.</h2>
+            <p style="color:var(--fg-muted);font-size:var(--t-20);margin-top:16px;max-width:48ch;margin-left:auto;margin-right:auto">A 4&nbsp;MB binary. Free and MIT-licensed. Pick your platform.</p>
+          </div>
+          <div class="reveal d1" style="display:flex;flex-direction:column;align-items:center;margin-top:40px">
+            <div class="tabs" id="install-tabs">
+              <button class="tab active" data-os="mac">macOS / Linux</button>
+              <button class="tab" data-os="win">Windows</button>
+              <button class="tab" data-os="npm">npm</button>
+            </div>
+            <div class="copybox" data-copy="curl -fsSL https://github.com/solcreek/dew/releases/latest/download/install.sh | sh" id="install-copy" style="max-width:680px;width:100%">
+              <code class="cmd" id="install-cmd"><span class="sigil">$ </span>curl -fsSL https://github.com/solcreek/dew/releases/latest/download/install.sh | sh</code>
+              <button class="copy" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V5a2 2 0 0 1 2-2h10"></path></svg>
+                <span class="lbl">Copy</span>
+              </button>
+            </div>
+            <div class="cta-row" style="justify-content:center;margin-top:32px">
+              <a class="btn btn-lime btn-lg" href="https://github.com/solcreek/dew" target="_blank" rel="noopener">Star on GitHub <span class="arr">→</span></a>
+              <a class="btn btn-ghost btn-lg" href="https://github.com/solcreek/dew#full-command-reference" target="_blank" rel="noopener">Command reference</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- ============================================================ FOOTER -->
+    <footer class="foot">
+      <div class="wrap">
+        <div class="foot-grid">
+          <div>
+            <a class="brand" href="#top">
+              <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+                <path d="M16 3 C16 3 6 14.5 6 21 a10 10 0 0 0 20 0 C26 14.5 16 3 16 3 Z" fill="var(--lime)"></path>
+                <path d="M12 19 a4 4 0 0 0 2 4" fill="none" stroke="var(--ink)" stroke-width="1.8" stroke-linecap="round" opacity="0.5"></path>
+              </svg>
+              <span class="name">dew</span>
+            </a>
+            <p class="tag">Ultra-lightweight VM + deploy tool. One Go binary for local dev and production.</p>
+          </div>
+          <div class="foot-cols">
+            <div class="foot-col">
+              <h4>Product</h4>
+              <a href="#what">Features</a>
+              <a href="#devenv">Dev environments</a>
+              <a href="#architecture">Architecture</a>
+              <a href="#install">Install</a>
+            </div>
+            <div class="foot-col">
+              <h4>Resources</h4>
+              <a href="https://github.com/solcreek/dew" target="_blank" rel="noopener">GitHub</a>
+              <a href="https://github.com/solcreek/dew#full-command-reference" target="_blank" rel="noopener">Command reference</a>
+              <a href="https://github.com/solcreek/dew/releases" target="_blank" rel="noopener">Releases</a>
+              <a href="https://github.com/solcreek/dew-apps" target="_blank" rel="noopener">App catalog</a>
+            </div>
+            <div class="foot-col">
+              <h4>Platforms</h4>
+              <a href="#install">macOS</a>
+              <a href="#install">Linux</a>
+              <a href="#install">Windows</a>
+            </div>
+          </div>
+        </div>
+        <div class="foot-base">
+          <span class="mono">MIT licensed · © 2026 dew</span>
+          <span class="mono">Go 80.1% · Shell 13.4% · JS 5.8%</span>
+        </div>
+      </div>
+    </footer>
+
+    <script src="/scripts/app.js" defer></script>
+  </body>
+</html>

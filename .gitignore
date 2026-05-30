@@ -27,3 +27,9 @@ initramfs/alpine-minirootfs-*.tar.gz
 
 # Local test outputs
 my-slide.tar.gz
+
+# website (Astro + Cloudflare Workers)
+website/node_modules/
+website/dist/
+website/.astro/
+website/.wrangler/

@@ -1,0 +1,21 @@
+# Cloudflare Workers deploy config for dewvm.dev
+#
+# Static-assets only — no Worker code yet. `astro build` writes dist/, then
+# `wrangler deploy` ships those files to Workers Static Assets (the newer
+# replacement for Pages, with native SPA + custom headers/redirects).
+
+name = "dewvm-www"
+compatibility_date = "2026-05-30"
+
+[assets]
+directory = "./dist"
+not_found_handling = "single-page-application"
+
+# To attach the custom domain after first deploy:
+#   wrangler deployments tail
+#   (then bind dewvm.dev in dash > Workers > custom domains)
+#
+# Or via config (once domain is in CF account):
+# [routes]
+# pattern = "dewvm.dev/*"
+# zone_name = "dewvm.dev"
