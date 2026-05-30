@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-05-30
+
+### Fixed
+
+- **`dew app run` no longer fails when an unrelated host process holds
+  one of the speculative pre-forward ports.** `ensureDewVM` was eagerly
+  forwarding 3000/3001/3002/3003/3004/3005/8000/8080/7456/5230/2368
+  on every VM start "in case the user runs another app later" — but if
+  *any* of those was already taken on the host (a bun/vite dev server
+  on 3000, for instance), `dew start --forward N:N` failed strict and
+  the entire VM boot exited with a generic "exited early" error that
+  pointed at entitlements / macOS version / port conflicts among other
+  unrelated VMs. None of those was the actual cause.
+
+  The pre-forward loop now calls a new `hostPortInUse(port)` helper
+  (TCP listen probe on 127.0.0.1) and skips taken ports best-effort.
+  The user's explicit `--port hostPort` is still added unconditionally
+  — if that one is taken, the error surfaces immediately.
+
 ## [0.7.1] - 2026-05-30
 
 ### Fixed

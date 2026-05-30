@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -416,11 +417,22 @@ func ensureDewVM(hostPort, guestPort int) error {
 		"--network",
 		"--json",
 	}
-	// Pre-forward common port range for subsequent apps
+	// Pre-forward common port range for subsequent apps. Best-effort —
+	// skip ports already bound by some other process on the host (the
+	// user might be running a dev server on 3000, etc.). Without this
+	// skip, a single in-use port would prevent VM start with a cryptic
+	// "exited early" error, since `dew start --forward N:N` is strict
+	// when N is already bound. The explicit hostPort is still added
+	// unconditionally — if THAT one is taken, fail loud (the user
+	// asked for it).
 	for _, p := range []int{3000, 3001, 3002, 3003, 3004, 3005, 8080, 8000, 7456, 5230, 2368} {
-		if p != hostPort {
-			args = append(args, "--forward", fmt.Sprintf("%d:%d", p, p))
+		if p == hostPort {
+			continue
 		}
+		if hostPortInUse(p) {
+			continue
+		}
+		args = append(args, "--forward", fmt.Sprintf("%d:%d", p, p))
 	}
 	cmd := exec.Command(os.Args[0], args...)
 	// IMPORTANT: do NOT forward child stdout to our stdout/stderr — it would
@@ -490,4 +502,17 @@ func execInstallCmd(name string, args ...string) error {
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// hostPortInUse reports whether some other process on the host already
+// holds a TCP listen on 127.0.0.1:port. We use this to skip the
+// best-effort pre-forward of common ports in `dew app run`, so the user's
+// concurrent dev servers don't break VM boot.
+func hostPortInUse(port int) bool {
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return true
+	}
+	_ = ln.Close()
+	return false
 }
