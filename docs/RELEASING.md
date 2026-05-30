@@ -16,7 +16,8 @@ Homebrew tap, and publishes the npm dispatcher via OIDC trusted publisher.
 | `APPLE_ID` | Apple account email | notarytool |
 | `APPLE_TEAM_ID` | Apple Team ID (`74ZKT4P4QB`) | notarytool |
 | `APPLE_APP_PASSWORD` | app-specific password from appleid.apple.com | notarytool |
-| `HOMEBREW_TAP_GITHUB_TOKEN` | PAT or GitHub App token with write access to `solcreek/homebrew-tap` | brew formula PR |
+| `HOMEBREW_TAP_APP_ID` | GitHub App ID for `solcreek-tap-publisher` | brew formula PR (token mint) |
+| `HOMEBREW_TAP_APP_PRIVATE_KEY` | GitHub App private key (`.pem` contents) | brew formula PR (token mint) |
 
 `GITHUB_TOKEN` is provided automatically; no action needed.
 
@@ -60,41 +61,41 @@ git commit -m "Initial commit"
 git push
 ```
 
-### 2. Provision the brew-tap write token
+### 2. Provision the brew-tap write token (GitHub App)
 
-**Option A (simpler, less secure)** — fine-grained PAT:
+We use an org-owned GitHub App to mint short-lived (~1h) write tokens
+scoped to `solcreek/homebrew-tap`. No PAT, no user-binding, no long-lived
+credentials.
 
-1. Go to https://github.com/settings/personal-access-tokens
-2. Create a fine-grained PAT, expiry 1 year
-3. Repository access: `solcreek/homebrew-tap` only
-4. Repository permissions: **Contents: Read and write**, **Pull requests: Read and write**
-5. Add as `HOMEBREW_TAP_GITHUB_TOKEN` secret on `solcreek/dew` repo:
+1. Go to https://github.com/organizations/solcreek/settings/apps →
+   **New GitHub App**
+2. Configure:
+   - Name: `solcreek-tap-publisher`
+   - Homepage URL: `https://github.com/solcreek`
+   - **Webhook → Active: uncheck**
+   - Permissions → Repository:
+     - **Contents: Read and write**
+     - **Pull requests: Read and write**
+     - Metadata: Read (auto-included)
+   - Where can this be installed: **Only on this account**
+3. Create the App. Note the **App ID**. Generate + download a private key
+   (`.pem`).
+4. Left sidebar → **Install App** → `solcreek` org → **Only select
+   repositories: `solcreek/homebrew-tap`** → Install.
+5. Set org secrets (scoped to `solcreek/dew` only):
    ```bash
-   gh secret set HOMEBREW_TAP_GITHUB_TOKEN --repo solcreek/dew
-   # paste the PAT
-   ```
+   echo "<app-id>" | gh secret set HOMEBREW_TAP_APP_ID \
+     --org solcreek --visibility selected --repos solcreek/dew
 
-**Option B (preferred long-term)** — GitHub App:
-
-1. Create a GitHub App owned by `solcreek` org with permissions:
-   - Repository: Contents (write), Pull requests (write)
-   - Subscribe to: nothing
-2. Install the App only on `solcreek/homebrew-tap`
-3. Generate a private key, base64 it
-4. Use `actions/create-github-app-token` in the release workflow to mint a
-   short-lived token. Add `APP_ID` and `APP_PRIVATE_KEY` secrets.
-5. Wire it up in `release.yml`:
-   ```yaml
-   - uses: actions/create-github-app-token@v2
-     id: app-token
-     with:
-       app-id: ${{ secrets.APP_ID }}
-       private-key: ${{ secrets.APP_PRIVATE_KEY }}
-       repositories: homebrew-tap
-   - uses: goreleaser/goreleaser-action@v6
-     env:
-       HOMEBREW_TAP_GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+   gh secret set HOMEBREW_TAP_APP_PRIVATE_KEY \
+     --org solcreek --visibility selected --repos solcreek/dew \
+     < /path/to/solcreek-tap-publisher.private-key.pem
    ```
+6. Delete the local `.pem` file once secrets are set. App private key is
+   recoverable only by generating a new one — there's no need to keep the
+   downloaded `.pem` once it's in GitHub secrets.
+7. `release.yml` already mints the token via `actions/create-github-app-token@v2`
+   and passes it to goreleaser as `HOMEBREW_TAP_GITHUB_TOKEN`.
 
 ### 3. Configure npm OIDC trusted publisher
 

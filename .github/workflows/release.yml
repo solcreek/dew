@@ -183,6 +183,18 @@ jobs:
           cp -r tmp-artifacts/macos-binaries/dist/* dist/
           ls -la dist/dew-darwin-*/
 
+      - name: Mint short-lived token for homebrew-tap
+        # Org-owned GitHub App `solcreek-tap-publisher`, installed only on
+        # solcreek/homebrew-tap with Contents + Pull requests write. Token
+        # is scoped + expires in ~1h. No PAT, no user-bound binding.
+        uses: actions/create-github-app-token@v2
+        id: tap-token
+        with:
+          app-id: ${{ secrets.HOMEBREW_TAP_APP_ID }}
+          private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
+          owner: solcreek
+          repositories: homebrew-tap
+
       - name: goreleaser
         # Pin to @v6 — @v7's self-verify step has broken on tags before.
         uses: goreleaser/goreleaser-action@v6
@@ -191,10 +203,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # PAT or App token with write access to solcreek/homebrew-tap.
-          # Falls back to GITHUB_TOKEN if unset (which won't have cross-repo
-          # write access — formula PR step will fail loudly).
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ steps.tap-token.outputs.token }}
 
       - name: Upload auxiliary assets to the goreleaser-created release
         # initramfs / kernel / dew-agent / dew-windows / dew-rootfs aren't
