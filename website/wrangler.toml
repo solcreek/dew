@@ -9,13 +9,13 @@ compatibility_date = "2026-05-30"
 # account_id is read from the CLOUDFLARE_ACCOUNT_ID env var (see .env.example).
 # Kept out of source so the legal-entity account ID isn't published.
 
-[assets]
-directory = "./dist"
-not_found_handling = "single-page-application"
-
 # Custom domain binding — requires the dewvm.dev zone to exist in the CF
 # account first (managed by infra repo: dewvm.tf). On deploy, CF creates
 # the necessary DNS records inside the zone and issues an edge cert.
 routes = [
   { pattern = "dewvm.dev", custom_domain = true },
 ]
+
+[assets]
+directory = "./dist"
+not_found_handling = "single-page-application"
