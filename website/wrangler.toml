@@ -13,11 +13,9 @@ compatibility_date = "2026-05-30"
 directory = "./dist"
 not_found_handling = "single-page-application"
 
-# To attach the custom domain after first deploy:
-#   wrangler deployments tail
-#   (then bind dewvm.dev in dash > Workers > custom domains)
-#
-# Or via config (once domain is in CF account):
-# [routes]
-# pattern = "dewvm.dev/*"
-# zone_name = "dewvm.dev"
+# Custom domain binding — requires the dewvm.dev zone to exist in the CF
+# account first (managed by infra repo: dewvm.tf). On deploy, CF creates
+# the necessary DNS records inside the zone and issues an edge cert.
+routes = [
+  { pattern = "dewvm.dev", custom_domain = true },
+]

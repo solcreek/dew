@@ -39,8 +39,10 @@ pnpm wrangler deploy   # uses wrangler.toml; deploys dist/ as static assets
 `account_id` is kept out of `wrangler.toml` on purpose — wrangler reads
 `CLOUDFLARE_ACCOUNT_ID` from the environment. `.env` is gitignored.
 
-After first deploy, attach the `dewvm.dev` custom domain in the Cloudflare
-dashboard → Workers → your worker → Custom Domains.
+The `dewvm.dev` custom domain is bound automatically via `wrangler.toml`
+(`routes` with `custom_domain = true`). The dewvm.dev zone itself is
+created by Terraform in the `infra` repo (`dewvm.tf`); deploy after the
+zone exists.
 
 Subsequent deploys:
 
