@@ -99,8 +99,19 @@ brews:
       owner: solcreek
       name: homebrew-tap
       branch: "dew-{{ .Tag }}"
+      # Explicit git.url: embeds the App-minted token directly so goreleaser
+      # pushes via HTTPS git protocol rather than calling the REST API
+      # POST /git/refs (which returned 403 despite the token having
+      # contents:write, root cause unclear — separate manual probe with
+      # the same App+key+install creates refs fine).
+      git:
+        url: 'https://x-access-token:{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}@github.com/solcreek/homebrew-tap.git'
       pull_request:
         enabled: true
+        base:
+          owner: solcreek
+          name: homebrew-tap
+          branch: main
     directory: Formula
     homepage: "https://dewvm.dev"
     description: "Ultra-lightweight VM + deploy tool. One Go binary for local dev and production."
