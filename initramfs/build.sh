@@ -267,6 +267,18 @@ if [ -b /dev/vda ]; then
     [ -f /.dew-node-profile ] && cp /.dew-node-profile /mnt/root/.dew-node-profile
     [ -f /.dew-python-profile ] && cp /.dew-python-profile /mnt/root/.dew-python-profile
 
+    # Refresh kernel modules every boot — DEW_REFRESH_KMODULES
+    # Modules must match the running kernel. When the initramfs ships an
+    # updated kernel (dew upgrades), previously-cached modules on the
+    # persistent disk become invalid, every `modprobe` silently fails, and
+    # the only symptom is mysterious downstream errors like CNI bridge
+    # "operation not supported".
+    if [ -d /lib/modules ]; then
+        mkdir -p /mnt/root/lib/modules
+        rm -rf /mnt/root/lib/modules/* 2>/dev/null
+        cp -a /lib/modules/. /mnt/root/lib/modules/ 2>/dev/null || true
+    fi
+
     # Bind-mount virtual filesystems into new root
     mount --move /dev /mnt/root/dev
     mount --move /proc /mnt/root/proc
@@ -373,6 +385,17 @@ fi
 
 # containerd (standard profile, now on ext4 rootfs)
 if [ -x /usr/local/bin/containerd ]; then
+    # CNI bridge networking modules. Without these the bridge plugin fails
+    # with `could not add "nerdctl0": operation not supported` because the
+    # bridge driver isn't registered with the kernel.
+    modprobe bridge 2>/dev/null || true
+    modprobe br_netfilter 2>/dev/null || true
+    modprobe veth 2>/dev/null || true
+    # Masquerade NAT for outbound traffic from containers
+    modprobe iptable_nat 2>/dev/null || true
+    modprobe nf_nat 2>/dev/null || true
+    modprobe xt_MASQUERADE 2>/dev/null || true
+    modprobe xt_addrtype 2>/dev/null || true
     # iptables needed for CNI bridge networking
     command -v iptables >/dev/null 2>&1 || apk add -q --no-cache iptables 2>/dev/null || true
     # TMPDIR for nerdctl/containerd scratch mounts

@@ -135,14 +135,24 @@ if [ -f "$INITRD_STD" ] && [ -f "$KERNEL" ]; then
     PID=$!
     for i in $(seq 1 120); do [ -S ~/.local/state/dew/default.sock ] && break; sleep 0.5; done
     RESULT=$($DEW exec "containerd --version 2>&1 | head -1" 2>&1)
-    kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -f ~/.local/state/dew/default.sock
     if echo "$RESULT" | grep -q "containerd"; then
         test_result "standard: containerd running" "pass"
     else
         test_result "standard: containerd running" "fail"
     fi
+    # CNI bridge networking: a bare `ip link add` proves the bridge kernel
+    # module is loaded. Without it, nerdctl run fails with "operation not
+    # supported" when CNI tries to create the nerdctl0 bridge.
+    BR_RESULT=$($DEW exec "ip link add dewtestbr type bridge && ip link del dewtestbr && echo bridge-ok" 2>&1)
+    if echo "$BR_RESULT" | grep -q "bridge-ok"; then
+        test_result "standard: CNI bridge module loaded" "pass"
+    else
+        test_result "standard: CNI bridge module loaded" "fail"
+    fi
+    kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -f ~/.local/state/dew/default.sock
 else
     test_result "standard: containerd" "skip"
+    test_result "standard: CNI bridge module loaded" "skip"
 fi
 
 # --- Test 7: Detect (unit-level) ---
