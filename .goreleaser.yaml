@@ -41,7 +41,9 @@ builds:
       path: prebuilt/dew-darwin-{{ .Arch }}/dew
 
   - id: dew-linux
-    main: ./cmd/dew
+    # cmd/dew is //go:build darwin-only (Apple Virtualization.framework
+    # backend); the linux entry point lives in cmd/dew-linux (no VZ deps).
+    main: ./cmd/dew-linux
     binary: dew
     env:
       - CGO_ENABLED=0
