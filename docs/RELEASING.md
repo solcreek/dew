@@ -18,6 +18,7 @@ Homebrew tap, and publishes the npm dispatcher via OIDC trusted publisher.
 | `APPLE_APP_PASSWORD` | app-specific password from appleid.apple.com | notarytool |
 | `HOMEBREW_TAP_APP_ID` | GitHub App ID for `solcreek-tap-publisher` | brew formula PR (token mint) |
 | `HOMEBREW_TAP_APP_PRIVATE_KEY` | GitHub App private key (`.pem` contents) | brew formula PR (token mint) |
+| `GORELEASER_KEY` | goreleaser-pro license key (Startup tier) | enables `builder: prebuilt` for signed+notarized darwin binaries |
 
 `GITHUB_TOKEN` is provided automatically; no action needed.
 

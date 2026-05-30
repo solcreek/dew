@@ -1,4 +1,5 @@
-# goreleaser config for dew.
+# goreleaser config for dew. Requires goreleaser-pro (Startup tier or
+# higher) for the `prebuilt` build path on darwin.
 #
 # Triggered by .github/workflows/release.yml on `v*` tag push. Produces:
 #   - darwin/amd64, darwin/arm64 host CLI (signed + notarized; built
@@ -87,8 +88,8 @@ signs:
       - COSIGN_EXPERIMENTAL=1
 
 # Brew formula auto-PR to solcreek/homebrew-tap.
-# Tap repo (solcreek/homebrew-tap) must exist and have a CI token
-# granting write access — see docs/RELEASING.md for setup.
+# Token comes from the org-owned `solcreek-tap-publisher` GitHub App,
+# minted per-job in release.yml — see docs/RELEASING.md for setup.
 brews:
   - name: dew
     repository:

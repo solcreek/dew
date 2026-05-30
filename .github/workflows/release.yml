@@ -197,13 +197,18 @@ jobs:
 
       - name: goreleaser
         # Pin to @v6 — @v7's self-verify step has broken on tags before.
+        # distribution: goreleaser-pro unlocks `prebuilt` builder used for
+        # the signed + notarized darwin binaries (Startup tier license,
+        # paid via Stripe — see https://goreleaser.com/pro/).
         uses: goreleaser/goreleaser-action@v6
         with:
+          distribution: goreleaser-pro
           version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ steps.tap-token.outputs.token }}
+          GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
 
       - name: Upload auxiliary assets to the goreleaser-created release
         # initramfs / kernel / dew-agent / dew-windows / dew-rootfs aren't
