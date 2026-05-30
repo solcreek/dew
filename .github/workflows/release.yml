@@ -213,7 +213,9 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          # node 24 → npm 11.x. OIDC Trusted Publishers require npm >= 11.5.1;
+          # node 20 ships npm 10.x and fails with ENEEDAUTH on publish.
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Sanity-test npm dispatcher + scripts
