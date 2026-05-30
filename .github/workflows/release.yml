@@ -187,9 +187,10 @@ jobs:
           ls -la prebuilt/dew-darwin-*/
 
       - name: Mint short-lived token for homebrew-tap
-        # Org-owned GitHub App `solcreek-tap-publisher`, installed only on
-        # solcreek/homebrew-tap with Contents + Pull requests write. Token
-        # is scoped + expires in ~1h. No PAT, no user-bound binding.
+        # Org-owned GitHub App `solcreek-tap-publisher`. Token is scoped to
+        # the tap repo + expires in ~1h. No PAT, no user-bound binding.
+        # Explicit permission-* inputs ensure the minted token includes
+        # write access even if the install-token inheritance gets quirky.
         uses: actions/create-github-app-token@v2
         id: tap-token
         with:
@@ -197,6 +198,8 @@ jobs:
           private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
           owner: solcreek
           repositories: homebrew-tap
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: goreleaser
         # Pin to @v6 — @v7's self-verify step has broken on tags before.
