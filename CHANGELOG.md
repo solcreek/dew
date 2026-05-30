@@ -25,8 +25,15 @@ thin npm dispatcher, one signed checksum file, one tag triggers everything.
 - **SLSA Level 3 build provenance** for every release artifact, via
   `slsa-framework/slsa-github-generator`
 - **`.github/workflows/release-dry-run.yml`** — runs on PRs touching
-  release shape, catches goreleaser config / build / dispatcher errors
-  before they hit a real tag
+  release shape; checks goreleaser config + linux snapshot build,
+  npm dispatcher tests, shellcheck on install.sh, and the install.sh
+  sync mechanism (see below)
+- **install.sh sync mechanism** — `website/scripts/sync-install-sh.mjs`
+  runs as Astro's `prebuild` step on every `pnpm run build`, copying
+  `/install.sh` → `website/public/install.sh` (gitignored). Single
+  source of truth at the repo root; deploys can never serve a stale
+  copy. `release-dry-run.yml` exercises the script + diffs the built
+  artifact against the source to catch regressions.
 - **`docs/RELEASING.md`** — one-time setup for the tap repo, brew-tap
   token, npm trusted publisher, and signed-tag protection
 
@@ -64,7 +71,17 @@ thin npm dispatcher, one signed checksum file, one tag triggers everything.
   configured for the 5 per-platform packages. The v0.7.0 single-package
   model eliminates the failure mode entirely.
 
-## [0.6.0] - 2026-05-30
+## [0.6.0] - 2026-05-30 — **WITHDRAWN**
+
+> **Note:** v0.6.0 was unpublished from npm on 2026-05-30 within the
+> 72h window. The five per-platform packages
+> (`@solcreek/dew-darwin-arm64`, etc.) were never created on npm
+> because OIDC trusted-publisher pending entries weren't configured,
+> causing `npm install @solcreek/dew@0.6.0` to fail with
+> `platform package is missing`. v0.7.0 removes the per-platform
+> packaging entirely. GitHub Release v0.6.0 with binaries remains
+> available; install via `curl ... install.sh | sh` or direct download
+> still works.
 
 **Headline:** `dew app run` actually starts containers; npm install never
 touches binary bytes.
