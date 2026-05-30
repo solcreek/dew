@@ -525,10 +525,10 @@ CONF
 containerd &
 sleep 3
 
-# Start dew serve
-cat > /etc/systemd/system/dew-serve.service << 'SVC'
+# Start dew (deploy receiver)
+cat > /etc/systemd/system/dew.service << 'SVC'
 [Unit]
-Description=Dew Serve
+Description=Dew deploy receiver
 After=network-online.target
 Wants=network-online.target
 
@@ -544,7 +544,7 @@ WantedBy=multi-user.target
 SVC
 
 systemctl daemon-reload
-systemctl enable --now dew-serve
+systemctl enable --now dew
 `, tokenHash)
 }
 
