@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-30
+
+**Headline:** `dew app run` actually starts containers; npm install never
+touches binary bytes.
+
+### Added
+
+- **`dew server start/stop/restart/status`** — power management for
+  provisioned servers, mirroring `dew server create/destroy`
+- **`--json` output for all `dew server` subcommands** — structured
+  responses for agent-driven workflows
+- `npm/scripts/generate-packages.mjs` — scaffolds the 5 per-platform
+  publish directories from CI-built signed + notarized binaries
+- `npm/scripts/sync-version.mjs` — locks main + every `optionalDependency`
+  to one version on tag push
+- `npm/test/` — 14 tests covering the dispatcher (`DEW_BINARY` override,
+  missing platform package, exit code propagation), package generator
+  (all-present, partial, zero, byte-exact binary copy), and version sync
+
 ### Changed
 
 - **npm packaging — per-platform via `optionalDependencies`.** The main
@@ -26,20 +45,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`DEW_BINARY=/path/to/dew`** environment variable for local builds and
   testing, bypassing platform-package resolution.
-
 - **`install.sh` no longer re-signs binaries with Developer ID signatures.**
   Detects the existing signature before ad-hoc-signing, matching the
   v0.5.1 fix in the npm path.
+- **`dew server` internals on capstan v0.5** — power actions, factory
+  constructor, refreshed provider catalogs
 
-### Added
+### Fixed
 
-- `npm/scripts/generate-packages.mjs` — scaffolds the 5 per-platform
-  publish directories from CI-built signed + notarized binaries
-- `npm/scripts/sync-version.mjs` — locks main + every `optionalDependency`
-  to one version on tag push
-- `npm/test/` — 14 tests covering the dispatcher (DEW_BINARY override,
-  missing platform package, exit code propagation), package generator
-  (all-present, partial, zero, byte-exact binary copy), and version sync
+- **`dew app run` failed on first container start with
+  `failed to create bridge "nerdctl0": operation not supported`.**
+  Two compounding causes:
+  - The standard-profile init script never loaded `bridge`,
+    `br_netfilter`, `veth`, `iptable_nat`, `nf_nat`, or `xt_MASQUERADE`
+    before starting containerd. CNI's bridge plugin needs all of them.
+  - `/lib/modules` on the persistent disk was only populated on **first
+    boot**. When the initramfs shipped an updated kernel, the cached
+    modules went stale and every `modprobe` silently failed (calls used
+    `|| true`), leaving only downstream OCI/CNI errors with no
+    kernel-version hint.
+
+  Init-stage2 now `modprobe`s the CNI module set before launching
+  containerd, and `/lib/modules` is rsync'd from the initramfs on every
+  boot. Two Go tests guard both invariants
+  (`cmd/dew/initramfs_modules_test.go`); `smoke-test.sh` adds an
+  `ip link add … type bridge` integration check.
 
 ### Removed
 
@@ -47,6 +77,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolution model; nothing on the user's machine touches the binary
 - `.github/workflows/npm-publish.yml` — folded into the Release workflow
   as a single source of truth for publishing all 6 packages together
+- `cmd/dew-serve/` — orphan binary entrypoint that duplicated `cmd/dew`
+  after the v0.4 unification; systemd unit renamed to `dew.service`
 
 ## [0.5.0] - 2026-05-30
 
