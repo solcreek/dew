@@ -90,37 +90,19 @@ signs:
     env:
       - COSIGN_EXPERIMENTAL=1
 
-# Brew formula auto-PR to solcreek/homebrew-tap.
-# Token comes from the org-owned `solcreek-tap-publisher` GitHub App,
-# minted per-job in release.yml — see docs/RELEASING.md for setup.
-brews:
-  - name: dew
-    repository:
-      owner: solcreek
-      name: homebrew-tap
-      branch: "dew-{{ .Tag }}"
-      # Explicit git.url: embeds the App-minted token directly so goreleaser
-      # pushes via HTTPS git protocol rather than calling the REST API
-      # POST /git/refs (which returned 403 despite the token having
-      # contents:write, root cause unclear — separate manual probe with
-      # the same App+key+install creates refs fine).
-      git:
-        url: 'https://x-access-token:{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}@github.com/solcreek/homebrew-tap.git'
-      pull_request:
-        enabled: true
-        base:
-          owner: solcreek
-          name: homebrew-tap
-          branch: main
-    directory: Formula
-    homepage: "https://dewvm.dev"
-    description: "Ultra-lightweight VM + deploy tool. One Go binary for local dev and production."
-    license: "MIT"
-    skip_upload: auto   # don't push formula on prerelease tags
-    install: |
-      bin.install "dew"
-    test: |
-      system "#{bin}/dew", "--version"
+# Brew formula auto-PR: handled by a custom step in
+# .github/workflows/release.yml ("Bump brew formula on tap"), not by
+# goreleaser's `brews:` block.
+#
+# History: goreleaser's brews block kept returning 403 on POST /git/refs
+# even though the same App+key+install can create refs in isolation
+# (manually minted token, direct curl call). Root cause not pinned down
+# — possibly env-var pickup, possibly `repositories:` scoping interaction
+# with the App-token action, possibly a goreleaser-internal use of
+# GITHUB_TOKEN instead of HOMEBREW_TAP_GITHUB_TOKEN. The custom step
+# templates Formula/dew.rb directly from the checksums.txt that
+# goreleaser produces, then pushes + opens PR via the App token using
+# Authorization: Bearer header (no token embedded in URL).
 
 snapshot:
   version_template: "{{ incpatch .Version }}-snapshot+{{.ShortCommit}}"

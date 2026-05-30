@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.0] - unreleased
+## [0.7.1] - 2026-05-30
+
+### Fixed
+
+- **Homebrew tap formula is actually published** on release. v0.7.0
+  goreleaser's `brews:` block silently skipped the push (root cause not
+  pinned — same App+key+install creates refs fine via direct API call,
+  but goreleaser's REST POST `/git/refs` returned 403). Replaced with a
+  custom workflow step that templates `Formula/dew.rb` directly from
+  the goreleaser-produced `checksums.txt`, then pushes + opens PR using
+  the App-minted token via `Authorization: Bearer` header — token never
+  embedded in URLs.
+
+### Changed
+
+- `.goreleaser.yaml` drops the `brews:` block. Brew formula generation
+  + push is handled entirely by the new "Bump brew formula on tap" step
+  in `.github/workflows/release.yml`. Simpler debug surface, no
+  goreleaser-internal env-var inheritance to wrestle with.
+
+## [0.7.0] - 2026-05-30
 
 **Headline:** distribution architecture overhaul. One Homebrew tap, one
 thin npm dispatcher, one signed checksum file, one tag triggers everything.
