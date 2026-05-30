@@ -19,6 +19,11 @@ import (
 )
 
 func cmdServer(args []string) error {
+	// Strip --json out of args once at the dispatcher level so each subcommand
+	// reads clean positionals. flagJSON is package-scoped (set in main.go's
+	// top-level scan too) so subcommands check it directly.
+	args = stripJSONFlag(args)
+
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "usage: dew server <create|list|destroy|start|stop|restart|status> [flags]\n")
 		return nil
@@ -41,6 +46,60 @@ func cmdServer(args []string) error {
 		return cmdServerStatus(args[1:])
 	default:
 		return fmt.Errorf("unknown server subcommand %q (use: create, list, destroy, start, stop, restart, status)", args[0])
+	}
+}
+
+// stripJSONFlag removes --json from args (anywhere) and sets the package
+// flagJSON. Subcommands then read clean positionals + check flagJSON for
+// the output mode. Multiple --json passes are idempotent.
+func stripJSONFlag(args []string) []string {
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--json" {
+			flagJSON = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// emitJSON writes a structured success payload to stdout when --json mode is
+// active. The shape is always {"ok": true, ...payload}; callers pass payload
+// as a map. Encoder is shared so injection-safe in names / fields.
+func emitJSON(payload map[string]any) error {
+	payload["ok"] = true
+	return json.NewEncoder(os.Stdout).Encode(payload)
+}
+
+// serverJSON converts a capstan.Server into the JSON shape Marina (and any
+// other agent consumer) sees. Fields are stable and matched against
+// project_capstan_dew_boundary memory.
+func serverJSON(srv *capstan.Server) map[string]any {
+	out := map[string]any{
+		"id":         srv.ID,
+		"name":       srv.Name,
+		"status":     string(srv.Status),
+		"publicIPv4": srv.PublicIPv4,
+		"region":     srv.Region,
+		"plan":       srv.Plan,
+		"createdAt":  srv.CreatedAt,
+	}
+	if srv.PublicIPv6 != "" {
+		out["publicIPv6"] = srv.PublicIPv6
+	}
+	return out
+}
+
+// recordJSON converts a local serverRecord (registry entry) into JSON.
+func recordJSON(r serverRecord) map[string]any {
+	return map[string]any{
+		"id":       r.ID,
+		"name":     r.Name,
+		"ip":       r.IP,
+		"provider": r.Provider,
+		"region":   r.Region,
+		"plan":     r.Plan,
 	}
 }
 
@@ -84,10 +143,12 @@ func lookupAndConnect(target string) (*targetServer, error) {
 func runAction(
 	ctx context.Context,
 	t *targetServer,
-	verbing, doneLabel string,
+	verbing, doneLabel, actionName string,
 	fn func(ctx context.Context, id string) (*capstan.Action, error),
 ) error {
-	fmt.Fprintf(os.Stderr, "  %s %s...\n", verbing, t.rec.Name)
+	if !flagJSON {
+		fmt.Fprintf(os.Stderr, "  %s %s...\n", verbing, t.rec.Name)
+	}
 
 	action, err := fn(ctx, t.rec.ID)
 	if err != nil {
@@ -95,6 +156,17 @@ func runAction(
 	}
 	if _, err := t.p.WaitForAction(ctx, action.ID); err != nil {
 		return err
+	}
+
+	if flagJSON {
+		return emitJSON(map[string]any{
+			"action": actionName,
+			"server": map[string]any{
+				"id":   t.rec.ID,
+				"name": t.rec.Name,
+				"ip":   t.rec.IP,
+			},
+		})
 	}
 	fmt.Fprintf(os.Stderr, "  Server %s (%s) %s.\n", t.rec.Name, t.rec.IP, doneLabel)
 	return nil
@@ -233,8 +305,16 @@ func cmdServerCreate(args []string) error {
 	fmt.Fprintf(os.Stderr, "  Deploy: dew deploy %s\n\n", ip)
 
 	if flagJSON {
-		fmt.Printf(`{"ok":true,"ip":"%s","provider":"%s","region":"%s","plan":"%s","name":"%s","id":"%s"}%s`,
-			ip, provider, region, plan, name, srv.ID, "\n")
+		return emitJSON(map[string]any{
+			"server": map[string]any{
+				"id":       srv.ID,
+				"name":     name,
+				"ip":       ip,
+				"provider": provider,
+				"region":   region,
+				"plan":     plan,
+			},
+		})
 	}
 
 	return nil
@@ -244,6 +324,13 @@ func cmdServerList(args []string) error {
 	servers, err := loadServers()
 	if err != nil {
 		return err
+	}
+	if flagJSON {
+		out := make([]map[string]any, 0, len(servers))
+		for _, s := range servers {
+			out = append(out, recordJSON(s))
+		}
+		return emitJSON(map[string]any{"servers": out})
 	}
 	if len(servers) == 0 {
 		fmt.Println("No servers.")
@@ -273,6 +360,11 @@ func cmdServerDestroy(args []string) error {
 	}
 	removeServer(t.rec.IP)
 	removeCredentials(t.rec.IP)
+	if flagJSON {
+		return emitJSON(map[string]any{
+			"destroyed": map[string]any{"name": t.rec.Name, "ip": t.rec.IP, "id": t.rec.ID},
+		})
+	}
 	fmt.Fprintf(os.Stderr, "  Server %s (%s) destroyed.\n", t.rec.Name, t.rec.IP)
 	return nil
 }
@@ -287,7 +379,7 @@ func cmdServerStart(args []string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	return runAction(ctx, t, "Powering on", "running", t.p.PowerOn)
+	return runAction(ctx, t, "Powering on", "running", "start", t.p.PowerOn)
 }
 
 func cmdServerStop(args []string) error {
@@ -302,7 +394,7 @@ func cmdServerStop(args []string) error {
 	// typically takes ~10s end-to-end. 5min covers the long tail.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	return runAction(ctx, t, "Powering off", "stopped", t.p.PowerOff)
+	return runAction(ctx, t, "Powering off", "stopped", "stop", t.p.PowerOff)
 }
 
 func cmdServerRestart(args []string) error {
@@ -315,7 +407,7 @@ func cmdServerRestart(args []string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	return runAction(ctx, t, "Rebooting", "rebooted", t.p.Restart)
+	return runAction(ctx, t, "Rebooting", "rebooted", "restart", t.p.Restart)
 }
 
 func cmdServerStatus(args []string) error {
@@ -332,6 +424,10 @@ func cmdServerStatus(args []string) error {
 	srv, err := t.p.Get(ctx, t.rec.ID)
 	if err != nil {
 		return fmt.Errorf("get %s: %w", t.rec.Name, err)
+	}
+
+	if flagJSON {
+		return emitJSON(map[string]any{"server": serverJSON(srv)})
 	}
 
 	fmt.Printf("%-12s %s\n", "Name:", srv.Name)
