@@ -1,6 +1,8 @@
-// Dispatcher integration tests — spawn npm/bin/dew with controlled env and
-// assert behavior. The dispatcher itself stays small + monolithic; we get
-// coverage by exercising every error path through spawnSync.
+// Dispatcher tests — spawn npm/bin/dew with controlled env and assert
+// behavior. We only exercise paths that don't require network access;
+// the download/checksum/cosign code is covered by the release pipeline
+// itself (a successful release proves the artifact layout matches what
+// the dispatcher expects to fetch).
 
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
@@ -8,7 +10,6 @@ import { spawnSync } from "node:child_process";
 import {
   mkdtempSync,
   writeFileSync,
-  mkdirSync,
   chmodSync,
   rmSync,
 } from "node:fs";
@@ -26,7 +27,7 @@ function makeFakeBinary(dir, exitCode = 0) {
     `#!/usr/bin/env node
 process.stdout.write(JSON.stringify({
   args: process.argv.slice(2),
-  env_pwd: process.env.FAKE_TAG,
+  env_tag: process.env.FAKE_TAG,
 }));
 process.exit(${exitCode});
 `,
@@ -53,7 +54,7 @@ test("DEW_BINARY override: spawns the named binary and forwards argv", () => {
     assert.equal(result.status, 0);
     const parsed = JSON.parse(result.stdout);
     assert.deepEqual(parsed.args, ["one", "two", "three"]);
-    assert.equal(parsed.env_pwd, "hello");
+    assert.equal(parsed.env_tag, "hello");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -79,21 +80,29 @@ test("DEW_BINARY override: missing file → exit 1 + helpful error", () => {
   assert.match(result.stderr, /does not exist/);
 });
 
-test("Platform package missing: error mentions package name + install hint", () => {
-  // Unset DEW_BINARY so dispatcher falls through to require.resolve, which
-  // will fail because the platform package is not installed in this repo's
-  // node_modules (we're running tests on the dew repo itself, not from a
-  // consumer install).
-  const result = runDispatcher({ env: { DEW_BINARY: "" } });
-  assert.equal(result.status, 1);
-  // One of two errors is expected: unsupported platform OR missing platform pkg
-  const stderr = result.stderr;
-  const isSupportedPlatform =
-    /platform package .* is missing/.test(stderr) &&
-    /npm install --force --os/.test(stderr);
-  const isUnsupportedPlatform = /is not a supported platform/.test(stderr);
-  assert.ok(
-    isSupportedPlatform || isUnsupportedPlatform,
-    `unexpected stderr:\n${stderr}`,
-  );
+test("Cached binary in DEW_CACHE_DIR is reused without network", () => {
+  // Pre-populate the cache dir so the dispatcher should find the binary
+  // and skip the download path entirely.
+  const dir = mkdtempSync(join(tmpdir(), "dew-cache-"));
+  try {
+    // Match the binary name the dispatcher looks for on this platform.
+    const binName = process.platform === "win32" ? "dew.exe" : "dew";
+    const fake = join(dir, binName);
+    writeFileSync(
+      fake,
+      `#!/usr/bin/env node
+process.stdout.write("cached:" + process.argv.slice(2).join(","));
+process.exit(0);
+`,
+    );
+    chmodSync(fake, 0o755);
+    const result = runDispatcher({
+      env: { DEW_CACHE_DIR: dir },
+      args: ["x", "y"],
+    });
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, "cached:x,y");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

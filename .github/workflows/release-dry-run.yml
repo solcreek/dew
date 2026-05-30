@@ -1,0 +1,71 @@
+name: Release Dry-Run
+
+# Catches goreleaser config errors, missing fields, and build failures
+# on PR — before a tag is cut and surprises hit the release pipeline.
+# Runs only when files that affect the release shape change.
+
+on:
+  pull_request:
+    paths:
+      - '.goreleaser.yaml'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/release-dry-run.yml'
+      - 'go.mod'
+      - 'go.sum'
+      - 'cmd/dew/**'
+      - 'install.sh'
+      - 'npm/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  goreleaser-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+
+      - name: goreleaser check (config syntax + template lint)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: check
+
+      - name: goreleaser build (linux only, snapshot)
+        # Real darwin build needs prebuilt binaries from the build-macos
+        # job which doesn't run here. Linux-only build catches changes
+        # that break the goreleaser flow on the runner used in release.
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: build --snapshot --clean --id dew-linux --single-target
+
+  npm-dispatcher:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Test npm dispatcher
+        working-directory: npm
+        run: npm test
+
+  install-sh-shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: shellcheck install.sh
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y shellcheck >/dev/null
+          shellcheck install.sh

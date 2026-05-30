@@ -5,10 +5,13 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write
-
+  contents: write   # goreleaser creates the GitHub Release
+  id-token: write   # cosign keyless + npm OIDC trusted publisher + SLSA
 
 jobs:
+  # ─── Build darwin binaries: signed, notarized, ready for goreleaser
+  #     archive. Also builds ARM64 initramfs + kernel (specialised
+  #     assets goreleaser doesn't manage).
   build-macos:
     runs-on: macos-latest
     steps:
@@ -23,12 +26,12 @@ jobs:
           APPLE_CERT_P12_PASSWORD: ${{ secrets.APPLE_CERT_P12_PASSWORD }}
         run: bash scripts/setup-signing-keychain.sh
 
-      - name: Build dew binaries
+      - name: Build dew darwin binaries
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           LDFLAGS="-s -w -X main.version=${VERSION}"
-          GOARCH=arm64 go build -ldflags="$LDFLAGS" -o dew-darwin-arm64 ./cmd/dew/
-          GOARCH=amd64 CGO_ENABLED=1 go build -ldflags="$LDFLAGS" -o dew-darwin-amd64 ./cmd/dew/ || echo "x86_64 cross-compile skipped"
+          GOARCH=arm64 go build -trimpath -ldflags="$LDFLAGS" -o dew-darwin-arm64 ./cmd/dew/
+          GOARCH=amd64 CGO_ENABLED=1 go build -trimpath -ldflags="$LDFLAGS" -o dew-darwin-amd64 ./cmd/dew/ || echo "x86_64 cross-compile skipped"
 
       - name: Sign macOS binaries
         env:
@@ -55,7 +58,14 @@ jobs:
             security delete-keychain "$KEYCHAIN_PATH" || true
           fi
 
-      - name: Build ARM64 initramfs
+      - name: Lay out darwin binaries for goreleaser prebuilt builder
+        # .goreleaser.yaml prebuilt.path = dist/dew-darwin-{{ .Arch }}/dew
+        run: |
+          mkdir -p dist/dew-darwin-arm64 dist/dew-darwin-amd64
+          cp dew-darwin-arm64 dist/dew-darwin-arm64/dew
+          [ -f dew-darwin-amd64 ] && cp dew-darwin-amd64 dist/dew-darwin-amd64/dew || true
+
+      - name: Build ARM64 initramfs profiles
         run: |
           bash initramfs/build.sh minimal
           bash initramfs/build.sh node
@@ -73,15 +83,21 @@ jobs:
           mv vmlinux-* vmlinuz-aarch64 2>/dev/null || true
           rm -f kata-arm64.tar kata-arm64.tar.zst
 
-      - name: Upload binaries + ARM64 assets
+      - name: Upload darwin artifacts
         uses: actions/upload-artifact@v6
         with:
           name: macos-binaries
           path: |
-            dew-darwin-*
+            dist/dew-darwin-arm64/dew
+            dist/dew-darwin-amd64/dew
             vmlinuz-aarch64
             initramfs-*-aarch64.cpio.gz
+          include-hidden-files: false
 
+  # ─── Build Linux auxiliary assets: dew-agent (guest), windows
+  #     wrapper, x86_64 initramfs profiles, WSL2 rootfs. The Linux
+  #     `dew` CLI binary is built by goreleaser in the release job,
+  #     not here.
   build-linux:
     runs-on: ubuntu-latest
     steps:
@@ -95,157 +111,172 @@ jobs:
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dew-agent-linux-amd64 ./cmd/dew-agent/
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dew-agent-linux-arm64 ./cmd/dew-agent/
 
-      - name: Build dew (Linux)
-        run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          LDFLAGS="-s -w -X main.version=${VERSION}"
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="$LDFLAGS" -o dew-linux-amd64 ./cmd/dew-linux/
-          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="$LDFLAGS" -o dew-linux-arm64 ./cmd/dew-linux/
-
       - name: Build Windows wrapper
         run: |
           GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dew-windows-x86_64.exe ./cmd/dew-win/
 
-      - name: Build initramfs profiles
+      - name: Build x86_64 initramfs profiles
         run: bash initramfs/build.sh minimal && bash initramfs/build.sh node && bash initramfs/build.sh standard
 
-      - name: Rename assets with arch
+      - name: Rename initramfs assets with arch
         run: |
-          ARCH=$(uname -m)
-          cp initramfs/vmlinuz vmlinuz-${ARCH}
-          cp initramfs/initramfs-minimal.cpio.gz initramfs-minimal-${ARCH}.cpio.gz
-          cp initramfs/initramfs-node.cpio.gz initramfs-node-${ARCH}.cpio.gz
-          cp initramfs/initramfs-standard.cpio.gz initramfs-standard-${ARCH}.cpio.gz
+          cp initramfs/vmlinuz vmlinuz-x86_64
+          cp initramfs/initramfs-minimal.cpio.gz initramfs-minimal-x86_64.cpio.gz
+          cp initramfs/initramfs-node.cpio.gz initramfs-node-x86_64.cpio.gz
+          cp initramfs/initramfs-standard.cpio.gz initramfs-standard-x86_64.cpio.gz
 
       - name: Build WSL2 rootfs
         run: |
-          # Create a WSL2-compatible rootfs from the standard initramfs
           mkdir -p /tmp/wsl-rootfs
           cd /tmp/wsl-rootfs
           gzip -dc $GITHUB_WORKSPACE/initramfs/initramfs-standard.cpio.gz | cpio -id 2>/dev/null
           tar czf $GITHUB_WORKSPACE/dew-rootfs-x86_64.tar.gz .
 
-      - name: Upload artifacts
+      - name: Upload linux artifacts
         uses: actions/upload-artifact@v6
         with:
           name: linux-assets
           path: |
             dew-agent-linux-*
-            dew-linux-*
             dew-windows-x86_64.exe
-            vmlinuz-*
-            initramfs-*
-            dew-rootfs-*
+            vmlinuz-x86_64
+            initramfs-*-x86_64.cpio.gz
+            dew-rootfs-x86_64.tar.gz
 
-  release:
+  # ─── Goreleaser is the orchestrator: archives signed darwin
+  #     binaries (consumed as prebuilt), cross-compiles linux dew,
+  #     produces tar.gz + checksums.txt, cosign-signs the checksum
+  #     file, creates the GitHub Release, and auto-PRs the formula
+  #     to solcreek/homebrew-tap.
+  goreleaser:
     needs: [build-macos, build-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write           # required for npm provenance attestations
+      id-token: write
+    outputs:
+      hashes: ${{ steps.hashes.outputs.hashes }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # goreleaser needs full history for changelog
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+
+      - name: install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: "v2.4.1"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v6
         with:
-          path: artifacts
-          merge-multiple: true
+          path: tmp-artifacts
+          merge-multiple: false
 
-      - name: Generate checksums
+      - name: Stage darwin binaries where goreleaser prebuilt expects
         run: |
-          cd artifacts
-          sha256sum * > checksums.txt
-          cat checksums.txt
+          # macos-binaries artifact preserves the `dist/dew-darwin-{arch}/dew` layout
+          mkdir -p dist
+          cp -r tmp-artifacts/macos-binaries/dist/* dist/
+          ls -la dist/dew-darwin-*/
 
-      - name: Create install scripts
-        run: |
-          cat > artifacts/install.sh << 'SCRIPT'
-          #!/bin/bash
-          set -euo pipefail
-
-          REPO="solcreek/dew"
-          ARCH="$(uname -m)"
-          OS="$(uname -s)"
-          DEST="${DEST:-/usr/local/bin}"
-
-          case "$OS" in
-            Darwin) BINARY="dew-darwin-${ARCH}" ;;
-            Linux)
-              [ "$ARCH" = "aarch64" ] && ARCH="arm64"
-              BINARY="dew-linux-${ARCH}"
-              ;;
-            *) echo "dew: unsupported OS $OS. For Windows: irm https://github.com/$REPO/releases/latest/download/install.ps1 | iex"; exit 1 ;;
-          esac
-
-          URL="https://github.com/$REPO/releases/latest/download/$BINARY"
-          echo "dew: downloading $BINARY..."
-          curl -fsSL -o "$DEST/dew" "$URL"
-          chmod +x "$DEST/dew"
-
-          # macOS: release binaries are already Developer ID signed + notarized
-          # in CI. Do NOT re-sign (that would strip the Developer ID and break
-          # the virtualization entitlement). Only ad-hoc-sign as a last resort
-          # if no Developer ID signature is present (e.g. a custom build).
-          if [ "$OS" = "Darwin" ]; then
-            if ! codesign -dv "$DEST/dew" 2>&1 | grep -q "Developer ID Application"; then
-              codesign --entitlements <(printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>com.apple.security.virtualization</key><true/></dict></plist>') --force -s - "$DEST/dew" 2>/dev/null || true
-            fi
-          fi
-
-          echo "dew: installed to $DEST/dew"
-          echo "dew: try 'dew app run excalidraw --port 3000'"
-          SCRIPT
-          chmod +x artifacts/install.sh
-          cp ${{ github.workspace }}/install.ps1 artifacts/install.ps1
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+      - name: goreleaser
+        # Pin to @v6 — @v7's self-verify step has broken on tags before.
+        uses: goreleaser/goreleaser-action@v6
         with:
-          generate_release_notes: true
-          files: |
-            artifacts/*
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PAT or App token with write access to solcreek/homebrew-tap.
+          # Falls back to GITHUB_TOKEN if unset (which won't have cross-repo
+          # write access — formula PR step will fail loudly).
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
 
-      # --- npm publish (replaces former npm-publish.yml workflow) ---
-      # Publishes 6 packages in one workflow: 5 per-platform packages
-      # (@solcreek/dew-<triple>) carrying the signed + notarized binaries,
-      # plus the main @solcreek/dew dispatcher pinned to the same version.
+      - name: Upload auxiliary assets to the goreleaser-created release
+        # initramfs / kernel / dew-agent / dew-windows / dew-rootfs aren't
+        # part of the goreleaser archives — upload them alongside the
+        # release goreleaser just created.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            tmp-artifacts/macos-binaries/vmlinuz-aarch64 \
+            tmp-artifacts/macos-binaries/initramfs-minimal-aarch64.cpio.gz \
+            tmp-artifacts/macos-binaries/initramfs-node-aarch64.cpio.gz \
+            tmp-artifacts/macos-binaries/initramfs-standard-aarch64.cpio.gz \
+            tmp-artifacts/linux-assets/dew-agent-linux-amd64 \
+            tmp-artifacts/linux-assets/dew-agent-linux-arm64 \
+            tmp-artifacts/linux-assets/dew-windows-x86_64.exe \
+            tmp-artifacts/linux-assets/vmlinuz-x86_64 \
+            tmp-artifacts/linux-assets/initramfs-minimal-x86_64.cpio.gz \
+            tmp-artifacts/linux-assets/initramfs-node-x86_64.cpio.gz \
+            tmp-artifacts/linux-assets/initramfs-standard-x86_64.cpio.gz \
+            tmp-artifacts/linux-assets/dew-rootfs-x86_64.tar.gz \
+            --clobber
+
+      - name: compute artifact hashes for SLSA
+        id: hashes
+        # Hash every dist/ artifact — the tar.gz archives, checksums.txt,
+        # cosign signature + cert. SLSA attestation pins the exact bytes.
+        run: |
+          set -euo pipefail
+          cd dist
+          hashes=$(sha256sum *.tar.gz checksums.txt checksums.txt.sig checksums.txt.pem | base64 -w0)
+          echo "hashes=${hashes}" >> "$GITHUB_OUTPUT"
+
+  # ─── SLSA Level 3 build provenance for goreleaser artifacts.
+  #     Runs in its own reusable workflow with isolated permissions.
+  provenance:
+    needs: [goreleaser]
+    permissions:
+      contents: write
+      id-token: write
+      actions: read
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+    with:
+      base64-subjects: ${{ needs.goreleaser.outputs.hashes }}
+      upload-assets: true
+
+  # ─── Publish thin dispatcher to npm via OIDC trusted publisher.
+  #     Single package now — no per-platform sub-packages.
+  npm-publish:
+    needs: [goreleaser]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # npm OIDC trusted publisher
+    steps:
+      - uses: actions/checkout@v6
 
       - uses: actions/setup-node@v6
         with:
-          # node 24 → npm 11.x. OIDC Trusted Publishers require npm >= 11.5.1;
-          # node 20 ships npm 10.x and fails with ENEEDAUTH on publish.
+          # node 24 → npm 11.x. OIDC trusted publishers require npm >= 11.5.1.
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Sanity-test npm dispatcher + scripts
+      - name: Sanity-test dispatcher
         working-directory: npm
         run: npm test
 
       - name: Sync npm version to git tag
-        run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          node npm/scripts/sync-version.mjs "$VERSION"
-
-      - name: Generate per-platform packages from release binaries
-        run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          node npm/scripts/generate-packages.mjs "$VERSION" artifacts tmp/platform-pkgs
-          ls tmp/platform-pkgs
-
-      - name: Publish per-platform packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          for dir in tmp/platform-pkgs/*/; do
-            echo "::group::Publish $(basename "$dir")"
-            (cd "$dir" && npm publish --provenance --access public) || \
-              echo "Skipped (likely already published)"
-            echo "::endgroup::"
-          done
-
-      - name: Publish main package
         working-directory: npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --provenance --access public || echo "Skipped (likely already published)"
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Publish to npm
+        working-directory: npm
+        run: |
+          set -euo pipefail
+          if ! npm publish --provenance --access public 2> /tmp/npm-err.log; then
+            if grep -qE 'E409|cannot publish over|previously published' /tmp/npm-err.log; then
+              echo "::notice::version already published, skipping"
+            else
+              cat /tmp/npm-err.log
+              exit 1
+            fi
+          fi

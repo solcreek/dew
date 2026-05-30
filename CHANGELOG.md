@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - unreleased
+
+**Headline:** distribution architecture overhaul. One Homebrew tap, one
+thin npm dispatcher, one signed checksum file, one tag triggers everything.
+
+### Added
+
+- **`brew install solcreek/tap/dew`** — formula PR'd automatically to
+  `solcreek/homebrew-tap` on every tag, by goreleaser
+- **`curl -fsSL https://dewvm.dev/install.sh | sh`** — POSIX installer
+  that detects OS/arch, fetches the release tarball, verifies SHA256, and
+  optionally verifies a cosign keyless signature against the
+  `release.yml` signer identity
+- **cosign keyless signature on `checksums.txt`** — install.sh + npm
+  dispatcher both verify the chain against the GitHub Actions OIDC issuer
+- **SLSA Level 3 build provenance** for every release artifact, via
+  `slsa-framework/slsa-github-generator`
+- **`.github/workflows/release-dry-run.yml`** — runs on PRs touching
+  release shape, catches goreleaser config / build / dispatcher errors
+  before they hit a real tag
+- **`docs/RELEASING.md`** — one-time setup for the tap repo, brew-tap
+  token, npm trusted publisher, and signed-tag protection
+
+### Changed
+
+- **npm packaging — collapsed to a single thin dispatcher** (`@solcreek/dew`).
+  Drops the five `@solcreek/dew-<triple>` per-platform packages added in
+  v0.6.0. The dispatcher downloads the matching binary from this release's
+  GitHub Release tarball on first run, verifies SHA256 + cosign, caches
+  in `DEW_CACHE_DIR` (defaults under `~/.local/share/dew/bin/<version>/`).
+  Removes the OIDC pending-publisher coordination needed for 6 packages
+  and unifies bytes-on-disk across npm / brew / install.sh / direct
+  download.
+- **Release pipeline is goreleaser-driven.** `goreleaser` archives
+  prebuilt + notarized darwin binaries, cross-compiles linux, produces
+  `checksums.txt`, signs with cosign, opens the brew formula PR, and
+  creates the GitHub Release. Auxiliary assets (initramfs / kernel /
+  dew-agent / dew-windows / dew-rootfs) are uploaded alongside.
+- **Release jobs are atomic-per-channel** with grep-specific idempotency
+  checks. Replaces the `|| echo "Skipped"` mask that silently hid
+  `ENEEDAUTH` in v0.6.0.
+
+### Removed
+
+- `@solcreek/dew-darwin-arm64`, `-darwin-x64`, `-linux-x64`,
+  `-linux-arm64`, `-win32-x64` per-platform packages — never published
+  (v0.6.0 was unpublished within the 72h window). No migration needed.
+- `npm/scripts/generate-packages.mjs` + `npm/scripts/sync-version.mjs`
+  — only needed for the multi-package world
+
+### Fixed
+
+- `npm install @solcreek/dew@0.6.0` failed with `platform package is
+  missing` because OIDC trusted-publisher pending entries weren't
+  configured for the 5 per-platform packages. The v0.7.0 single-package
+  model eliminates the failure mode entirely.
+
 ## [0.6.0] - 2026-05-30
 
 **Headline:** `dew app run` actually starts containers; npm install never
