@@ -99,7 +99,10 @@ func cmdServerCreate(args []string) error {
 	sp := progress.New()
 	sp.Step("Creating VPS")
 
-	p := newProvider(providerName, token)
+	p, err := capstan.New(providerName, token)
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -216,7 +219,10 @@ func cmdServerDestroy(args []string) error {
 		return err
 	}
 
-	p := newProvider(capstan.ProviderName(found.Provider), token)
+	p, err := capstan.New(capstan.ProviderName(found.Provider), token)
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -229,21 +235,6 @@ func cmdServerDestroy(args []string) error {
 
 	fmt.Fprintf(os.Stderr, "  Server %s (%s) destroyed.\n", found.Name, found.IP)
 	return nil
-}
-
-func newProvider(name capstan.ProviderName, token string) capstan.Provider {
-	switch name {
-	case capstan.Hetzner:
-		return capstan.NewHetzner(token)
-	case capstan.DigitalOcean:
-		return capstan.NewDigitalOcean(token)
-	case capstan.Linode:
-		return capstan.NewLinode(token)
-	case capstan.Vultr:
-		return capstan.NewVultr(token)
-	default:
-		return nil
-	}
 }
 
 func defaultRegion(name capstan.ProviderName) string {
