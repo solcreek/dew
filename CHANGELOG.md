@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   user's first boot. Native-build tooling (`build-base`) and Python
   alongside Node still install lazily on first boot if the user needs
   them — no functional regression.
+- `dew up` in a directory without a detected project now suggests only
+  commands that work today (`dew up --profile minimal`,
+  `dew start --profile minimal`, `dew app run`). The earlier list
+  pointed at a planned command, which would have produced a misleading
+  "command not found" follow-up for anyone copying it.
+- `dew --help` opens with the project's actual one-line description.
 
 ## [0.7.5] - 2026-05-30
 

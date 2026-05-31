@@ -29,15 +29,24 @@ func TestCmdUp_EmptyDir_SurfacesHelpfulOptions(t *testing.T) {
 	}
 	msg := err.Error()
 
+	// Every suggested command must work today — never point at a planned
+	// command that doesn't yet exist (broken-suggestion → trust tax).
+	// `dew shell` lands later; the suggestion list links to it then.
 	must := []struct {
 		needle string
 		why    string
 	}{
 		{"no_project_detected", "agents need a grep-able error code"},
-		{"dew shell", "beginners want a generic VM"},
-		{"dew app run", "another concrete next-step command"},
 		{"dew up --profile minimal", "explicit-profile escape hatch"},
+		{"dew start --profile minimal", "decouple boot from project context"},
+		{"dew app run", "another concrete next-step command"},
 		{"https://dewvm.dev/start", "docs link for full context"},
+	}
+	// Negative assertion: don't suggest planned-but-unbuilt commands.
+	for _, banned := range []string{"dew shell"} {
+		if strings.Contains(err.Error(), banned) {
+			t.Errorf("error message mentions planned-but-unbuilt command %q — fix the suggestion list", banned)
+		}
 	}
 	for _, m := range must {
 		if !strings.Contains(msg, m.needle) {

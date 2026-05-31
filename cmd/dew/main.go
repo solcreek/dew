@@ -328,7 +328,7 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, `dew — run any app, anywhere
+	fmt.Fprintf(os.Stderr, `dew — sandboxed Linux compute, agent-native and human-friendly
 
 Try: dew app run excalidraw --port 3000
 
@@ -803,8 +803,10 @@ func cmdUp(args []string) error {
 	if proj.Framework == "" && proj.Runtime == "" {
 		// "Floor = works" — don't punish first contact. Surface multiple
 		// exits so beginners + agents have a parseable next step. Error
-		// code `no_project_detected` is grep-able for agents.
-		return fmt.Errorf("no project detected in %s [no_project_detected]\n\nQuick options:\n  • dew shell                 — generic Linux VM (~26s first time)\n  • dew app run code          — run an OSS app like VS Code\n  • dew up --profile minimal  — boot a minimal VM here\n\nDocs: https://dewvm.dev/start", dir)
+		// code `no_project_detected` is grep-able for agents. Every
+		// suggested command below must work today; never point at planned
+		// commands that don't yet exist.
+		return fmt.Errorf("no project detected in %s [no_project_detected]\n\nQuick options:\n  • dew up --profile minimal     — boot a minimal Linux VM here\n  • dew start --profile minimal  — same, returns immediately, use 'dew exec' afterwards\n  • dew app run code             — run an OSS app like VS Code\n\nDocs: https://dewvm.dev/start", dir)
 	}
 
 	emit := func(data map[string]interface{}) {

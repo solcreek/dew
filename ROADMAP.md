@@ -12,6 +12,11 @@ A generic Linux environment that doesn't require a detected project
 in the current directory. `dew up` stays project-driven; `dew shell`
 becomes the entry point for "I just want a shell" cases.
 
+Real interactive shell — TTY-allocating, with signal forwarding and
+terminal resize — not a pipe wrapper around the existing one-shot
+exec path. Sits in the Advanced section of `dew --help` rather than
+the lead, to keep the headline aligned with the agent-first surface.
+
 ### `dew.toml` as a first-class project descriptor
 
 Auto-detection from `package.json` / `requirements.txt` works for
