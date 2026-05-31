@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.6] - 2026-05-31
+## [0.7.7] - 2026-05-31
+
+Identical user-visible scope to the withdrawn 0.7.6 plus a fix that
+lets the Linux initramfs build finish on the release runner.
+
+### Fixed
+
+- Release build for the Linux initramfs no longer fails on the
+  GitHub-hosted runner. Alpine's per-package post-install scripts
+  needed a capability the runner does not grant; the files those
+  scripts would have touched are already provided by the base rootfs,
+  so the build now skips the scripts and finishes cleanly.
+
+## [0.7.6] - 2026-05-31 — withdrawn
+
+Did not produce binaries: the Linux initramfs build step failed on
+the release runner. Re-shipped as 0.7.7 with the same changes plus
+the build-pipeline fix.
 
 ### Changed
 

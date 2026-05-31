@@ -248,8 +248,15 @@ apk_install_pkgs() {
     "$apk_static_bin" --root "$WORK_DIR" --arch "$ALPINE_ARCH" \
         --no-progress --no-network 2>/dev/null \
         --initdb add ca-certificates-bundle 2>/dev/null || true
+    # --no-scripts skips per-package post-install/trigger hooks. They need
+    # CAP_SYS_CHROOT, which the unprivileged GitHub-hosted runner can't
+    # grant; on Linux CI the install would otherwise exit non-zero even
+    # though every package's file content is correctly extracted. We
+    # don't depend on those hooks (no busybox applet relinking, no CA
+    # bundle rebuild — Alpine ships both pre-baked in the rootfs we
+    # extracted in Step 1), so skipping them is safe.
     "$apk_static_bin" --root "$WORK_DIR" --arch "$ALPINE_ARCH" \
-        --no-progress --allow-untrusted --update-cache \
+        --no-progress --allow-untrusted --update-cache --no-scripts \
         add "$@"
 }
 
