@@ -62,6 +62,17 @@ type Config struct {
 	DiskGB     uint   // disk size in GB (for creation)
 	VsockPort  uint32 // if >0, create a vsock device on this port
 	Network    bool   // if true, attach a NAT network device
+	// NetworkPolicy controls outbound traffic from the guest when
+	// Network is on. "open" (default) = full NAT, today's behaviour.
+	// "restricted" = OUTPUT default-DROP iptables in the guest; only
+	// loopback, DNS, and AllowHosts are reachable. Hostname-aware
+	// allowlist is a follow-up (DNS-proxy filter); current implementation
+	// is IP/CIDR only.
+	NetworkPolicy string
+	// AllowHosts lists IPs (already resolved at host side) that the
+	// guest is permitted to reach when NetworkPolicy="restricted".
+	// Each entry is a literal IPv4 address.
+	AllowHosts []string
 	SharedDirs []SharedDir
 	Forwards   []PortForward
 

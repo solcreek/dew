@@ -32,6 +32,16 @@ Today a fresh install plus `dew up` on a Node project takes about a
 minute. The target is under 30 seconds. Hot subsequent runs already
 complete in under 5 seconds.
 
+### Hostname-aware egress allowlist
+
+`--network-policy restricted` already drops outbound traffic by
+default and accepts only loopback, DNS, and IPs added through
+`--allow-host`. The current form is IP/CIDR only, which is brittle
+for CDN-backed package registries. Planned: a DNS-aware proxy in the
+guest that filters by hostname (e.g. `--allow-host registry.npmjs.org`
+keeps working even as the upstream CDN rotates IPs). After that, the
+default mode flips from open to restricted.
+
 ## Mid-term
 
 ### Linux dev parity

@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointed at a planned command, which would have produced a misleading
   "command not found" follow-up for anyone copying it.
 - `dew --help` opens with the project's actual one-line description.
+- New `--network-policy restricted` plus `--allow-host HOST`. With
+  these on, the guest's outbound traffic is default-deny — only
+  loopback, DNS, and the explicitly allowed IPs are reachable. The
+  default remains open for now; the restricted mode is intended for
+  callers running untrusted code who want to constrain egress.
+  Hostname-aware allowlist (versus the current IP-only form) is on
+  the roadmap.
 
 ## [0.7.5] - 2026-05-30
 

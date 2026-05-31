@@ -179,21 +179,32 @@ if [ "$PROFILE" = "node" ] || [ "$PROFILE" = "standard" ]; then
     fi
 fi
 
-# e2fsprogs for any profile that uses disk (switch_root needs mkfs.ext4)
+# e2fsprogs for any profile that uses disk (switch_root needs mkfs.ext4).
+# iptables for the egress-policy plumbing (every profile, not just
+# standard, because --network-policy=restricted applies to all).
+EXTRA_PKGS=""
 if [ "$PROFILE" != "minimal" ]; then
-    echo "Installing e2fsprogs..."
-    E2FS_PKGS="e2fsprogs e2fsprogs-libs libcom_err libuuid libblkid libeconf"
-    for pkg in $E2FS_PKGS; do
-        APK_FILE="${CACHE}/${pkg}.apk"
-        if [ ! -f "$APK_FILE" ]; then
-            URL=$(curl -sL "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${ALPINE_ARCH}/" \
-                  | grep -o "${pkg}-[0-9][^\"]*\.apk" | head -1)
-            [ -n "$URL" ] && curl -fSL -o "$APK_FILE" \
-                "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${ALPINE_ARCH}/${URL}" 2>/dev/null || true
-        fi
-        [ -f "$APK_FILE" ] && tar xzf "$APK_FILE" -C "$WORK_DIR" 2>/dev/null || true
-    done
+    EXTRA_PKGS="$EXTRA_PKGS e2fsprogs e2fsprogs-libs libcom_err libuuid libblkid libeconf"
 fi
+EXTRA_PKGS="$EXTRA_PKGS iptables libxtables libmnl libnftnl"
+echo "Installing$EXTRA_PKGS..."
+for pkg in $EXTRA_PKGS; do
+    APK_FILE="${CACHE}/${pkg}.apk"
+    if [ ! -f "$APK_FILE" ]; then
+        # Alpine ships an unrelated `iptables-0.7.x` placeholder alongside
+        # the real `iptables-1.8.x`; require major>=1 so we don't pick
+        # the wrong one. Generic packages keep the simple grep.
+        case "$pkg" in
+            iptables) PATTERN="iptables-[1-9][0-9]*\\.[0-9]+\\.[0-9]+" ;;
+            *)        PATTERN="${pkg}-[0-9]" ;;
+        esac
+        URL=$(curl -sL "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${ALPINE_ARCH}/" \
+              | grep -oE "${PATTERN}[^\"]*\\.apk" | head -1)
+        [ -n "$URL" ] && curl -fSL -o "$APK_FILE" \
+            "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${ALPINE_ARCH}/${URL}" 2>/dev/null || true
+    fi
+    [ -f "$APK_FILE" ] && tar xzf "$APK_FILE" -C "$WORK_DIR" 2>/dev/null || true
+done
 
 # --- Step 4b: Container runtime (standard profile only) ---
 if [ "$PROFILE" = "standard" ]; then
@@ -406,6 +417,42 @@ if ip link show eth0 >/dev/null 2>&1; then
     done
     udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -t 3 || true
     echo "nameserver 1.1.1.1" > /etc/resolv.conf
+fi
+
+# Egress policy. When the host passes dew.netpolicy=restricted on the
+# kernel cmdline, set OUTPUT default to DROP and explicitly accept:
+#   - loopback
+#   - DNS to the configured resolver (so /etc/resolv.conf still works)
+#   - the IPv4 addresses listed in dew.allow=ip1,ip2,...
+# When dew.netpolicy is unset (the default), egress is open as before
+# — this is opt-in for v1; default-deny + hostname allowlist is a
+# follow-up that needs a DNS-aware proxy.
+NETPOLICY=""
+ALLOW_IPS=""
+for param in $(cat /proc/cmdline 2>/dev/null); do
+    case "$param" in
+        dew.netpolicy=*) NETPOLICY="${param#dew.netpolicy=}" ;;
+        dew.allow=*)     ALLOW_IPS="${param#dew.allow=}" ;;
+    esac
+done
+if [ "$NETPOLICY" = "restricted" ] && command -v iptables >/dev/null 2>&1; then
+    iptables -P INPUT   ACCEPT 2>/dev/null
+    iptables -P FORWARD DROP   2>/dev/null
+    iptables -P OUTPUT  DROP   2>/dev/null
+    iptables -F OUTPUT          2>/dev/null
+    iptables -A OUTPUT -o lo -j ACCEPT
+    # DNS (UDP 53, TCP 53) — needed so name resolution still works.
+    iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+    iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+    # Explicitly allowed IPs.
+    if [ -n "$ALLOW_IPS" ]; then
+        OLD_IFS="$IFS"; IFS=','
+        for ip in $ALLOW_IPS; do
+            iptables -A OUTPUT -d "$ip" -j ACCEPT 2>/dev/null
+        done
+        IFS="$OLD_IFS"
+    fi
+    echo "dew: network policy = restricted (default DROP; ${ALLOW_IPS:-no extra hosts})"
 fi
 
 # virtiofs mounts (need fuse + virtiofs modules after switch_root)

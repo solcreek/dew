@@ -374,6 +374,16 @@ Output:
   --events      NDJSON lifecycle stream
   --stream      Stream stdout/stderr
   --dry-run     Validate without executing (deploy, app run, server create)
+
+Network (for commands that take --network):
+  --network-policy open|restricted
+                When restricted, the guest's outbound traffic is
+                default-DROP except loopback, DNS, and IPs added via
+                --allow-host. Hostname-aware allowlist is planned.
+  --allow-host HOST
+                Repeatable. Resolves HOST at the host and permits the
+                guest to reach those IPs. Only meaningful with
+                --network-policy=restricted.
 `)
 }
 
@@ -430,6 +440,34 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 			cfg.MemoryMB = n
 		case "--network":
 			cfg.Network = true
+		case "--network-policy":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--network-policy requires open|restricted")
+			}
+			switch args[i] {
+			case "open", "restricted":
+				cfg.NetworkPolicy = args[i]
+				cfg.Network = true // policy implies network is on
+			default:
+				return cfg, nil, fmt.Errorf("--network-policy: must be open or restricted (got %q)", args[i])
+			}
+		case "--allow-host":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--allow-host requires a hostname or IP")
+			}
+			h := args[i]
+			ips, err := net.LookupHost(h)
+			if err != nil {
+				return cfg, nil, fmt.Errorf("--allow-host %q: %w", h, err)
+			}
+			for _, ip := range ips {
+				// IPv4 only for now — guest iptables-restore is v4-style.
+				if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() != nil {
+					cfg.AllowHosts = append(cfg.AllowHosts, parsed.To4().String())
+				}
+			}
 		case "--vsock":
 			i++
 			if i >= len(args) {
@@ -517,6 +555,15 @@ func cmdStart(args []string) error {
 	// Pass shared dir mount points to guest via kernel cmdline
 	for _, sd := range cfg.SharedDirs {
 		cfg.CmdLine += fmt.Sprintf(" dew.share=%s:/%s", sd.Tag, sd.Tag)
+	}
+
+	// Egress policy: init-stage2 reads dew.netpolicy / dew.allow and
+	// sets up iptables OUTPUT rules in the guest.
+	if cfg.Network && cfg.NetworkPolicy == "restricted" {
+		cfg.CmdLine += " dew.netpolicy=restricted"
+		if len(cfg.AllowHosts) > 0 {
+			cfg.CmdLine += " dew.allow=" + strings.Join(cfg.AllowHosts, ",")
+		}
 	}
 
 	token := generateToken()
