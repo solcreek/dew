@@ -127,12 +127,19 @@ func resolveAssets(cfg *vm.Config) error {
 	return nil
 }
 
-const (
-	releaseBaseURL = "https://github.com/solcreek/dew/releases/latest/download"
-)
+const releaseBaseURL = "https://github.com/solcreek/dew/releases/latest/download"
+
+// releaseBaseURLOverride is set by tests to redirect downloads to a
+// local httptest server. Empty in production.
+var releaseBaseURLOverride string
 
 func downloadAssets(dataDir, profile, kernelPath, initrdPath string) error {
 	os.MkdirAll(dataDir, 0755)
+
+	base := releaseBaseURL
+	if releaseBaseURLOverride != "" {
+		base = releaseBaseURLOverride
+	}
 
 	arch := "x86_64"
 	if goArch := os.Getenv("GOARCH"); goArch == "arm64" {
@@ -156,49 +163,90 @@ func downloadAssets(dataDir, profile, kernelPath, initrdPath string) error {
 		name string
 	}{
 		{
-			fmt.Sprintf("%s/vmlinuz-%s", releaseBaseURL, arch),
+			fmt.Sprintf("%s/vmlinuz-%s", base, arch),
 			kernelPath,
 			"kernel",
 		},
 		{
-			fmt.Sprintf("%s/initramfs-%s-%s.cpio.gz", releaseBaseURL, profile, arch),
+			fmt.Sprintf("%s/initramfs-%s-%s.cpio.gz", base, profile, arch),
 			initrdPath,
 			fmt.Sprintf("initramfs (%s)", profile),
 		},
 	}
 
-	for _, f := range files {
+	type result struct {
+		name    string
+		written int64
+		err     error
+	}
+	results := make([]result, len(files))
+	var wg sync.WaitGroup
+	for i, f := range files {
 		if _, err := os.Stat(f.dest); err == nil {
+			results[i] = result{name: f.name, written: -1}
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "  downloading %s...", f.name)
+		fmt.Fprintf(os.Stderr, "  downloading %s...\n", f.name)
+		wg.Add(1)
+		go func(idx int, file struct {
+			url  string
+			dest string
+			name string
+		}) {
+			defer wg.Done()
+			results[idx] = fetchAsset(file.url, file.dest, file.name, profile)
+		}(i, f)
+	}
+	wg.Wait()
 
-		resp, err := http.Get(f.url)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, " failed\n")
-			return fmt.Errorf("download %s: %w", f.name, err)
+	for _, r := range results {
+		if r.err != nil {
+			return r.err
 		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != 200 {
-			fmt.Fprintf(os.Stderr, " not found (HTTP %d)\n", resp.StatusCode)
-			return fmt.Errorf("download %s: HTTP %d\n\n  Assets not available at %s\n  Build locally: bash initramfs/build.sh %s",
-				f.name, resp.StatusCode, f.url, profile)
+		if r.written > 0 {
+			fmt.Fprintf(os.Stderr, "  ✓ %s %dMB\n", r.name, r.written/1024/1024)
 		}
-
-		out, err := os.Create(f.dest)
-		if err != nil {
-			return fmt.Errorf("create %s: %w", f.dest, err)
-		}
-		written, err := io.Copy(out, resp.Body)
-		out.Close()
-		if err != nil {
-			os.Remove(f.dest)
-			return fmt.Errorf("download %s: %w", f.name, err)
-		}
-		fmt.Fprintf(os.Stderr, " %dMB\n", written/1024/1024)
 	}
 	return nil
+}
+
+func fetchAsset(url, dest, name, profile string) (r struct {
+	name    string
+	written int64
+	err     error
+}) {
+	r.name = name
+	resp, err := http.Get(url)
+	if err != nil {
+		r.err = fmt.Errorf("download %s: %w", name, err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		r.err = fmt.Errorf("download %s: HTTP %d\n\n  Assets not available at %s\n  Build locally: bash initramfs/build.sh %s",
+			name, resp.StatusCode, url, profile)
+		return
+	}
+	tmp := dest + ".partial"
+	out, err := os.Create(tmp)
+	if err != nil {
+		r.err = fmt.Errorf("create %s: %w", tmp, err)
+		return
+	}
+	written, err := io.Copy(out, resp.Body)
+	out.Close()
+	if err != nil {
+		os.Remove(tmp)
+		r.err = fmt.Errorf("download %s: %w", name, err)
+		return
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		os.Remove(tmp)
+		r.err = fmt.Errorf("install %s: %w", name, err)
+		return
+	}
+	r.written = written
+	return
 }
 
 func cmdAssets(args []string) error {
