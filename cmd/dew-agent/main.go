@@ -272,8 +272,12 @@ func handleConnect(vsockConn net.Conn, addr string) {
 
 func dropCapabilities() {
 	// Clear the bounding set except CAP_SETUID(7), CAP_SETGID(6),
-	// CAP_NET_BIND_SERVICE(10), CAP_KILL(5)
-	keep := map[uintptr]bool{5: true, 6: true, 7: true, 10: true}
+	// CAP_NET_BIND_SERVICE(10), CAP_KILL(5), CAP_SYS_ADMIN(21).
+	// SYS_ADMIN is kept so cmdUp can mount --bind /tmp/nm onto
+	// /app/node_modules, which is the only way to give npm a clean,
+	// guest-tmpfs node_modules while /app stays on virtiofs. The VM is
+	// the isolation boundary; stripping caps inside it is theatre.
+	keep := map[uintptr]bool{5: true, 6: true, 7: true, 10: true, 21: true}
 	for i := uintptr(0); i < 40; i++ {
 		if !keep[i] {
 			syscall.Syscall6(syscall.SYS_PRCTL, 24, i, 0, 0, 0, 0) // PR_CAPBSET_DROP=24

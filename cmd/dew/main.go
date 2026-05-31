@@ -1034,15 +1034,28 @@ func cmdUp(args []string) error {
 		return execVsockConn(conn, token, cmd)
 	}
 
-	// Project is mounted via virtiofs at /app (live sync from host)
-	// node_modules on VM tmpfs (not on host via virtiofs)
+	// Project is mounted via virtiofs at /app (live sync from host).
+	// node_modules is intentionally redirected to the guest's tmpfs so
+	// the native bindings are Linux+musl (the host might be macOS) and
+	// so npm doesn't churn the host filesystem.
+	//
+	// Earlier versions tried `ln -sf /tmp/nm node_modules`, which
+	// silently descended into a pre-existing node_modules directory.
+	// virtiofs also makes `rm -rf` unreliable from inside the guest
+	// (exit code 1, partial deletion). A bind mount sidesteps both:
+	// /app/node_modules as seen by the guest is the empty tmpfs at
+	// /tmp/nm, regardless of whatever stale tree the host still has
+	// underneath.
 	if proj.InstallCmd != "" {
 		emit(map[string]interface{}{"type": "install", "status": "starting", "cmd": proj.InstallCmd})
 		if spin != nil {
 			spin.Step("installing deps")
 		}
 		t := time.Now()
-		result, err := execInVM("mkdir -p /tmp/nm && cd /app && ln -sf /tmp/nm node_modules && " + proj.InstallCmd)
+		result, err := execInVM(
+			"mkdir -p /tmp/nm /app/node_modules && " +
+				"mountpoint -q /app/node_modules || mount --bind /tmp/nm /app/node_modules && " +
+				"cd /app && " + proj.InstallCmd)
 		installMs := time.Since(t).Milliseconds()
 		if err != nil || (result != nil && result.ExitCode != 0) {
 			errMsg := ""
