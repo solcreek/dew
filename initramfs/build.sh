@@ -86,17 +86,97 @@ GOOS=linux GOARCH="$GO_ARCH" CGO_ENABLED=0 \
     "${REPO_DIR}/cmd/dew-agent/"
 echo "Agent: $(ls -lh "${WORK_DIR}/usr/local/bin/dew-agent" | awk '{print $5}')"
 
-# --- Step 4a: Node.js marker (node and standard profiles) ---
-# Node.js is installed at first boot via apk add (avoids cross-platform APK extraction).
-# A marker file tells init-stage2 to install Node.js + build tools.
-# --- Step 4a: Profile markers ---
+# --- Step 4a: Runtime pre-install (node / python / standard profiles) ---
+# On Linux build hosts we use apk-tools-static to install the runtime
+# directly into the initramfs rootfs at build time — moves the ~40-50s
+# of first-boot `apk add` cost from every user's first VM start into our
+# CI step that runs once per release. On non-Linux hosts (dev macOS),
+# fall back to the older marker pattern: init-stage2 sees the marker on
+# first boot and runs apk add over the network. End result for users
+# of release artifacts is identical; local dev builds are a bit slower
+# on first boot.
+
+prepare_apk_static() {
+    local apk_static_bin="${CACHE}/apk.static"
+    if [ -x "$apk_static_bin" ]; then
+        echo "$apk_static_bin"
+        return 0
+    fi
+    local listing_url="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${ALPINE_ARCH}/"
+    local apk_name
+    apk_name=$(curl -sL "$listing_url" | grep -o 'apk-tools-static-[0-9][^"]*\.apk' | head -1)
+    if [ -z "$apk_name" ]; then
+        echo "  WARN: could not find apk-tools-static for ${ALPINE_ARCH}" >&2
+        return 1
+    fi
+    local apk_tar="${CACHE}/${apk_name}"
+    [ -f "$apk_tar" ] || curl -fSL -o "$apk_tar" "${listing_url}${apk_name}"
+    local extract_dir="${CACHE}/apk-tools-static-extract"
+    rm -rf "$extract_dir"
+    mkdir -p "$extract_dir"
+    tar xzf "$apk_tar" -C "$extract_dir" 2>/dev/null
+    [ -x "${extract_dir}/sbin/apk.static" ] || {
+        echo "  WARN: apk-tools-static.apk did not contain sbin/apk.static" >&2
+        return 1
+    }
+    mv "${extract_dir}/sbin/apk.static" "$apk_static_bin"
+    rm -rf "$extract_dir"
+    chmod +x "$apk_static_bin"
+    echo "$apk_static_bin"
+}
+
+ensure_apk_repos() {
+    mkdir -p "$WORK_DIR/etc/apk"
+    cat > "$WORK_DIR/etc/apk/repositories" <<REPO_EOF
+https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main
+https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community
+REPO_EOF
+}
+
+apk_install_pkgs() {
+    local apk_static_bin="$1"; shift
+    "$apk_static_bin" --root "$WORK_DIR" --arch "$ALPINE_ARCH" \
+        --no-progress --no-network 2>/dev/null \
+        --initdb add ca-certificates-bundle 2>/dev/null || true
+    "$apk_static_bin" --root "$WORK_DIR" --arch "$ALPINE_ARCH" \
+        --no-progress --allow-untrusted --update-cache \
+        add "$@"
+}
+
+# Python profile — pre-install python3 + pip on Linux. Marker file is
+# always set so init-stage2 can still install build-base on first boot
+# if a user needs it (matches the pre-Opt-A user-facing behaviour).
 if [ "$PROFILE" = "python" ]; then
-    echo "--- Step 4a: Python marker ---"
     touch "${WORK_DIR}/.dew-python-profile"
+    HOST_OS=$(uname -s)
+    if [ "$HOST_OS" = "Linux" ] && APK_STATIC=$(prepare_apk_static); then
+        echo "--- Step 4a: Python 3 + pip (baked) ---"
+        ensure_apk_repos
+        apk_install_pkgs "$APK_STATIC" python3 py3-pip
+        if [ -x "$WORK_DIR/usr/bin/python3" ]; then
+            echo "  Python: $($WORK_DIR/usr/bin/python3 --version 2>/dev/null)"
+        fi
+        rm -rf "$WORK_DIR/var/cache/apk"/* 2>/dev/null || true
+    else
+        echo "--- Step 4a: Python marker (first-boot install — build host = $HOST_OS) ---"
+    fi
 fi
+
+# Node profile (also applied to standard, which builds on node + containers).
 if [ "$PROFILE" = "node" ] || [ "$PROFILE" = "standard" ]; then
-    echo "--- Step 4a: Node.js marker ---"
     touch "${WORK_DIR}/.dew-node-profile"
+    HOST_OS=$(uname -s)
+    if [ "$HOST_OS" = "Linux" ] && APK_STATIC=$(prepare_apk_static); then
+        echo "--- Step 4a: Node.js + npm (baked) ---"
+        ensure_apk_repos
+        apk_install_pkgs "$APK_STATIC" nodejs npm
+        if [ -x "$WORK_DIR/usr/bin/node" ]; then
+            echo "  Node: $($WORK_DIR/usr/bin/node --version 2>/dev/null)"
+        fi
+        rm -rf "$WORK_DIR/var/cache/apk"/* 2>/dev/null || true
+    else
+        echo "--- Step 4a: Node.js marker (first-boot install — build host = $HOST_OS) ---"
+    fi
 fi
 
 # e2fsprogs for any profile that uses disk (switch_root needs mkfs.ext4)
@@ -367,20 +447,33 @@ mkdir -p /etc/sudoers.d 2>/dev/null || true
 echo "dew ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/dew 2>/dev/null || true
 chmod 440 /etc/sudoers.d/dew 2>/dev/null || true
 
-# Node.js (node/standard profile, installed once, cached on disk)
-# Install runtime on first boot (cached on disk for subsequent boots)
-if [ -f /.dew-node-profile ] && ! command -v node >/dev/null 2>&1; then
-    echo "dew: installing Node.js + build tools (first boot)..."
-    apk update 2>/dev/null || true
-    apk upgrade --no-cache musl 2>&1 | tail -1
-    apk add --no-cache nodejs npm build-base python3 2>&1 | tail -1
+# Per-runtime first-boot install. Whatever wasn't baked into the
+# initramfs at build time gets pulled here. With a fully-baked
+# Linux build (nodejs, npm pre-installed) this block is a no-op for
+# the heavy packages — only the optional native-build tools install.
+if [ -f /.dew-node-profile ]; then
+    NEED_APK=""
+    command -v node    >/dev/null 2>&1 || NEED_APK="$NEED_APK nodejs npm"
+    command -v gcc     >/dev/null 2>&1 || NEED_APK="$NEED_APK build-base"
+    command -v python3 >/dev/null 2>&1 || NEED_APK="$NEED_APK python3"
+    if [ -n "$NEED_APK" ]; then
+        echo "dew: installing$NEED_APK (first boot)..."
+        apk update 2>/dev/null || true
+        apk upgrade --no-cache musl 2>&1 | tail -1
+        apk add --no-cache $NEED_APK 2>&1 | tail -1
+    fi
 fi
 
-if [ -f /.dew-python-profile ] && ! command -v python3 >/dev/null 2>&1; then
-    echo "dew: installing Python + pip (first boot)..."
-    apk update 2>/dev/null || true
-    apk upgrade --no-cache musl 2>&1 | tail -1
-    apk add --no-cache python3 py3-pip build-base 2>&1 | tail -1
+if [ -f /.dew-python-profile ]; then
+    NEED_APK=""
+    command -v python3 >/dev/null 2>&1 || NEED_APK="$NEED_APK python3 py3-pip"
+    command -v gcc     >/dev/null 2>&1 || NEED_APK="$NEED_APK build-base"
+    if [ -n "$NEED_APK" ]; then
+        echo "dew: installing$NEED_APK (first boot)..."
+        apk update 2>/dev/null || true
+        apk upgrade --no-cache musl 2>&1 | tail -1
+        apk add --no-cache $NEED_APK 2>&1 | tail -1
+    fi
 fi
 
 # containerd (standard profile, now on ext4 rootfs)

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- First-time `dew up` on a Node or Python project is much faster on
+  installs from official releases. The runtime ships ready-to-use
+  inside the profile instead of installing over the network on the
+  user's first boot. Native-build tooling (`build-base`) and Python
+  alongside Node still install lazily on first boot if the user needs
+  them — no functional regression.
+
 ## [0.7.5] - 2026-05-30
 
 ### Changed
