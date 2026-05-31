@@ -5,34 +5,37 @@
 [![npm](https://img.shields.io/npm/v/@solcreek/dew)](https://www.npmjs.com/package/@solcreek/dew)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Run any app, anywhere. Dev environments, app runner, deploy tool — one binary.
+Sandboxed Linux compute, agent-native and human-friendly.
 
-```bash
-$ dew app run excalidraw --port 3000
-  excalidraw v0.18.0
-  Starting excalidraw ✓
-  ✓ http://localhost:3000
-```
+Boot a real Linux environment locally. Drive it from a shell, a script,
+or an agent.
 
 ```bash
 $ dew up
   detected: vite (npm)
   ✓ http://localhost:5173
-```
 
-No Docker. No Homebrew. One 4MB binary.
+$ dew exec --json "go test ./..."
+  {"stdout":"PASS\nok  ./...","exitCode":0}
+
+$ dew app run ghost --port 3000
+  ✓ http://localhost:3000
+```
 
 ## Install
 
 ```bash
 # macOS / Linux
-curl -fsSL https://github.com/solcreek/dew/releases/latest/download/install.sh | sh
+curl -fsSL https://dewvm.dev/install.sh | sh
+
+# macOS Homebrew
+brew install solcreek/tap/dew
+
+# npm (all platforms)
+npm install -g @solcreek/dew
 
 # Windows (PowerShell)
 irm https://github.com/solcreek/dew/releases/latest/download/install.ps1 | iex
-
-# npm (all platforms)
-npx @solcreek/dew --help
 ```
 
 ## What it does
@@ -49,7 +52,7 @@ dew app list                          # see what's running
 dew app stop ghost                    # stop an app
 ```
 
-Apps run in an isolated VM — not on your host. No Docker required.
+Apps run in an isolated VM, not on your host. No extra runtime to install.
 
 ### Dev environments
 
@@ -76,7 +79,7 @@ dew share 3000
 
 ### Deploy to a VPS
 
-Build locally, deploy to any VPS. No Docker on the server.
+Build locally, deploy to any VPS. No extra runtime on the server.
 
 ```bash
 dew build                             # package app (421KB tarball)
@@ -107,45 +110,30 @@ Input hardening: rejects path traversal, query injection, control characters. `-
 ## Architecture
 
 ```
-macOS/Windows              Linux VPS
-─────────────              ─────────
-dew (4MB binary)           dew (7MB Linux binary)
-├── dew up                 ├── HTTP deploy API
-├── dew app run            ├── containerd + nerdctl
-├── dew build              ├── self-signed TLS
-├── dew deploy ──────────→ ├── process management
-├── dew share              └── health check + rollback
-└── Apple VZ / WSL2 VM
-    └── containerd inside
+Local                       Linux server
+─────                       ────────────
+dew                         dew (deploy receiver)
+├── dew up                  ├── HTTP deploy API
+├── dew app run             ├── containers
+├── dew exec                ├── TLS
+├── dew build               ├── process management
+├── dew deploy ──────────→  └── health check + rollback
+└── Linux VM
+    └── containers inside
 ```
-
-### Kernel
-
-macOS VMs use a custom monolithic kernel (dew-virt, 11MB x86_64 / 15MB ARM64). All containerd features built-in — zero module loading, zero compatibility issues with Apple Virtualization.framework.
-
-- x86_64: custom build from `config-dew-virt-x86_64.fragment`
-- ARM64: Kata Containers pre-built kernel (30ms boot, 28MB RAM)
 
 ### Profiles
 
-| Profile | Contents | Size | RAM |
-|---|---|---|---|
-| minimal | Alpine + exec agent | 5MB | 512MB |
-| node | + Node.js, npm, build tools | 31MB | 1GB |
-| python | + Python 3, pip | 31MB | 1GB |
-| standard | + containerd, nerdctl, runc | 129MB | 2GB |
+| Profile | Use case |
+|---|---|
+| minimal | Generic Linux shell, lightest footprint |
+| node | Node.js / npm projects |
+| python | Python projects |
+| standard | App catalog, containers, services |
 
 ## Security
 
-- **Signed + notarized** — Developer ID, hardened runtime, Apple notarization
-- **VM isolation** — Apple Virtualization.framework hardware boundary
-- **Self-signed TLS** — auto-generated ECDSA cert for deploy API
-- **Token hash** — SHA-256 in cloud-init, not plaintext
-- **Constant-time comparison** — timing-safe token verification
-- **Input hardening** — reject path traversal, control chars, query injection
-- **Network off by default** — no NIC unless `--network`
-- **Capability drop** — guest agent drops root after vsock bind
-- **`--dry-run`** — validate without executing
+- Hardware-VM isolation. Network off until you flip `--network`. Input validated against path traversal, control characters, and injection.
 
 ## Full command reference
 

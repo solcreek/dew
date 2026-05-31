@@ -1,7 +1,8 @@
 # Roadmap
 
-What's planned for `dew`. Order is rough priority, not a schedule.
-For shipped work, see [CHANGELOG.md](./CHANGELOG.md).
+`dew` is sandboxed Linux compute — agent-native and human-friendly.
+This page is what's planned next. Order is rough priority, not a
+schedule. For shipped work, see [CHANGELOG.md](./CHANGELOG.md).
 
 ## Near-term
 
