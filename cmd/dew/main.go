@@ -592,6 +592,23 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 	return cfg, remaining, nil
 }
 
+// appendGuestParams plumbs the host-side flags that the guest's
+// init-stage2 reads from /proc/cmdline. Both cmdStart and cmdRun call
+// it so --share and --network-policy behave identically across them.
+// dew.cmd (the base64-encoded boot-time command) is cmdStart-only and
+// stays inline there because cmdRun delivers the command over vsock.
+func appendGuestParams(cfg *vm.Config) {
+	for _, sd := range cfg.SharedDirs {
+		cfg.CmdLine += fmt.Sprintf(" dew.share=%s:/%s", sd.Tag, sd.Tag)
+	}
+	if cfg.Network && cfg.NetworkPolicy == "restricted" {
+		cfg.CmdLine += " dew.netpolicy=restricted"
+		if len(cfg.AllowHosts) > 0 {
+			cfg.CmdLine += " dew.allow=" + strings.Join(cfg.AllowHosts, ",")
+		}
+	}
+}
+
 func cmdStart(args []string) error {
 	cfg, cmdArgs, err := parseFlags(args)
 	if err != nil {
@@ -606,19 +623,7 @@ func cmdStart(args []string) error {
 		cfg.VsockPort = uint32(vsockProto.DefaultPort)
 	}
 
-	// Pass shared dir mount points to guest via kernel cmdline
-	for _, sd := range cfg.SharedDirs {
-		cfg.CmdLine += fmt.Sprintf(" dew.share=%s:/%s", sd.Tag, sd.Tag)
-	}
-
-	// Egress policy: init-stage2 reads dew.netpolicy / dew.allow and
-	// sets up iptables OUTPUT rules in the guest.
-	if cfg.Network && cfg.NetworkPolicy == "restricted" {
-		cfg.CmdLine += " dew.netpolicy=restricted"
-		if len(cfg.AllowHosts) > 0 {
-			cfg.CmdLine += " dew.allow=" + strings.Join(cfg.AllowHosts, ",")
-		}
-	}
+	appendGuestParams(&cfg)
 
 	token := generateToken()
 
@@ -699,6 +704,8 @@ func cmdRun(args []string) error {
 	if cfg.VsockPort == 0 {
 		cfg.VsockPort = 1024
 	}
+
+	appendGuestParams(&cfg)
 
 	token := generateToken()
 
