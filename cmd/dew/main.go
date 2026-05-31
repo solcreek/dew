@@ -801,7 +801,10 @@ func cmdUp(args []string) error {
 		return err
 	}
 	if proj.Framework == "" && proj.Runtime == "" {
-		return fmt.Errorf("no supported project detected in %s", dir)
+		// "Floor = works" — don't punish first contact. Surface multiple
+		// exits so beginners + agents have a parseable next step. Error
+		// code `no_project_detected` is grep-able for agents.
+		return fmt.Errorf("no project detected in %s [no_project_detected]\n\nQuick options:\n  • dew shell                 — generic Linux VM (~26s first time)\n  • dew app run code          — run an OSS app like VS Code\n  • dew up --profile minimal  — boot a minimal VM here\n\nDocs: https://dewvm.dev/start", dir)
 	}
 
 	emit := func(data map[string]interface{}) {

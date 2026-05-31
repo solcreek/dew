@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-05-30
+
+### Security
+
+- **vsock auth fails closed during boot race window.** dew-agent's
+  `tokenSet && req.Token != authToken` check let any vsock client
+  arriving BEFORE the host's initial SetTokenRequest bypass auth
+  entirely. Any host-side process with `/dev/vsock` access could
+  exec/connect in the millisecond window between guest agent listen
+  and host token injection. Hardened to `tokenSet && given ==
+  expected` (extracted to `internal/agentauth.IsAuthorized` for
+  cross-OS unit tests).
+
+### Changed
+
+- **`dew up` empty-dir error is no longer a wall.** Previously surfaced
+  a flat "no supported project detected in <dir>" with no next step.
+  Now tagged `[no_project_detected]` (grep-able for agents) and lists
+  three concrete exits:
+  - `dew shell` — generic Linux VM (planned, currently described as future)
+  - `dew app run code` — OSS app
+  - `dew up --profile minimal` — explicit-profile escape hatch
+  Plus a docs link. Inspired by 12-agent feedback that "first contact
+  should never punish — Floor = works, Ceiling = magic."
+
+### Added
+
+- `internal/agentauth` sub-package — pure auth predicate, testable on
+  any host OS (cmd/dew-agent itself is //go:build linux only)
+- `TestIsAuthorized` — 5 table-driven cases covering the race window
+- `TestCmdUp_EmptyDir_SurfacesHelpfulOptions` — asserts the new error
+  surfaces the suggested commands + docs URL + error code
+
 ## [0.7.4] - 2026-05-30
 
 ### Fixed

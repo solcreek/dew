@@ -21,11 +21,19 @@ import (
 	"time"
 
 	"github.com/mdlayher/vsock"
+	"github.com/solcreek/dew/internal/agentauth"
 	protocol "github.com/solcreek/dew/internal/vsock"
 )
 
 var authToken string
 var tokenSet bool
+
+// isAuthorized wraps the package-level state for the dispatch loop.
+// The pure logic lives in internal/agentauth so it can be tested on
+// any host OS (this package is //go:build linux only).
+func isAuthorized(givenToken string) bool {
+	return agentauth.IsAuthorized(givenToken, authToken, tokenSet)
+}
 var execUser string
 
 func main() {
@@ -105,7 +113,11 @@ func handleConn(conn net.Conn) {
 		case protocol.TypeConnect:
 			var req protocol.ConnectRequest
 			json.Unmarshal(data, &req)
-			if tokenSet && req.Token != authToken {
+			// Fail-closed on missing token. Previously the check was
+			// `tokenSet && req.Token != authToken`, which let any
+			// Connect arriving BEFORE the host sent SetTokenRequest
+			// bypass auth entirely (race window during boot).
+			if !isAuthorized(req.Token) {
 				protocol.WriteJSON(conn, &protocol.ConnectResponse{Error: "unauthorized"})
 				return
 			}
@@ -115,7 +127,8 @@ func handleConn(conn net.Conn) {
 		default:
 			var req protocol.ExecRequest
 			json.Unmarshal(data, &req)
-			if tokenSet && req.Token != authToken {
+			// Same hardening as the Connect path above.
+			if !isAuthorized(req.Token) {
 				protocol.WriteJSON(conn, &protocol.ExecResponse{ExitCode: -1, Error: "unauthorized"})
 				return
 			}
