@@ -308,6 +308,13 @@ jobs:
               bin.install "dew"
             end
 
+            def caveats
+              <<~EOS
+                Try:
+                  dew run -- uname -a
+              EOS
+            end
+
             test do
               system "#{bin}/dew", "--version"
             end

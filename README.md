@@ -38,6 +38,14 @@ npm install -g @solcreek/dew
 irm https://github.com/solcreek/dew/releases/latest/download/install.ps1 | iex
 ```
 
+Then try:
+
+```bash
+dew run -- uname -a
+# (first time: downloads kernel + minimal initramfs, ~15s; then boots a
+#  real Linux VM and prints its uname)
+```
+
 ## What it does
 
 ### Run open-source apps

@@ -52,7 +52,13 @@ func resolveAssets(cfg *vm.Config) error {
 	dataDir := dewDataDir()
 	profile := flagProfile
 	if profile == "" {
-		profile = "standard"
+		// "minimal" is the right default for ad-hoc one-shot use
+		// (`dew run`, ephemeral exec). Callers that need containerd
+		// or a runtime baked in (`dew app run`, `dew up` on a Node
+		// project) set --profile explicitly. The earlier default
+		// was "standard", which dragged every casual command through
+		// the 135 MB initramfs download and 30-60s first-boot init.
+		profile = "minimal"
 	}
 
 	// Profile-aware defaults
@@ -204,7 +210,7 @@ func cmdAssets(args []string) error {
 	dataDir := dewDataDir()
 	profile := flagProfile
 	if profile == "" {
-		profile = "standard"
+		profile = "minimal"
 	}
 	// Parse --profile from remaining args
 	for i, a := range args {
@@ -330,7 +336,7 @@ func main() {
 func printUsage() {
 	fmt.Fprintf(os.Stderr, `dew — sandboxed Linux compute, agent-native and human-friendly
 
-Try: dew app run excalidraw --port 3000
+Try: dew run -- uname -a
 
 Dev:
   dew up [dir]                   Start dev environment (auto-detect project)
@@ -672,33 +678,29 @@ func cmdRun(args []string) error {
 
 	sExec := serialexec.New(hostReader, hostWriter)
 
-	// Race vsock connect against serial ready
-	vsockCh := make(chan net.Conn, 1)
-	go func() {
+	// Wait for guest agent to come up on vsock, then send the auth
+	// token. Poll up to 60s — covers cold first-boot of any profile,
+	// where the guest's dew-agent may take a while to listen after
+	// VM start. Previous 10s+5s window was just enough for warm boot
+	// and failed cold every time.
+	const vsockReadySec = 60
+	var tokenSent bool
+	for i := 0; i < vsockReadySec*10; i++ {
 		conn, err := connectVsock(d, cfg.VsockPort)
 		if err == nil {
-			vsockCh <- conn
-		}
-		close(vsockCh)
-	}()
-	go func() {
-		sExec.WaitReady(15 * time.Second)
-	}()
-
-	// Inject auth token via vsock (not kernel cmdline)
-	var tokenSent bool
-	select {
-	case conn := <-vsockCh:
-		if conn != nil {
 			req := vsockProto.SetTokenRequest{Type: vsockProto.TypeSetToken, Token: token}
 			vsockProto.WriteJSON(conn, &req)
 			var resp vsockProto.ConnectResponse
 			vsockProto.ReadJSON(conn, &resp)
 			conn.Close()
 			tokenSent = resp.OK
+			break
 		}
-	case <-time.After(10 * time.Second):
+		time.Sleep(100 * time.Millisecond)
 	}
+	// Kick the serial path in parallel as a fallback for guests that
+	// somehow don't bring up vsock (rare; older agent builds).
+	go func() { sExec.WaitReady(time.Duration(vsockReadySec) * time.Second) }()
 
 	cmd := strings.Join(cmdArgs, " ")
 	var result *RunResult
@@ -727,7 +729,7 @@ func cmdRun(args []string) error {
 
 	if result == nil {
 		fmt.Fprintf(os.Stderr, "dew: vsock unavailable, using serial\n")
-		if err := sExec.WaitReady(5 * time.Second); err != nil {
+		if err := sExec.WaitReady(60 * time.Second); err != nil {
 			d.Stop(context.Background())
 			return fmt.Errorf("guest not ready: %w", err)
 		}

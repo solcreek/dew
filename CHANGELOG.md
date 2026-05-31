@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Hostname-aware allowlist (versus the current IP-only form) is on
   the roadmap.
 
+### Fixed
+
+- `dew run` now defaults to the minimal profile, boots within seconds,
+  and reliably reaches the guest. The earlier default (the largest
+  profile) made every casual one-off command download 135 MB of
+  assets and then time out before the guest finished its first boot.
+  `dew run -- uname -a` now completes in ~15 s on a fresh install.
+- `dew --help` and the post-install hint point at this one-liner as
+  the first thing to try, instead of the slow demo command.
+
 ## [0.7.5] - 2026-05-30
 
 ### Changed
