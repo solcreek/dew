@@ -324,6 +324,15 @@ jobs:
 
           Release: https://github.com/${REPO}/releases/tag/${TAG}"
 
+          # Auto-merge immediately. No CI on the tap repo (formula is
+          # auto-generated from goreleaser-verified checksums + cosign-
+          # signed binaries; a tap-side CI would just duplicate work).
+          # `--delete-branch` keeps the tap clean. Soft-fail because
+          # the primary release artifacts are already shipped; a stuck
+          # brew PR is a follow-up, not a release blocker.
+          gh pr merge "dew-${TAG}" --repo "$TAP" --merge --delete-branch \
+            || echo "::warning::auto-merge of brew formula PR failed — review solcreek/homebrew-tap manually"
+
       - name: compute artifact hashes for SLSA
         id: hashes
         # Hash every dist/ artifact — the tar.gz archives, checksums.txt,
