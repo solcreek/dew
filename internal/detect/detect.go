@@ -226,24 +226,46 @@ func buildDevCmd(mgr, framework, dir string) string {
 	if framework == "node" {
 		scripts := readScripts(dir)
 		if _, ok := scripts["dev"]; ok {
-			return run
+			return appendHostArg(run, mgr, framework)
 		}
 		if _, ok := scripts["start"]; ok {
 			switch mgr {
 			case "yarn":
-				return "yarn start"
+				return appendHostArg("yarn start", mgr, framework)
 			case "bun":
-				return "bun start"
+				return appendHostArg("bun start", mgr, framework)
 			case "pnpm":
-				return "pnpm start"
+				return appendHostArg("pnpm start", mgr, framework)
 			default:
-				return "npm start"
+				return appendHostArg("npm start", mgr, framework)
 			}
 		}
 		return "node ."
 	}
 
-	return run
+	return appendHostArg(run, mgr, framework)
+}
+
+// appendHostArg makes the dev server bind to 0.0.0.0 so the host port
+// forward can reach it inside the VM. Vite, SvelteKit, Astro, Nuxt and
+// Next.js each accept this differently; npm and yarn need `--` to
+// forward arguments to the underlying script while pnpm/bun forward
+// them transparently.
+func appendHostArg(cmd, mgr, framework string) string {
+	var arg string
+	switch framework {
+	case "nextjs":
+		arg = "-H 0.0.0.0"
+	default:
+		// vite, sveltekit, astro, nuxt all accept `--host 0.0.0.0`.
+		arg = "--host 0.0.0.0"
+	}
+	switch mgr {
+	case "npm", "yarn":
+		return cmd + " -- " + arg
+	default:
+		return cmd + " " + arg
+	}
 }
 
 func defaultPort(framework string) int {

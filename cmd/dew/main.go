@@ -836,6 +836,11 @@ func base64Encode(s string) string {
 	return base64.StdEncoding.EncodeToString([]byte(s))
 }
 
+// shellQuote wraps s for safe inclusion as a single-quoted shell word.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 func generateToken() string {
 	b := make([]byte, 16)
 	rand.Read(b)
@@ -1103,12 +1108,16 @@ func cmdUp(args []string) error {
 		}
 	}
 
-	// Start dev server
+	// Start dev server. The earlier "cmd &" launched vite inside a shell
+	// that immediately exited; the dev server then either received SIGHUP
+	// or noticed its stdin/stdout pipes had been closed, and quit a few
+	// seconds later. setsid + redirected stdio detaches it fully and
+	// keeps the log in the VM for `dew exec` to inspect.
 	emit(map[string]interface{}{"type": "serve", "status": "starting", "cmd": proj.DevCmd})
 	if spin != nil {
 		spin.Step("dev server")
 	}
-	execInVM("cd /app && " + proj.DevCmd + " &")
+	execInVM("cd /app && setsid sh -c " + shellQuote(proj.DevCmd) + " </dev/null >>/tmp/dew-dev.log 2>&1 &")
 	healthy := false
 	url := fmt.Sprintf("http://localhost:%d/", proj.Port)
 	for i := 0; i < 30; i++ {

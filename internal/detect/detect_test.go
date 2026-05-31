@@ -36,8 +36,8 @@ func TestDetect_Vite(t *testing.T) {
 	if p.Port != 5173 {
 		t.Errorf("Port = %d, want 5173", p.Port)
 	}
-	if p.DevCmd != "npm run dev" {
-		t.Errorf("DevCmd = %q, want 'npm run dev'", p.DevCmd)
+	if p.DevCmd != "npm run dev -- --host 0.0.0.0" {
+		t.Errorf("DevCmd = %q, want 'npm run dev -- --host 0.0.0.0'", p.DevCmd)
 	}
 }
 
@@ -60,8 +60,8 @@ func TestDetect_NextJS(t *testing.T) {
 	if p.Port != 3000 {
 		t.Errorf("Port = %d, want 3000", p.Port)
 	}
-	if p.DevCmd != "yarn dev" {
-		t.Errorf("DevCmd = %q, want 'yarn dev'", p.DevCmd)
+	if p.DevCmd != "yarn dev -- -H 0.0.0.0" {
+		t.Errorf("DevCmd = %q, want 'yarn dev -- -H 0.0.0.0'", p.DevCmd)
 	}
 }
 
@@ -84,7 +84,7 @@ func TestDetect_Astro(t *testing.T) {
 	if p.Port != 4321 {
 		t.Errorf("Port = %d, want 4321", p.Port)
 	}
-	if p.DevCmd != "pnpm dev" {
+	if p.DevCmd != "pnpm dev --host 0.0.0.0" {
 		t.Errorf("DevCmd = %q", p.DevCmd)
 	}
 }
@@ -102,7 +102,7 @@ func TestDetect_Bun(t *testing.T) {
 	if p.PackageMgr != "bun" {
 		t.Errorf("PackageMgr = %q, want bun", p.PackageMgr)
 	}
-	if p.DevCmd != "bun run dev" {
+	if p.DevCmd != "bun run dev --host 0.0.0.0" {
 		t.Errorf("DevCmd = %q", p.DevCmd)
 	}
 }
@@ -118,8 +118,8 @@ func TestDetect_GenericNode(t *testing.T) {
 	if p.Framework != "node" {
 		t.Errorf("Framework = %q, want node", p.Framework)
 	}
-	if p.DevCmd != "npm start" {
-		t.Errorf("DevCmd = %q, want 'npm start'", p.DevCmd)
+	if p.DevCmd != "npm start -- --host 0.0.0.0" {
+		t.Errorf("DevCmd = %q, want 'npm start -- --host 0.0.0.0'", p.DevCmd)
 	}
 }
 
@@ -131,8 +131,8 @@ func TestDetect_NodeWithDev(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.DevCmd != "npm run dev" {
-		t.Errorf("DevCmd = %q, want 'npm run dev'", p.DevCmd)
+	if p.DevCmd != "npm run dev -- --host 0.0.0.0" {
+		t.Errorf("DevCmd = %q, want 'npm run dev -- --host 0.0.0.0'", p.DevCmd)
 	}
 }
 
@@ -242,7 +242,7 @@ func TestDetect_NuxtWithYarn(t *testing.T) {
 	if p.Port != 3000 {
 		t.Errorf("Port = %d", p.Port)
 	}
-	if p.DevCmd != "yarn dev" {
+	if p.DevCmd != "yarn dev -- --host 0.0.0.0" {
 		t.Errorf("DevCmd = %q", p.DevCmd)
 	}
 	if p.InstallCmd != "yarn install" {
