@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-05-31
+
 ### Changed
 
 - First-time `dew up` on a Node or Python project is much faster on
@@ -15,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   user's first boot. Native-build tooling (`build-base`) and Python
   alongside Node still install lazily on first boot if the user needs
   them — no functional regression.
+- First-time asset download is noticeably quicker. The kernel and VM
+  image now fetch in parallel, and the image itself is much smaller:
+  the minimal and node profiles dropped from ~30 MB to ~6 MB; the
+  standard profile from ~128 MB to ~105 MB. Existing installs reuse
+  cached assets — this only affects fresh installs and `dew update`.
 - `dew up` in a directory without a detected project now suggests only
   commands that work today (`dew up --profile minimal`,
   `dew start --profile minimal`, `dew app run`). The earlier list
@@ -38,6 +45,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dew run -- uname -a` now completes in ~15 s on a fresh install.
 - `dew --help` and the post-install hint point at this one-liner as
   the first thing to try, instead of the slow demo command.
+- `dew run --share` and `dew run --network-policy=restricted` now
+  actually take effect. Both flags were parsed but never reached the
+  guest, so the share never mounted and the policy was a no-op.
+- `dew up` reliably serves the dev URL of a Vite, Next.js, Astro,
+  Nuxt or SvelteKit project end-to-end from the host. The dev server
+  used to die a few seconds after launch (it was attached to the
+  short-lived spawn shell), and many frameworks bound to a guest-only
+  loopback address that the host port forward couldn't reach. Both
+  are fixed; `curl http://localhost:<port>/` from the host now returns
+  the rendered page.
+- `dew up` no longer carries stale install state from earlier runs.
+  Each cold boot starts with a fresh guest-local `node_modules`, so
+  rare crashes caused by inconsistent native bindings left over from
+  a previous install no longer happen on subsequent runs of the same
+  project.
 
 ## [0.7.5] - 2026-05-30
 
