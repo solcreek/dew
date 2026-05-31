@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -79,5 +80,53 @@ func TestInitramfsBuildScript_RefreshesKernelModulesEveryBoot(t *testing.T) {
 	firstBootEnd := firstBootIdx + endFirstBoot
 	if markerIdx > firstBootIdx && markerIdx < firstBootEnd {
 		t.Errorf("module refresh is inside the first-boot block — must run on every boot to avoid kernel/module drift")
+	}
+}
+
+// The module allowlist in build.sh decides which .ko files survive the prune
+// step. Any modprobe that init/init-stage2 runs MUST be in the allowlist or
+// it will silently fail at boot (modprobe lines are `|| true` because some
+// modules are profile-conditional). This catches "added modprobe but forgot
+// to update allowlist" drift.
+func TestInitramfsBuildScript_ModprobeMatchesAllowlist(t *testing.T) {
+	repoRoot, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(repoRoot, "initramfs", "build.sh"))
+	if err != nil {
+		t.Fatalf("read build.sh: %v", err)
+	}
+	script := string(data)
+
+	// Extract module names from `modprobe <name>` lines.
+	modprobeRE := regexp.MustCompile(`(?m)^\s*modprobe\s+(\S+)`)
+	probed := map[string]struct{}{}
+	for _, m := range modprobeRE.FindAllStringSubmatch(script, -1) {
+		probed[m[1]] = struct{}{}
+	}
+	if len(probed) == 0 {
+		t.Fatal("found zero modprobe lines — test scanning is broken")
+	}
+
+	// Extract the allowlist: KMODS_BASE + KMODS_STANDARD assignments.
+	// Each value is on a continuation-line block; we join them and split
+	// on whitespace.
+	allowed := map[string]struct{}{}
+	for _, varName := range []string{"KMODS_BASE", "KMODS_STANDARD"} {
+		re := regexp.MustCompile(varName + `="((?:[^"]|\n)*)"`)
+		m := re.FindStringSubmatch(script)
+		if m == nil {
+			t.Fatalf("could not find %s allowlist in build.sh", varName)
+		}
+		for _, tok := range strings.Fields(strings.ReplaceAll(m[1], "\\", "")) {
+			allowed[tok] = struct{}{}
+		}
+	}
+
+	for name := range probed {
+		if _, ok := allowed[name]; !ok {
+			t.Errorf("modprobe %s appears in init scripts but is missing from KMODS_BASE/KMODS_STANDARD allowlist — boot will silently skip it after prune", name)
+		}
 	}
 }

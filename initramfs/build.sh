@@ -72,11 +72,121 @@ tar xzf "$KERNEL_APK" -C "$APK_EXTRACT" 2>/dev/null
 cp "$APK_EXTRACT/boot/vmlinuz-virt" "$OUT_KERNEL"
 echo "Kernel: $(ls -lh "$OUT_KERNEL" | awk '{print $5}')"
 
-# Copy ALL kernel modules (depmod handles dependencies automatically)
+# Kernel modules. Alpine ships ~900 .ko.gz files (~72MB decompressed)
+# even though init/init-stage2 only modprobe ~18 of them. Copy the lot
+# from the apk, then prune to the allowlist + its transitive dependency
+# closure (resolved from modules.dep). Net effect: minimal/node initramfs
+# drops from ~30MB to ~10MB compressed.
 mkdir -p "$WORK_DIR/lib/modules"
 cp -a "$APK_EXTRACT/lib/modules/${KERNEL_VER}" "$WORK_DIR/lib/modules/"
-find "$WORK_DIR/lib/modules/${KERNEL_VER}" -name "*.ko.gz" -exec gunzip {} \;
-echo "Modules: $(du -sh "$WORK_DIR/lib/modules/${KERNEL_VER}" 2>/dev/null | awk '{print $1}')"
+
+# Allowlist: everything init/init-stage2 modprobes.
+# Base set is loaded by every profile (init.sh tolerates missing modules
+# with `|| true`, so non-disk profiles like `minimal` simply skip the
+# disk-related ones at boot). iptables modules are needed by every
+# profile because `--network-policy=restricted` applies to all of them;
+# without explicit modprobes the iptables nft backend silently fails
+# with "Protocol not supported" and the policy is a no-op.
+KMODS_BASE="af_packet virtio_net overlay mbcache jbd2 ext4 virtio_blk \
+            vsock vmw_vsock_virtio_transport fuse virtiofs \
+            nf_tables nft_compat ip_tables iptable_filter \
+            crc32c_generic"
+# Container networking (CNI bridge + masquerade) — standard profile only.
+KMODS_STANDARD="bridge br_netfilter veth iptable_nat nf_nat \
+                xt_MASQUERADE xt_addrtype"
+KMODS_KEEP="$KMODS_BASE"
+if [ "$PROFILE" = "standard" ]; then
+    KMODS_KEEP="$KMODS_KEEP $KMODS_STANDARD"
+fi
+
+MODS_ROOT="$WORK_DIR/lib/modules/${KERNEL_VER}"
+DEP_FILE="$MODS_ROOT/modules.dep"
+
+# Walk modules.dep to build the transitive closure of the allowlist.
+# modules.dep lines look like:
+#   kernel/path/foo.ko.gz: kernel/lib/bar.ko.gz kernel/lib/baz.ko.gz
+# Index it once into name → "path|deps" so the BFS is O(N+M) instead of
+# launching grep per visited module.
+prune_modules() {
+    local keep_seed="$1"
+    # Pipefail makes "grep | head" fail when grep matches nothing, which
+    # corrupts variable assignments inside a set -e script. Scope a
+    # relaxation to this function only.
+    set +o pipefail
+
+    # Index: name<TAB>path<TAB>deps_csv (one per line, no .ko/.ko.gz suffix on names)
+    local index
+    index=$(awk -F: '
+        {
+            path = $1
+            n = split(path, parts, "/")
+            base = parts[n]
+            sub(/\.ko(\.gz)?$/, "", base)
+            deps = $2
+            gsub(/^ +| +$/, "", deps)
+            # Strip extensions and dirs from each dep so we get bare names.
+            split(deps, dlist, " ")
+            depcsv = ""
+            for (i = 1; i <= length(dlist); i++) {
+                d = dlist[i]
+                if (d == "") continue
+                m = split(d, dparts, "/")
+                dn = dparts[m]
+                sub(/\.ko(\.gz)?$/, "", dn)
+                depcsv = depcsv (depcsv == "" ? "" : ",") dn
+            }
+            print base "\t" path "\t" depcsv
+        }
+    ' "$DEP_FILE")
+
+    # BFS using two-token tracking strings.
+    local queue=" $keep_seed " keep=" " mod line path deps dep
+    while [ -n "${queue// /}" ]; do
+        # pop first non-empty token
+        queue="${queue# }"
+        mod="${queue%% *}"
+        queue="${queue#"$mod"}"
+        case "$keep" in *" $mod "*) continue ;; esac
+        keep="$keep$mod "
+        line=$(printf '%s\n' "$index" | awk -F'\t' -v m="$mod" '$1 == m { print; exit }')
+        [ -z "$line" ] && continue
+        deps="${line##*$'\t'}"
+        for dep in ${deps//,/ }; do
+            case "$keep$queue " in
+                *" $dep "*) ;;
+                *) queue="$queue $dep" ;;
+            esac
+        done
+    done
+
+    # Collect kept paths.
+    local paths=" "
+    for mod in $keep; do
+        path=$(printf '%s\n' "$index" | awk -F'\t' -v m="$mod" '$1 == m { print $2; exit }')
+        [ -n "$path" ] && paths="$paths$path "
+    done
+
+    # Delete every .ko/.ko.gz NOT in the keepset.
+    local f rel
+    find "$MODS_ROOT/kernel" -name '*.ko*' -type f | while read -r f; do
+        rel="${f#$MODS_ROOT/}"
+        case "$paths" in
+            *" $rel "*) ;;
+            *) rm -f "$f" ;;
+        esac
+    done
+    find "$MODS_ROOT/kernel" -type d -empty -delete 2>/dev/null || true
+
+    set -o pipefail
+    echo "  Kept $(echo "$keep" | wc -w | xargs) modules (allowlist + deps)"
+}
+
+prune_modules "$KMODS_KEEP"
+
+# Decompress survivors (Apple VZ insmod can't read .gz). Boot-time
+# `depmod -a` regenerates modules.dep against the new .ko names.
+find "$MODS_ROOT" -name "*.ko.gz" -exec gunzip {} \;
+echo "Modules: $(du -sh "$MODS_ROOT" 2>/dev/null | awk '{print $1}')"
 
 # --- Step 3: Build dew-agent ---
 echo "--- Step 3: Build dew-agent ---"
@@ -436,6 +546,13 @@ for param in $(cat /proc/cmdline 2>/dev/null); do
     esac
 done
 if [ "$NETPOLICY" = "restricted" ] && command -v iptables >/dev/null 2>&1; then
+    # Load the netfilter modules iptables needs. The nft backend is
+    # Alpine's default; ip_tables/iptable_filter cover the legacy
+    # backend that older user scripts may use directly.
+    modprobe nf_tables 2>/dev/null || true
+    modprobe nft_compat 2>/dev/null || true
+    modprobe ip_tables 2>/dev/null || true
+    modprobe iptable_filter 2>/dev/null || true
     iptables -P INPUT   ACCEPT 2>/dev/null
     iptables -P FORWARD DROP   2>/dev/null
     iptables -P OUTPUT  DROP   2>/dev/null
