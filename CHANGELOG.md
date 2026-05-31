@@ -9,268 +9,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.5] - 2026-05-30
 
-### Security
-
-- **vsock auth fails closed during boot race window.** dew-agent's
-  `tokenSet && req.Token != authToken` check let any vsock client
-  arriving BEFORE the host's initial SetTokenRequest bypass auth
-  entirely. Any host-side process with `/dev/vsock` access could
-  exec/connect in the millisecond window between guest agent listen
-  and host token injection. Hardened to `tokenSet && given ==
-  expected` (extracted to `internal/agentauth.IsAuthorized` for
-  cross-OS unit tests).
-
 ### Changed
 
-- **`dew up` empty-dir error is no longer a wall.** Previously surfaced
-  a flat "no supported project detected in <dir>" with no next step.
-  Now tagged `[no_project_detected]` (grep-able for agents) and lists
-  three concrete exits:
-  - `dew shell` — generic Linux VM (planned, currently described as future)
-  - `dew app run code` — OSS app
-  - `dew up --profile minimal` — explicit-profile escape hatch
-  Plus a docs link. Inspired by 12-agent feedback that "first contact
-  should never punish — Floor = works, Ceiling = magic."
+- `dew up` in a directory without a detected project now surfaces
+  three suggested next steps and a docs link, rather than a flat
+  error.
 
-### Added
+### Security
 
-- `internal/agentauth` sub-package — pure auth predicate, testable on
-  any host OS (cmd/dew-agent itself is //go:build linux only)
-- `TestIsAuthorized` — 5 table-driven cases covering the race window
-- `TestCmdUp_EmptyDir_SurfacesHelpfulOptions` — asserts the new error
-  surfaces the suggested commands + docs URL + error code
+- Hardened guest-agent request authorization.
 
 ## [0.7.4] - 2026-05-30
 
-### Fixed
-
-- **`dew app run` no longer times out on cold first run.** The
-  ensureDewVM polling timeout was 60s, which is roughly the time
-  needed JUST to download the 146MB VM assets (vmlinuz + standard
-  initramfs) from GH Release on first use — before the VM even starts
-  booting. Cold-start total is typically 60-120s (download + first-boot
-  disk init), which exceeded the timeout and surfaced as
-  `VM did not start within 60s` even though the VM was on its way up.
-  Bumped to 300s ceiling — covers cold + slow networks; hot-start
-  (sock already exists) returns sub-5s as before.
-
 ### Changed
 
-- **Cold-start now shows what's happening.** ensureDewVM streams
-  heuristic progress messages to the spinner during the wait:
-  *Downloading VM assets (~146MB, first run only)* at +15s,
-  *Booting VM* at +60s, *First-time disk init (formatting + populating
-  rootfs)* at +120s, *Still working — slow network or first-boot setup*
-  at +200s. Subsequent runs (sock immediate) skip these entirely.
+- Cold first-run completes reliably on slower connections and shows
+  in-progress phase messages. Subsequent runs remain sub-second.
 
 ## [0.7.3] - 2026-05-30
 
 ### Fixed
 
-- **No more silent fallback to a wrong-profile initramfs.** When
-  `--profile X` was specified and `initramfs-X.cpio.gz` was missing
-  from the asset dir, `resolveAssets` quietly substituted the
-  unprefixed `initramfs.cpio.gz` (typically the minimal profile,
-  bundled by older versions or left over from a different run). The
-  VM then kernel-panicked early in boot: `/init: mkfs.ext4: not
-  found` (because minimal has no e2fsprogs), the disk init failed,
-  `switch_root` exited, init died. The user saw a generic "VM boot
-  failed: exited early" with no hint at the asset mismatch.
-
-  Now the profile-specific path is pinned. If the file is missing,
-  the existing auto-download block fetches `initramfs-X-<arch>.cpio.gz`
-  from the GH Release matching this binary's version, or fails with
-  a clear error.
-
-  Hits anyone who's manually deleted `~/.local/share/dew/initramfs-standard.cpio.gz`
-  or installed dew via an older bundler that only shipped the minimal
-  asset. Fresh installs were already fine (both files missing → auto-download).
+- VM start is more reliable when local assets get out of sync with
+  the installed binary version. Missing profile assets now auto-fetch
+  cleanly instead of falling back to an incompatible bundle.
 
 ## [0.7.2] - 2026-05-30
 
 ### Fixed
 
-- **`dew app run` no longer fails when an unrelated host process holds
-  one of the speculative pre-forward ports.** `ensureDewVM` was eagerly
-  forwarding 3000/3001/3002/3003/3004/3005/8000/8080/7456/5230/2368
-  on every VM start "in case the user runs another app later" — but if
-  *any* of those was already taken on the host (a bun/vite dev server
-  on 3000, for instance), `dew start --forward N:N` failed strict and
-  the entire VM boot exited with a generic "exited early" error that
-  pointed at entitlements / macOS version / port conflicts among other
-  unrelated VMs. None of those was the actual cause.
-
-  The pre-forward loop now calls a new `hostPortInUse(port)` helper
-  (TCP listen probe on 127.0.0.1) and skips taken ports best-effort.
-  The user's explicit `--port hostPort` is still added unconditionally
-  — if that one is taken, the error surfaces immediately.
+- `dew app run` no longer fails when an unrelated process on the host
+  is already listening on a common port.
 
 ## [0.7.1] - 2026-05-30
 
 ### Fixed
 
-- **Homebrew tap formula is actually published** on release. v0.7.0
-  goreleaser's `brews:` block silently skipped the push (root cause not
-  pinned — same App+key+install creates refs fine via direct API call,
-  but goreleaser's REST POST `/git/refs` returned 403). Replaced with a
-  custom workflow step that templates `Formula/dew.rb` directly from
-  the goreleaser-produced `checksums.txt`, then pushes + opens PR using
-  the App-minted token via `Authorization: Bearer` header — token never
-  embedded in URLs.
-
-### Changed
-
-- `.goreleaser.yaml` drops the `brews:` block. Brew formula generation
-  + push is handled entirely by the new "Bump brew formula on tap" step
-  in `.github/workflows/release.yml`. Simpler debug surface, no
-  goreleaser-internal env-var inheritance to wrestle with.
+- `brew install solcreek/tap/dew` is now actually populated on release.
+  The v0.7.0 release shipped binaries but the tap formula didn't
+  publish.
 
 ## [0.7.0] - 2026-05-30
 
-**Headline:** distribution architecture overhaul. One Homebrew tap, one
-thin npm dispatcher, one signed checksum file, one tag triggers everything.
+**Distribution overhaul.** Three install paths, one set of binaries
+under the hood.
 
 ### Added
 
-- **`brew install solcreek/tap/dew`** — formula PR'd automatically to
-  `solcreek/homebrew-tap` on every tag, by goreleaser
-- **`curl -fsSL https://dewvm.dev/install.sh | sh`** — POSIX installer
-  that detects OS/arch, fetches the release tarball, verifies SHA256, and
-  optionally verifies a cosign keyless signature against the
-  `release.yml` signer identity
-- **cosign keyless signature on `checksums.txt`** — install.sh + npm
-  dispatcher both verify the chain against the GitHub Actions OIDC issuer
-- **SLSA Level 3 build provenance** for every release artifact, via
-  `slsa-framework/slsa-github-generator`
-- **`.github/workflows/release-dry-run.yml`** — runs on PRs touching
-  release shape; checks goreleaser config + linux snapshot build,
-  npm dispatcher tests, shellcheck on install.sh, and the install.sh
-  sync mechanism (see below)
-- **install.sh sync mechanism** — `website/scripts/sync-install-sh.mjs`
-  runs as Astro's `prebuild` step on every `pnpm run build`, copying
-  `/install.sh` → `website/public/install.sh` (gitignored). Single
-  source of truth at the repo root; deploys can never serve a stale
-  copy. `release-dry-run.yml` exercises the script + diffs the built
-  artifact against the source to catch regressions.
-- **`docs/RELEASING.md`** — one-time setup for the tap repo, brew-tap
-  token, npm trusted publisher, and signed-tag protection
+- `brew install solcreek/tap/dew`
+- `curl -fsSL https://dewvm.dev/install.sh | sh`
+- `npm install -g @solcreek/dew` — small dispatcher; the actual binary
+  is fetched from the release on first run and cached
+- Build provenance attestation published with each release
 
 ### Changed
 
-- **npm packaging — collapsed to a single thin dispatcher** (`@solcreek/dew`).
-  Drops the five `@solcreek/dew-<triple>` per-platform packages added in
-  v0.6.0. The dispatcher downloads the matching binary from this release's
-  GitHub Release tarball on first run, verifies SHA256 + cosign, caches
-  in `DEW_CACHE_DIR` (defaults under `~/.local/share/dew/bin/<version>/`).
-  Removes the OIDC pending-publisher coordination needed for 6 packages
-  and unifies bytes-on-disk across npm / brew / install.sh / direct
-  download.
-- **Release pipeline is goreleaser-driven.** `goreleaser` archives
-  prebuilt + notarized darwin binaries, cross-compiles linux, produces
-  `checksums.txt`, signs with cosign, opens the brew formula PR, and
-  creates the GitHub Release. Auxiliary assets (initramfs / kernel /
-  dew-agent / dew-windows / dew-rootfs) are uploaded alongside.
-- **Release jobs are atomic-per-channel** with grep-specific idempotency
-  checks. Replaces the `|| echo "Skipped"` mask that silently hid
-  `ENEEDAUTH` in v0.6.0.
-
-### Removed
-
-- `@solcreek/dew-darwin-arm64`, `-darwin-x64`, `-linux-x64`,
-  `-linux-arm64`, `-win32-x64` per-platform packages — never published
-  (v0.6.0 was unpublished within the 72h window). No migration needed.
-- `npm/scripts/generate-packages.mjs` + `npm/scripts/sync-version.mjs`
-  — only needed for the multi-package world
-
-### Fixed
-
-- `npm install @solcreek/dew@0.6.0` failed with `platform package is
-  missing` because OIDC trusted-publisher pending entries weren't
-  configured for the 5 per-platform packages. The v0.7.0 single-package
-  model eliminates the failure mode entirely.
+- The npm install no longer touches binary bytes at install time.
 
 ## [0.6.0] - 2026-05-30 — **WITHDRAWN**
 
-> **Note:** v0.6.0 was unpublished from npm on 2026-05-30 within the
-> 72h window. The five per-platform packages
-> (`@solcreek/dew-darwin-arm64`, etc.) were never created on npm
-> because OIDC trusted-publisher pending entries weren't configured,
-> causing `npm install @solcreek/dew@0.6.0` to fail with
-> `platform package is missing`. v0.7.0 removes the per-platform
-> packaging entirely. GitHub Release v0.6.0 with binaries remains
-> available; install via `curl ... install.sh | sh` or direct download
-> still works.
-
-**Headline:** `dew app run` actually starts containers; npm install never
-touches binary bytes.
+> **Note:** v0.6.0 was unpublished from npm shortly after release
+> because `npm install @solcreek/dew@0.6.0` failed. v0.7.0 ships the
+> same intended functionality on a different distribution model and
+> is the recommended upgrade. Direct binary downloads from the v0.6.0
+> GitHub Release remain available.
 
 ### Added
 
-- **`dew server start/stop/restart/status`** — power management for
-  provisioned servers, mirroring `dew server create/destroy`
-- **`--json` output for all `dew server` subcommands** — structured
-  responses for agent-driven workflows
-- `npm/scripts/generate-packages.mjs` — scaffolds the 5 per-platform
-  publish directories from CI-built signed + notarized binaries
-- `npm/scripts/sync-version.mjs` — locks main + every `optionalDependency`
-  to one version on tag push
-- `npm/test/` — 14 tests covering the dispatcher (`DEW_BINARY` override,
-  missing platform package, exit code propagation), package generator
-  (all-present, partial, zero, byte-exact binary copy), and version sync
-
-### Changed
-
-- **npm packaging — per-platform via `optionalDependencies`.** The main
-  `@solcreek/dew` package becomes a small Node dispatcher (no postinstall).
-  Each platform binary ships in its own package
-  (`@solcreek/dew-darwin-arm64`, `@solcreek/dew-darwin-x64`,
-  `@solcreek/dew-linux-x64`, `@solcreek/dew-linux-arm64`,
-  `@solcreek/dew-win32-x64`) listed under `optionalDependencies`; npm
-  installs only the one matching `process.platform` / `process.arch`.
-
-  This removes the install-time code path that touched the binary, which
-  caused two incidents in earlier releases (codesign failure silently
-  breaking VM support; v0.5.0 re-signing stripping the Developer ID).
-  The dispatcher does `require.resolve` + `spawnSync`; the bytes inside
-  the Mach-O — including the notarization staple — arrive byte-for-byte
-  from the platform package tarball.
-
-- **`DEW_BINARY=/path/to/dew`** environment variable for local builds and
-  testing, bypassing platform-package resolution.
-- **`install.sh` no longer re-signs binaries with Developer ID signatures.**
-  Detects the existing signature before ad-hoc-signing, matching the
-  v0.5.1 fix in the npm path.
-- **`dew server` internals on capstan v0.5** — power actions, factory
-  constructor, refreshed provider catalogs
+- `dew server start/stop/restart/status`
+- `--json` output for all `dew server` subcommands
 
 ### Fixed
 
-- **`dew app run` failed on first container start with
-  `failed to create bridge "nerdctl0": operation not supported`.**
-  Two compounding causes:
-  - The standard-profile init script never loaded `bridge`,
-    `br_netfilter`, `veth`, `iptable_nat`, `nf_nat`, or `xt_MASQUERADE`
-    before starting containerd. CNI's bridge plugin needs all of them.
-  - `/lib/modules` on the persistent disk was only populated on **first
-    boot**. When the initramfs shipped an updated kernel, the cached
-    modules went stale and every `modprobe` silently failed (calls used
-    `|| true`), leaving only downstream OCI/CNI errors with no
-    kernel-version hint.
-
-  Init-stage2 now `modprobe`s the CNI module set before launching
-  containerd, and `/lib/modules` is rsync'd from the initramfs on every
-  boot. Two Go tests guard both invariants
-  (`cmd/dew/initramfs_modules_test.go`); `smoke-test.sh` adds an
-  `ip link add … type bridge` integration check.
+- `dew app run` now reliably starts containers on first use, and
+  remains reliable across upgrades.
 
 ### Removed
 
-- `npm/scripts/postinstall.js` — replaced by the new platform-package
-  resolution model; nothing on the user's machine touches the binary
-- `.github/workflows/npm-publish.yml` — folded into the Release workflow
-  as a single source of truth for publishing all 6 packages together
-- `cmd/dew-serve/` — orphan binary entrypoint that duplicated `cmd/dew`
-  after the v0.4 unification; systemd unit renamed to `dew.service`
+- `cmd/dew-serve/` — duplicated `cmd/dew` after the v0.4 unification;
+  systemd unit renamed to `dew.service`
 
 ## [0.5.0] - 2026-05-30
 
