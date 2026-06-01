@@ -16,6 +16,7 @@ import (
 
 	"github.com/solcreek/dew/internal/progress"
 	"github.com/solcreek/dew/internal/validate"
+	"github.com/solcreek/dew/pkg/dewerr"
 )
 
 const registryBase = "https://raw.githubusercontent.com/solcreek/dew-apps/main"
@@ -58,7 +59,7 @@ Examples:
 	switch args[0] {
 	case "run":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: dew app run <name> [--port N]")
+			return dewerr.New(dewerr.CodeUsage, "usage: dew app run <name> [--port N]")
 		}
 		if args[1] == "--help" || args[1] == "-h" {
 			fmt.Println(`dew app run — run an app from the registry
@@ -77,7 +78,7 @@ Browse available apps: dew apps`)
 		return cmdAppRun(args[1:])
 	case "stop":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: dew app stop <name>")
+			return dewerr.New(dewerr.CodeUsage, "usage: dew app stop <name>")
 		}
 		return cmdAppStop(args[1])
 	case "list":
@@ -120,7 +121,7 @@ func cmdAppList() error {
 			fmt.Println(`{"ok":false,"error":"no container runtime found","code":"no_runtime","apps":[]}`)
 			return nil
 		}
-		return fmt.Errorf("no container runtime (docker/nerdctl) found")
+		return dewerr.New(dewerr.CodeNotFound, "no container runtime (docker/nerdctl) found")
 	}
 
 	if flagJSON {
@@ -356,7 +357,7 @@ func cmdAppRun(args []string) error {
 func cmdInstallList() error {
 	resp, err := http.Get(registryBase + "/registry.json")
 	if err != nil {
-		return fmt.Errorf("fetch registry: %w", err)
+		return dewerr.Wrap(err, dewerr.CodeNetwork, "fetch registry")
 	}
 	defer resp.Body.Close()
 
@@ -383,12 +384,12 @@ func fetchManifest(name string) (*appManifest, error) {
 	url := fmt.Sprintf("%s/apps/%s/manifest.json", registryBase, name)
 	resp, err := http.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("fetch manifest: %w", err)
+		return nil, dewerr.Wrap(err, dewerr.CodeNetwork, "fetch manifest")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 404 {
-		return nil, fmt.Errorf("app %q not found in registry", name)
+		return nil, dewerr.Newf(dewerr.CodeNotFound, "app %q not found in registry", name)
 	}
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)

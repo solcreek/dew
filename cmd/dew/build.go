@@ -18,6 +18,7 @@ import (
 
 	"github.com/solcreek/dew/internal/detect"
 	"github.com/solcreek/dew/internal/progress"
+	"github.com/solcreek/dew/pkg/dewerr"
 )
 
 type buildManifest struct {
@@ -64,7 +65,7 @@ func cmdBuild(args []string) error {
 	}
 	if proj.Runtime == "" {
 		sp.Fail("no project detected")
-		return fmt.Errorf("no supported project detected in %s", abs)
+		return dewerr.Newf(dewerr.CodeNotFound, "no supported project detected in %s", abs)
 	}
 
 	appName := filepath.Base(abs)

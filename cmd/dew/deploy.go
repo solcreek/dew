@@ -18,6 +18,7 @@ import (
 
 	"github.com/solcreek/dew/internal/progress"
 	"github.com/solcreek/dew/internal/validate"
+	"github.com/solcreek/dew/pkg/dewerr"
 )
 
 func cmdDeploy(args []string) error {
@@ -51,7 +52,7 @@ func cmdDeploy(args []string) error {
 	}
 
 	if target == "" {
-		return fmt.Errorf("usage: dew deploy <target> [--tarball <path>] [--image <name>] [--app <name>] [--dry-run]")
+		return dewerr.New(dewerr.CodeUsage, "usage: dew deploy <target> [--tarball <path>] [--image <name>] [--app <name>] [--dry-run]")
 	}
 
 	if err := validate.Target(target); err != nil {
@@ -93,7 +94,7 @@ func cmdDeploy(args []string) error {
 			}
 		}
 		if tarballPath == "" {
-			return fmt.Errorf("no tarball found. Run: dew build")
+			return dewerr.New(dewerr.CodeNotFound, "no tarball found. Run: dew build")
 		}
 	}
 
@@ -142,22 +143,28 @@ func deployTarball(target, endpoint, token, tarballPath, appName string) error {
 	resp, err := client.Do(req)
 	if err != nil {
 		sp.Fail("upload failed")
-		return fmt.Errorf("deploy to %s: %w", endpoint, err)
+		return dewerr.Wrapf(err, dewerr.CodeNetwork, "deploy to %s", endpoint)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 401 {
 		sp.Fail("unauthorized")
-		return fmt.Errorf("invalid deploy token for %s", endpoint)
+		return dewerr.Newf(dewerr.CodeAuth, "invalid deploy token for %s", endpoint)
 	}
 	if resp.StatusCode == 409 {
 		sp.Fail("deploy in progress")
-		return fmt.Errorf("another deploy is already running on %s", endpoint)
+		return dewerr.Newf(dewerr.CodeConflict, "another deploy is already running on %s", endpoint)
 	}
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
 		sp.Fail(fmt.Sprintf("HTTP %d", resp.StatusCode))
-		return fmt.Errorf("deploy failed: %d %s", resp.StatusCode, body)
+		code := dewerr.CodeGeneric
+		if resp.StatusCode == 429 || resp.StatusCode == 503 {
+			code = dewerr.CodeUnavailable
+		} else if resp.StatusCode >= 500 {
+			code = dewerr.CodeUnavailable
+		}
+		return dewerr.Newf(code, "deploy failed: %d %s", resp.StatusCode, body)
 	}
 
 	if resp.Header.Get("Content-Type") == "text/event-stream" {
@@ -198,14 +205,26 @@ func deployImage(target, endpoint, token, imageName, appName string) error {
 	resp, err := client.Do(req)
 	if err != nil {
 		sp.Fail("request failed")
-		return fmt.Errorf("deploy to %s: %w", endpoint, err)
+		return dewerr.Wrapf(err, dewerr.CodeNetwork, "deploy to %s", endpoint)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == 401 {
+		sp.Fail("unauthorized")
+		return dewerr.Newf(dewerr.CodeAuth, "invalid deploy token for %s", endpoint)
+	}
+	if resp.StatusCode == 409 {
+		sp.Fail("deploy in progress")
+		return dewerr.Newf(dewerr.CodeConflict, "another deploy is already running on %s", endpoint)
+	}
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(resp.Body)
 		sp.Fail(fmt.Sprintf("HTTP %d", resp.StatusCode))
-		return fmt.Errorf("deploy failed: %d %s", resp.StatusCode, respBody)
+		code := dewerr.CodeGeneric
+		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+			code = dewerr.CodeUnavailable
+		}
+		return dewerr.Newf(code, "deploy failed: %d %s", resp.StatusCode, respBody)
 	}
 
 	if resp.Header.Get("Content-Type") == "text/event-stream" {
@@ -245,7 +264,7 @@ func streamDeployEvents(sp *progress.Spinner, body io.Reader, appName, endpoint 
 			sp.Step(event.Phase)
 		case "fail":
 			sp.Fail(event.Error)
-			return fmt.Errorf("deploy failed at %s: %s", event.Phase, event.Error)
+			return dewerr.Newf(dewerr.CodeGeneric, "deploy failed at %s: %s", event.Phase, event.Error)
 		}
 
 		if event.OK {
@@ -282,7 +301,7 @@ func loadDeployToken(target string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("no deploy token for %s\nSet DEW_TOKEN env var or run: dew auth set %s <token>", target, target)
+	return "", dewerr.Newf(dewerr.CodeAuth, "no deploy token for %s\nSet DEW_TOKEN env var or run: dew auth set %s <token>", target, target)
 }
 
 func resolveEndpoint(target string) string {
