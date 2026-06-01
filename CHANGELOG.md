@@ -7,18 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.7] - 2026-05-31
+## [0.7.8] - 2026-05-31
 
-Identical user-visible scope to the withdrawn 0.7.6 plus a fix that
-lets the Linux initramfs build finish on the release runner.
+Same user-visible scope as 0.7.7 plus two regressions found right
+after that release.
 
 ### Fixed
 
-- Release build for the Linux initramfs no longer fails on the
-  GitHub-hosted runner. Alpine's per-package post-install scripts
-  needed a capability the runner does not grant; the files those
-  scripts would have touched are already provided by the base rootfs,
-  so the build now skips the scripts and finishes cleanly.
+- First-boot DHCP is reliably fast again. On the prior release the
+  pruned initramfs booted so quickly it could race Apple VZ's NAT
+  startup. busybox `udhcpc` was being invoked in a way that, on
+  failure, retried the 3-packet discovery burst indefinitely without
+  exiting, blocking init for up to ~90 s while printing
+  "broadcasting discover" repeatedly. Now a single patient attempt
+  covers the slow case and exits cleanly either way. Validated over
+  23 cold boots: every one reached an IP within ~32 s end-to-end.
+- `dew exec ping` and other raw-socket tools work again. The previous
+  release tightened the in-guest agent's capability set, which
+  silently removed `CAP_NET_RAW` (raw sockets) and `CAP_SYS_ADMIN`
+  (the bind-mount path used by `dew up`). Both are now restored —
+  the VM is the isolation boundary, so in-guest capability
+  restrictions do not buy real safety and have only blocked
+  legitimate work.
+
+### Tests
+
+- New smoke-test entry boots a fresh node-profile VM three times and
+  asserts each cold boot acquires a DHCP lease within 60 s. Guards
+  against the regression from 0.7.7.
+
+## [0.7.7] - 2026-05-31 — withdrawn
+
+Shipped two regressions vs. 0.7.6:
+
+- First-boot DHCP could take ~80–90 s on a fraction of cold boots
+  due to a busybox `udhcpc` retry loop racing Apple VZ NAT startup.
+- `dew exec` lost `CAP_NET_RAW` (and `CAP_SYS_ADMIN`), breaking
+  `ping` and the bind-mount path used by `dew up`.
+
+Re-shipped as 0.7.8 with both fixes plus a regression guard.
+
+The original 0.7.7 release notes (as shipped) covered: identical
+user-visible scope to the withdrawn 0.7.6 plus a Linux-initramfs
+build-pipeline fix (apk's per-package post-install scripts needed a
+capability the GitHub-hosted runner doesn't grant; skipped, since the
+files those scripts would have touched are already provided by the
+base rootfs).
 
 ## [0.7.6] - 2026-05-31 — withdrawn
 

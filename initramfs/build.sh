@@ -525,14 +525,21 @@ mountpoint -q /sys || mount -t sysfs sysfs /sys
 mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
 mountpoint -q /dev/pts || { mkdir -p /dev/pts; mount -t devpts devpts /dev/pts; }
 
-# network
+# network. Apple VZ's host-managed NAT is racy at first-boot: usually
+# it answers DHCP within ~2 s, occasionally not until ~60-80 s. The
+# default busybox udhcpc invocation (`-t 3 -q`) retries the 3-packet
+# discovery burst forever (no `-n`), so the visible symptom is the
+# user staring at "udhcpc: broadcasting discover" repeating every 30 s
+# while init-stage2 blocks. `-n -t 30 -T 3` makes ONE patient
+# attempt: 30 discovers spaced 3 s apart (~90 s window), then exit
+# pass-or-fail so init-stage2 can proceed either way.
 if ip link show eth0 >/dev/null 2>&1; then
     ip link set eth0 up 2>/dev/null || true
-    for i in 1 2 3 4 5; do
+    for i in 1 2 3 4 5 6 7 8 9 10; do
         [ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = "1" ] && break
         sleep 0.1
     done
-    udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -t 3 || true
+    udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -n -t 30 -T 3 || true
     echo "nameserver 1.1.1.1" > /etc/resolv.conf
 fi
 

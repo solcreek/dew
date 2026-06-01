@@ -155,6 +155,44 @@ else
     test_result "standard: CNI bridge module loaded" "skip"
 fi
 
+# --- Test 6b: First-boot DHCP lease arrives quickly across cold boots ---
+# Regression guard for v0.7.7 → v0.7.8: the pruned initramfs boots so
+# fast it can race Apple VZ's NAT init. With udhcpc's default `-t 3`
+# (no `-n`) the busybox client retries the 3-packet burst forever,
+# blocking init-stage2 for ~90 s of visible "broadcasting discover"
+# spam. The fix is `-n -t 30 -T 3` — single patient attempt. This
+# test boots cold (fresh node.img) three times and asserts each cold
+# boot acquires a lease within 20 s.
+if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ]; then
+    DHCP_FAILS=0
+    DHCP_MAX_S=0
+    for n in 1 2 3; do
+        pkill -9 -f 'dew start\|dew run' 2>/dev/null; sleep 1
+        rm -f ~/.local/state/dew/default.sock ~/.local/share/dew/node.img
+        S=$(date +%s)
+        # `dew run` joins all post-`--` argv with spaces and feeds the
+        # result to /bin/sh -c, so we pass ONE pre-quoted shell line
+        # rather than `sh -c '<pipeline>'` (which would degenerate to
+        # `sh -c` running with no script).
+        OUT=$($DEW run --profile node --network --kernel "$KERNEL" --initrd "$INITRD_NODE" \
+              -- 'ip -4 addr show eth0 2>/dev/null | awk "/inet /{print \$2; exit}"' 2>&1)
+        D=$(($(date +%s)-S))
+        if echo "$OUT" | grep -qE '192\.168\.[0-9]+\.[0-9]+/'; then
+            [ "$D" -gt "$DHCP_MAX_S" ] && DHCP_MAX_S=$D
+        else
+            DHCP_FAILS=$((DHCP_FAILS+1))
+        fi
+    done
+    if [ "$DHCP_FAILS" = "0" ] && [ "$DHCP_MAX_S" -le 60 ]; then
+        test_result "node: first-boot DHCP <60s (3 cold boots, max ${DHCP_MAX_S}s)" "pass"
+    else
+        test_result "node: first-boot DHCP <60s (3 cold boots, max ${DHCP_MAX_S}s, ${DHCP_FAILS} failures)" "fail"
+    fi
+    rm -f ~/.local/state/dew/default.sock ~/.local/share/dew/node.img
+else
+    test_result "node: first-boot DHCP" "skip"
+fi
+
 # --- Test 7: Detect (unit-level) ---
 GO_TEST=$(cd "$(dirname "$0")" && go test ./internal/detect/ -count=1 2>&1 | tail -1)
 if echo "$GO_TEST" | grep -q "ok"; then

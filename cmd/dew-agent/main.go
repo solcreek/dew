@@ -55,10 +55,12 @@ func main() {
 	}
 	defer listener.Close()
 
-	// Drop unnecessary root capabilities now that vsock is bound.
-	// Keep only CAP_SETUID/CAP_SETGID (for exec as unprivileged user)
-	// and CAP_NET_BIND_SERVICE (for port forwarding to privileged ports).
-	dropCapabilities()
+	// No in-VM capability stripping. The VM is the isolation boundary
+	// and the agent's children run arbitrary user code (npm install,
+	// mount --bind, ping, etc.); restricting their caps here only blocks
+	// legitimate work — earlier cuts dropped CAP_NET_RAW and SIGBUS'd
+	// raw-socket tools, then later CAP_SYS_ADMIN was needed for the
+	// bind-mount install path.
 
 	fmt.Fprintf(os.Stderr, "dew-agent: listening on vsock port %d\n", port)
 
@@ -268,21 +270,6 @@ func handleConnect(vsockConn net.Conn, addr string) {
 		io.Copy(vsockConn, tcpConn)
 	}()
 	wg.Wait()
-}
-
-func dropCapabilities() {
-	// Clear the bounding set except CAP_SETUID(7), CAP_SETGID(6),
-	// CAP_NET_BIND_SERVICE(10), CAP_KILL(5), CAP_SYS_ADMIN(21).
-	// SYS_ADMIN is kept so cmdUp can mount --bind /tmp/nm onto
-	// /app/node_modules, which is the only way to give npm a clean,
-	// guest-tmpfs node_modules while /app stays on virtiofs. The VM is
-	// the isolation boundary; stripping caps inside it is theatre.
-	keep := map[uintptr]bool{5: true, 6: true, 7: true, 10: true, 21: true}
-	for i := uintptr(0); i < 40; i++ {
-		if !keep[i] {
-			syscall.Syscall6(syscall.SYS_PRCTL, 24, i, 0, 0, 0, 0) // PR_CAPBSET_DROP=24
-		}
-	}
 }
 
 func setExecUser(cmd *exec.Cmd) {
