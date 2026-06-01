@@ -404,7 +404,6 @@ Apps:
 Deploy (to a server from 'dew server create' or any VPS):
   dew build [dir]                Package app for deployment
   dew deploy <target>            Deploy to remote server
-  dew rollback <target> <app>    Restore previous version
   dew env ...                    Manage environment variables
   dew auth ...                   Manage credentials
 

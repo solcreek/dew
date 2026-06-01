@@ -95,7 +95,7 @@ dew server create --provider hetzner  # provision VPS ($5/mo)
 dew deploy 5.161.53.168               # deploy with SSE progress
 ```
 
-The server runs `dew serve` (7.1MB Linux binary) — containerd for isolation, self-signed TLS, health checks, rollback.
+The server runs `dew serve` (7.1MB Linux binary) — containerd for isolation, self-signed TLS, health checks.
 
 ## Agent integration
 
@@ -125,7 +125,7 @@ dew                         dew (deploy receiver)
 ├── dew app run             ├── containers
 ├── dew exec                ├── TLS
 ├── dew build               ├── process management
-├── dew deploy ──────────→  └── health check + rollback
+├── dew deploy ──────────→  └── health check
 └── Linux VM
     └── containers inside
 ```
@@ -163,7 +163,6 @@ Apps:
 Deploy:
   dew build [dir]                Package app for deployment
   dew deploy <target>            Deploy to remote server
-  dew rollback <target> <app>    Restore previous version
   dew env ...                    Manage environment variables
   dew auth ...                   Manage credentials
 

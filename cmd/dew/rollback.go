@@ -5,61 +5,38 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"strings"
-	"time"
-
-	"github.com/solcreek/dew/internal/progress"
 )
 
+// cmdRollback is currently a placeholder. The server-side handler
+// returns success but doesn't actually restore the previous version
+// — there is no deploy history persistence yet. The CLI surfaces this
+// honestly rather than silently calling the stub, and the command
+// stays registered so future deploy-history work has a known entry
+// point.
+//
+// Tracked in ROADMAP under "Restore previous version after deploy
+// (rollback)".
 func cmdRollback(args []string) error {
-	if len(args) < 2 {
-		return fmt.Errorf("usage: dew rollback <target> <app>")
+	// cmdRollback doesn't go through the shared parseFlags helper, so
+	// scan args ourselves for --json. Once rollback gains real behavior
+	// it'll move onto parseFlags like the other commands.
+	wantJSON := flagJSON
+	for _, a := range args {
+		if a == "--json" {
+			wantJSON = true
+		}
 	}
-
-	target := args[0]
-	app := args[1]
-
-	token, err := loadDeployToken(target)
-	if err != nil {
-		return err
+	msg := "dew rollback is not yet implemented — the deploy receiver doesn't persist version history. " +
+		"Tracked in ROADMAP. Workaround: re-deploy the previous build tarball with `dew deploy <target>`."
+	if wantJSON {
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"ok":         false,
+			"error":      "not_implemented",
+			"message":    msg,
+			"workaround": "re-deploy the previous build tarball with `dew deploy <target>`",
+		})
+		return fmt.Errorf("rollback not implemented")
 	}
-	endpoint := resolveEndpoint(target)
-
-	sp := progress.New()
-	sp.Step(fmt.Sprintf("Rolling back %s", app))
-
-	url := fmt.Sprintf("%s/v1/apps/%s/rollback", endpoint, app)
-	req, _ := http.NewRequest("POST", url, nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		sp.Fail("request failed")
-		return fmt.Errorf("rollback: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		sp.Fail(fmt.Sprintf("HTTP %d", resp.StatusCode))
-		return fmt.Errorf("rollback failed: %d %s", resp.StatusCode, body)
-	}
-
-	var result map[string]any
-	json.NewDecoder(resp.Body).Decode(&result)
-
-	sp.Done(fmt.Sprintf("%s rolled back", app))
-
-	if flagJSON {
-		json.NewEncoder(os.Stdout).Encode(result)
-	}
-	return nil
-}
-
-func init() {
-	_ = strings.TrimSpace // avoid unused import
+	return fmt.Errorf("%s", msg)
 }

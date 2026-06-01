@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.15] - 2026-06-01
+
+### Fixed
+
+- `dew rollback` no longer silently calls a server-side stub that
+  returns "success" while doing nothing. The CLI now refuses with
+  `dew rollback is not yet implemented — the deploy receiver
+  doesn't persist version history. Tracked in ROADMAP. Workaround:
+  re-deploy the previous build tarball with dew deploy <target>`.
+  Exit code is non-zero. `--json` returns
+  `{"ok":false,"error":"not_implemented","workaround":...}`.
+
+### Changed
+
+- README and `dew --help` no longer advertise rollback as a shipped
+  feature. The architecture diagram and the deploy command list both
+  reflect what `dew serve` actually does today (containerd, TLS,
+  health checks — no rollback).
+- ROADMAP gains a "Restore previous version after deploy (rollback)"
+  entry under Mid-term, describing what the receiver needs to gain
+  (version history retention + atomic switch endpoint) before the
+  CLI can do anything useful.
+
 ## [0.7.14] - 2026-06-01
 
 ### Changed

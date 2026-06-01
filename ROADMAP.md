@@ -63,6 +63,16 @@ Smoother defaults for `dew update`: silent background check, opt-in
 channels (stable / nightly / pre-release), per-project version
 pinning via `dew.toml`.
 
+### Restore previous version after deploy (rollback)
+
+`dew deploy` writes the new version and starts it; the receiver
+keeps no history of the previous one. Rollback needs the receiver
+to retain the last N versions on disk, expose them via a list
+endpoint, and switch the active version atomically without a
+re-deploy. Today there is no `dew rollback` — the command exists
+but returns "not yet implemented" with a workaround pointing back at
+`dew deploy <prior-tarball>`.
+
 ## Considering
 
 Items whose scope depends on decisions still in progress.
