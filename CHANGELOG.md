@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.18] - 2026-06-01
+
+UX correctness + agent discoverability pass. Closes seven items
+flagged by a four-agent fresh-eyes test of dew. No new features —
+this release is about making the existing surface honest.
+
+### Fixed
+
+- **`dew up --dry-run` actually doesn't boot the VM.** It used to
+  parse the flag and silently ignore it, then run a full boot +
+  install. Now it prints the plan (project, profile, install/dev
+  commands, ports) and exits.
+
+- **`dew run -- sh -c '...'` no longer eats output.** Argv passed
+  after `--` is now sent straight to the guest agent; previously
+  it was joined with spaces and re-wrapped in `/bin/sh -c`, so an
+  outer shell parsed the user's inner `sh -c` and ate the first
+  argument. The same fix applies to `dew exec`. Single-string
+  invocations (`dew run "echo a; echo b"`) keep their legacy
+  shell wrap.
+
+- **Per-subcommand `--help`** works for `up`, `run`, `exec`,
+  `start`, `down`, `build`, `deploy`, `share`, `app`, `apps`.
+  Used to error with `unknown flag "--help"`. Each block lists
+  the flags + 2–3 representative invocations.
+
+- **Flags after the positional argument** no longer get silently
+  dropped. `dew up <dir> --dry-run` and `dew up <dir> --json`
+  both work now.
+
+- **`dew apps --json`** emits one JSON envelope with per-app
+  manifest data (name, version, runtime, port, image, tags).
+  Used to ignore `--json` and print the human catalog.
+
+- **`dew app run --dry-run --json`** emits the resolved plan as
+  JSON (app, version, runtime, image, port, host_port). The
+  human-mode "Would pull " line for node-runtime apps now reads
+  "No image to pull (node runtime — built from source)" instead
+  of leaving a blank.
+
+### Added
+
+- **`{"type":"ready", "url", "port", "framework", "elapsed_ms"}`**
+  event for `dew up`. Single grep target for agents tracking
+  readiness — no more parsing `http://` out of mixed human +
+  kernel-dmesg output.
+
+- **`--network-policy=restricted` warns when `--allow-host` is
+  empty.** Previously the most opaque failure mode in dew: apk /
+  npm / pip would silently fail with no output because outbound
+  traffic was blocked. The warning fires before VM boot so the
+  user can ^C and retry.
+
+### Removed
+
+- **`dew session create / exec / destroy`** removed. The CLI
+  stored VM handles in an in-process map, so the next process
+  couldn't reach the VM — `session exec` always errored with
+  "sessions are in-process only." Running `dew session ...` now
+  exits 2 with a migration hint pointing at `dew up` and
+  `dew start`. The internal `internal/session` package stays for
+  the in-process callers (`dew up`, `dew run`).
+
 ## [0.7.17] - 2026-06-01
 
 `dew up` now skips `npm install` when nothing has changed.
