@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.13] - 2026-06-01
+
+### Changed
+
+- `dew up` now installs the native-build toolchain (gcc, make, python3)
+  only when the project's lockfile lists a package that needs it
+  (sharp, sqlite3, bcrypt, canvas, node-pty, node-sass and friends).
+  Earlier versions ran that apk install in the background on every
+  cold boot of the node profile, regardless of whether the project
+  needed it — that's ~50 MB of disk and ~30 s of activity that 80 %
+  of Vite/Next/Astro users never used. Projects that *do* need it
+  now see a clear progress line: `installing build tools (sharp)…`.
+- If npm install fails with a node-gyp / g++ / python error and the
+  lockfile-scan missed (transitive dep, alias), `dew up` automatically
+  installs the toolchain and retries the install once.
+- The trailing `dew: background install done: build-base python3`
+  message that used to appear well after the dev server started no
+  longer occurs.
+
 ## [0.7.12] - 2026-06-01
 
 ### Fixed
