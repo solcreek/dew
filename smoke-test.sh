@@ -193,12 +193,12 @@ else
     test_result "node: first-boot DHCP" "skip"
 fi
 
-# --- Test 6c: `dew up` aha — boot, install, dev-server, curl from host ---
-# End-to-end regression guard. Scaffolds a fresh Vite+React project,
-# runs `dew up`, asserts `curl http://localhost:5173/` returns the
-# React HTML within 180 s. Catches the layered failures the prior
-# tests can't: vsock auth race during first-boot apk install, dev
-# server detachment, --host 0.0.0.0 binding, node_modules bind mount.
+# --- Test 6c: `dew up` aha — pure JS, no build-tools install should happen ---
+# Scaffolds Vite+React (no native deps), runs `dew up`, asserts:
+#   1. curl http://localhost:5173/ returns the React HTML within 180s
+#   2. the build-tools install path was NOT triggered (regression guard
+#      for the lockfile-scanner: a stock vite+react must not match
+#      knownNativeNodePackages)
 if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ] && command -v npm >/dev/null 2>&1; then
     pkill -9 -f 'dew start\|dew run\|dew up' 2>/dev/null
     lsof -ti:5173 2>/dev/null | xargs -r kill -9 2>/dev/null
@@ -211,10 +211,11 @@ if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ] && command -v npm >/dev/null 2>&1; 
     )
     UP_OK=0
     UP_T=0
+    LOG=/tmp/dew-smoke-up.log
     if [ -d "$PROJ/my-app" ]; then
         (
             cd "$PROJ/my-app"
-            $DEW up --kernel "$KERNEL" --initrd "$INITRD_NODE" >/tmp/dew-smoke-up.log 2>&1
+            $DEW up --kernel "$KERNEL" --initrd "$INITRD_NODE" >$LOG 2>&1
         ) &
         UP_PID=$!
         START=$(date +%s)
@@ -234,14 +235,85 @@ if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ] && command -v npm >/dev/null 2>&1; 
         pkill -9 -f 'dew start\|dew up' 2>/dev/null
         rm -f ~/.local/state/dew/default.sock
     fi
-    rm -rf "$PROJ"
     if [ "$UP_OK" = "1" ]; then
         test_result "dew up: vite project serves React HTML in ${UP_T}s" "pass"
     else
         test_result "dew up: vite project never served (waited 180s)" "fail"
     fi
+    # Negative assertion: pure JS must not trigger build tools install.
+    # A false positive here means knownNativeNodePackages has a name
+    # that vite+react actually pulls in.
+    if grep -q 'installing build tools' "$LOG" 2>/dev/null; then
+        OFFENDER=$(grep 'installing build tools' "$LOG" | head -1)
+        test_result "dew up: vite without native deps doesn't trigger build tools (${OFFENDER})" "fail"
+    else
+        test_result "dew up: vite without native deps doesn't trigger build tools" "pass"
+    fi
+    rm -rf "$PROJ"
 else
     test_result "dew up: vite e2e" "skip"
+    test_result "dew up: no build tools on pure JS" "skip"
+fi
+
+# --- Test 6d: `dew up` with sharp in lockfile triggers build-tools install ---
+# Positive path for the lockfile scanner: a project that pins sharp
+# must see "installing build tools (sharp)" before "installing deps".
+# Confirms cmdUp reads the right directory and the scanner correctly
+# matches against knownNativeNodePackages.
+if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ] && command -v npm >/dev/null 2>&1; then
+    pkill -9 -f 'dew start\|dew run\|dew up' 2>/dev/null
+    lsof -ti:5173 2>/dev/null | xargs -r kill -9 2>/dev/null
+    sleep 1
+    rm -f ~/.local/state/dew/default.sock ~/.local/share/dew/node.img
+    PROJ=$(mktemp -d -t dew-smoke-sharp)
+    (
+        cd "$PROJ"
+        npm create vite@latest my-app -- --template react >/dev/null 2>&1
+        cd my-app
+        # Inject sharp into the lockfile only — actual install happens
+        # in the VM. --package-lock-only writes package-lock.json
+        # without touching node_modules.
+        npm install sharp --package-lock-only >/dev/null 2>&1
+    )
+    UP_OK=0
+    UP_T=0
+    LOG=/tmp/dew-smoke-sharp.log
+    if [ -d "$PROJ/my-app" ]; then
+        (
+            cd "$PROJ/my-app"
+            $DEW up --kernel "$KERNEL" --initrd "$INITRD_NODE" >$LOG 2>&1
+        ) &
+        UP_PID=$!
+        START=$(date +%s)
+        for i in $(seq 1 90); do
+            sleep 2
+            code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://localhost:5173/ 2>/dev/null || echo 000)
+            if [ "$code" = "200" ] || [ "$code" = "304" ]; then
+                UP_OK=1
+                UP_T=$(($(date +%s)-START))
+                break
+            fi
+        done
+        kill -9 $UP_PID 2>/dev/null; wait $UP_PID 2>/dev/null
+        pkill -9 -f 'dew start\|dew up' 2>/dev/null
+        rm -f ~/.local/state/dew/default.sock
+    fi
+    # Positive assertion: the sharp install must trigger the build-tools
+    # path, AND the build-tools step must precede the install step.
+    BT_LINE=$(grep -n 'installing build tools' "$LOG" 2>/dev/null | head -1 | cut -d: -f1)
+    INSTALL_LINE=$(grep -n 'installing deps' "$LOG" 2>/dev/null | head -1 | cut -d: -f1)
+    if [ -n "$BT_LINE" ] && [ -n "$INSTALL_LINE" ] && [ "$BT_LINE" -lt "$INSTALL_LINE" ] && [ "$UP_OK" = "1" ]; then
+        test_result "dew up: sharp in lockfile triggers build tools before install (served in ${UP_T}s)" "pass"
+    elif [ -z "$BT_LINE" ]; then
+        test_result "dew up: sharp didn't trigger build tools (lockfile scanner miss)" "fail"
+    elif [ "$BT_LINE" -ge "$INSTALL_LINE" ]; then
+        test_result "dew up: build tools ran AFTER install (ordering bug)" "fail"
+    else
+        test_result "dew up: sharp project never served" "fail"
+    fi
+    rm -rf "$PROJ"
+else
+    test_result "dew up: sharp triggers build tools" "skip"
 fi
 
 # --- Test 7: Detect (unit-level) ---
