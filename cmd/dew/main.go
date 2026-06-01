@@ -29,7 +29,6 @@ import (
 	"github.com/solcreek/dew/internal/selfupdate"
 	"github.com/solcreek/dew/internal/services"
 	"github.com/solcreek/dew/internal/serialexec"
-	"github.com/solcreek/dew/internal/session"
 	"github.com/solcreek/dew/internal/vm"
 	"github.com/solcreek/dew/internal/vm/darwin"
 	vsockProto "github.com/solcreek/dew/internal/vsock"
@@ -355,11 +354,16 @@ func main() {
 	case "assets":
 		err = cmdAssets(os.Args[2:])
 	case "session":
-		if len(os.Args) < 3 {
-			err = dewerr.New(dewerr.CodeUsage, "usage: dew session <create|exec|destroy> [args]")
-			break
-		}
-		err = cmdSession(os.Args[2], os.Args[3:])
+		// `dew session` shipped in earlier versions storing the VM
+		// handle in an in-process map. The CLI handed out an ID but
+		// the next process couldn't reach the VM — `dew session exec`
+		// always errored with "sessions are in-process only." The
+		// command was a documented lie. Surfacing it with a clear
+		// removal notice rather than fixing it half-way: the v0.8
+		// daemon work is the real solution.
+		err = dewerr.New(dewerr.CodeUsage,
+			"dew session was removed in v0.7.18 — it stored state in-process and `session exec` could never find the VM.\n"+
+				"For persistent VMs use `dew up` (project) or `dew start` (manual profile) — both register with the daemon and `dew exec` works against them.")
 	case "auth":
 		err = cmdAuth(os.Args[2:])
 	case "env":
@@ -456,7 +460,6 @@ Infrastructure:
 Advanced:
   dew run [--] <cmd>             Execute in ephemeral VM
   dew exec <cmd>                 Execute in running VM
-  dew session ...                Persistent VM sessions
   dew assets ...                 Manage VM images
   dew doctor                     Diagnose environment issues
   dew update                     Update to latest version
@@ -1756,116 +1759,6 @@ func connectVsock(v vm.VM, port uint32) (net.Conn, error) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return nil, err
-}
-
-// sessions stores active sessions in-process (for daemon mode).
-// For CLI usage, session create forks a background process.
-var activeSessions = map[string]*session.Session{}
-var sessionMu sync.Mutex
-
-func cmdSession(sub string, args []string) error {
-	switch sub {
-	case "create":
-		return cmdSessionCreate(args)
-	case "exec":
-		return cmdSessionExec(args)
-	case "destroy":
-		return cmdSessionDestroy(args)
-	default:
-		return fmt.Errorf("unknown session subcommand %q", sub)
-	}
-}
-
-func cmdSessionCreate(args []string) error {
-	cfg, _, err := parseFlags(args)
-	if err != nil {
-		return err
-	}
-	if err := resolveAssets(&cfg); err != nil {
-		return err
-	}
-
-	fmt.Fprintf(os.Stderr, "dew: creating session\n")
-	start := time.Now()
-
-	s, err := session.Create(cfg)
-	if err != nil {
-		return err
-	}
-
-	sessionMu.Lock()
-	activeSessions[s.ID] = s
-	sessionMu.Unlock()
-
-	fmt.Fprintf(os.Stderr, "dew: session ready (%s)\n", time.Since(start).Round(time.Millisecond))
-
-	if flagJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.Encode(map[string]string{"id": s.ID})
-	} else {
-		fmt.Println(s.ID)
-	}
-	return nil
-}
-
-func cmdSessionExec(args []string) error {
-	if len(args) < 2 {
-		return fmt.Errorf("usage: dew session exec <id> <cmd...>")
-	}
-	id := args[0]
-	cmd := strings.Join(args[1:], " ")
-
-	sessionMu.Lock()
-	s, ok := activeSessions[id]
-	sessionMu.Unlock()
-
-	if !ok {
-		return fmt.Errorf("session %q not found (sessions are in-process only)", id)
-	}
-
-	start := time.Now()
-	result, err := s.Exec(cmd, 0)
-	if err != nil {
-		return err
-	}
-
-	if flagJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.Encode(result)
-	} else {
-		if result.Stdout != "" {
-			fmt.Print(result.Stdout)
-		}
-		if result.Stderr != "" {
-			fmt.Fprint(os.Stderr, result.Stderr)
-		}
-		fmt.Fprintf(os.Stderr, "dew: exec %s (exit %d)\n", time.Since(start).Round(time.Millisecond), result.ExitCode)
-	}
-
-	if result.ExitCode != 0 {
-		os.Exit(result.ExitCode)
-	}
-	return nil
-}
-
-func cmdSessionDestroy(args []string) error {
-	if len(args) < 1 {
-		return fmt.Errorf("usage: dew session destroy <id>")
-	}
-	id := args[0]
-
-	sessionMu.Lock()
-	s, ok := activeSessions[id]
-	if ok {
-		delete(activeSessions, id)
-	}
-	sessionMu.Unlock()
-
-	if !ok {
-		return fmt.Errorf("session %q not found", id)
-	}
-
-	return s.Destroy()
 }
 
 func parseForward(s string) (vm.PortForward, error) {

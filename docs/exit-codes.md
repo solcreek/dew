@@ -37,10 +37,9 @@ retry, surface the error to a human, or fix the call and retry.
 
 ## Passthrough behavior
 
-`dew exec`, `dew run`, and `dew session exec` are passthrough
-commands: by default they return the guest process's own exit code
-unchanged. `dew exec npm test` exiting `1` means `npm test` failed,
-not dew.
+`dew exec` and `dew run` are passthrough commands: by default they
+return the guest process's own exit code unchanged. `dew exec npm test`
+exiting `1` means `npm test` failed, not dew.
 
 When `--json` is passed, the dew-side exit code is `0` if dew itself
 succeeded (the VM started, the command was dispatched, the result was

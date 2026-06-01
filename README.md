@@ -175,7 +175,6 @@ Infrastructure:
 Advanced:
   dew run [--] <cmd>             Execute in ephemeral VM
   dew exec <cmd>                 Execute in running VM
-  dew session ...                Persistent VM sessions
   dew assets ...                 Manage VM images
   dew update                     Update to latest version
 
