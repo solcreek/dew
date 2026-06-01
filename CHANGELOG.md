@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.11] - 2026-06-01
+
+### Fixed
+
+- **Apple Silicon: `dew up` first-boot Node install no longer blocks for
+  30-60 s.** The aarch64 initramfs is now built with `nodejs`+`npm` baked
+  in, matching what the x86_64 release has had since 0.7.x. Previously the
+  aarch64 initramfs was built on the macOS runner where `apk-tools-static`
+  can't run, so the bake silently no-op'd and every cold `dew up` on
+  Apple Silicon had to fetch the full Node runtime from Alpine repos
+  before the dev server could even start. Cross-built from the Linux
+  runner now, so both arches ship with the runtime preinstalled.
+
 ## [0.7.10] - 2026-06-01
 
 ### Fixed

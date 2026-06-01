@@ -10,8 +10,8 @@ permissions:
 
 jobs:
   # ─── Build darwin binaries: signed, notarized, ready for goreleaser
-  #     archive. Also builds ARM64 initramfs + kernel (specialised
-  #     assets goreleaser doesn't manage).
+  #     archive. aarch64 initramfs is cross-built on the Linux runner
+  #     (where the apk-tools-static bake works) — see build-linux below.
   build-macos:
     runs-on: macos-latest
     steps:
@@ -66,24 +66,6 @@ jobs:
           cp dew-darwin-arm64 prebuilt/dew-darwin-arm64/dew
           [ -f dew-darwin-amd64 ] && cp dew-darwin-amd64 prebuilt/dew-darwin-amd64/dew || true
 
-      - name: Build ARM64 initramfs profiles
-        run: |
-          bash initramfs/build.sh minimal
-          bash initramfs/build.sh node
-          bash initramfs/build.sh standard
-          cp initramfs/vmlinuz vmlinuz-aarch64
-          cp initramfs/initramfs-minimal.cpio.gz initramfs-minimal-aarch64.cpio.gz
-          cp initramfs/initramfs-node.cpio.gz initramfs-node-aarch64.cpio.gz
-          cp initramfs/initramfs-standard.cpio.gz initramfs-standard-aarch64.cpio.gz
-
-      - name: Download Kata ARM64 kernel
-        run: |
-          curl -fsSL -o kata-arm64.tar.zst "https://github.com/kata-containers/kata-containers/releases/download/3.28.0/kata-static-3.28.0-arm64.tar.zst"
-          zstd -d kata-arm64.tar.zst
-          tar xf kata-arm64.tar --wildcards "*/vmlinux-*" --strip-components=5 || true
-          mv vmlinux-* vmlinuz-aarch64 2>/dev/null || true
-          rm -f kata-arm64.tar kata-arm64.tar.zst
-
       - name: Upload darwin artifacts
         uses: actions/upload-artifact@v6
         with:
@@ -91,8 +73,6 @@ jobs:
           path: |
             prebuilt/dew-darwin-arm64/dew
             prebuilt/dew-darwin-amd64/dew
-            vmlinuz-aarch64
-            initramfs-*-aarch64.cpio.gz
           include-hidden-files: false
 
   # ─── Build Linux auxiliary assets: dew-agent (guest), windows
@@ -119,7 +99,7 @@ jobs:
       - name: Build x86_64 initramfs profiles
         run: bash initramfs/build.sh minimal && bash initramfs/build.sh node && bash initramfs/build.sh standard
 
-      - name: Rename initramfs assets with arch
+      - name: Rename x86_64 initramfs assets with arch
         run: |
           cp initramfs/vmlinuz vmlinuz-x86_64
           cp initramfs/initramfs-minimal.cpio.gz initramfs-minimal-x86_64.cpio.gz
@@ -133,6 +113,24 @@ jobs:
           gzip -dc $GITHUB_WORKSPACE/initramfs/initramfs-standard.cpio.gz | cpio -id 2>/dev/null
           tar czf $GITHUB_WORKSPACE/dew-rootfs-x86_64.tar.gz .
 
+      # aarch64 initramfs is cross-built from the Linux x86_64 runner so the
+      # nodejs+npm bake (HOST_OS=Linux only) runs for both arches. apk-tools-
+      # static uses --arch to cross-install aarch64 packages, and Go cross-
+      # compiles the agent trivially. macOS runner used to do this without
+      # the bake, causing 30-60 s of first-boot apk install on Apple Silicon.
+      - name: Build aarch64 initramfs profiles (cross-built)
+        run: |
+          TARGET_ARCH=aarch64 bash initramfs/build.sh minimal
+          TARGET_ARCH=aarch64 bash initramfs/build.sh node
+          TARGET_ARCH=aarch64 bash initramfs/build.sh standard
+
+      - name: Rename aarch64 initramfs assets with arch
+        run: |
+          cp initramfs/vmlinuz vmlinuz-aarch64
+          cp initramfs/initramfs-minimal.cpio.gz initramfs-minimal-aarch64.cpio.gz
+          cp initramfs/initramfs-node.cpio.gz initramfs-node-aarch64.cpio.gz
+          cp initramfs/initramfs-standard.cpio.gz initramfs-standard-aarch64.cpio.gz
+
       - name: Upload linux artifacts
         uses: actions/upload-artifact@v6
         with:
@@ -143,6 +141,8 @@ jobs:
             vmlinuz-x86_64
             initramfs-*-x86_64.cpio.gz
             dew-rootfs-x86_64.tar.gz
+            vmlinuz-aarch64
+            initramfs-*-aarch64.cpio.gz
 
   # ─── Goreleaser is the orchestrator: archives signed darwin
   #     binaries (consumed as prebuilt), cross-compiles linux dew,
@@ -225,10 +225,10 @@ jobs:
           ARTIFACTS: ${{ runner.temp }}/artifacts
         run: |
           gh release upload "$GITHUB_REF_NAME" \
-            "$ARTIFACTS/macos-binaries/vmlinuz-aarch64" \
-            "$ARTIFACTS/macos-binaries/initramfs-minimal-aarch64.cpio.gz" \
-            "$ARTIFACTS/macos-binaries/initramfs-node-aarch64.cpio.gz" \
-            "$ARTIFACTS/macos-binaries/initramfs-standard-aarch64.cpio.gz" \
+            "$ARTIFACTS/linux-assets/vmlinuz-aarch64" \
+            "$ARTIFACTS/linux-assets/initramfs-minimal-aarch64.cpio.gz" \
+            "$ARTIFACTS/linux-assets/initramfs-node-aarch64.cpio.gz" \
+            "$ARTIFACTS/linux-assets/initramfs-standard-aarch64.cpio.gz" \
             "$ARTIFACTS/linux-assets/dew-agent-linux-amd64" \
             "$ARTIFACTS/linux-assets/dew-agent-linux-arm64" \
             "$ARTIFACTS/linux-assets/dew-windows-x86_64.exe" \

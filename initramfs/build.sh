@@ -19,13 +19,31 @@ CACHE="${SCRIPT_DIR}/cache"
 
 ALPINE_VERSION="3.21"
 ALPINE_MINOR="3.21.3"
-ARCH="$(uname -m)"
 
-case "$ARCH" in
-    x86_64)  ALPINE_ARCH="x86_64"; GO_ARCH="amd64" ;;
-    arm64)   ALPINE_ARCH="aarch64"; GO_ARCH="arm64" ;;
-    aarch64) ALPINE_ARCH="aarch64"; GO_ARCH="arm64" ;;
-    *)       echo "unsupported arch: $ARCH"; exit 1 ;;
+# Two distinct architectures:
+#   HOST_ARCH   - the machine running this script (determines which
+#                 apk-tools-static binary we need to execute, and what
+#                 the Go toolchain runs natively)
+#   TARGET_ARCH - the arch the initramfs is being built FOR; the kernel
+#                 APK, package install via `apk --arch`, and Go cross-
+#                 compile target all key off this.
+# Setting TARGET_ARCH=aarch64 on an x86_64 Linux runner cross-builds the
+# aarch64 image (apk-tools-static --arch handles cross-arch package
+# install since --no-scripts skips guest-arch hooks; Go cross-compiles
+# trivially). This lets the Linux release runner produce both arches
+# with full bake support, instead of leaving aarch64 to the macOS
+# runner where apk-tools-static doesn't run.
+HOST_ARCH="$(uname -m)"
+TARGET_ARCH="${TARGET_ARCH:-$HOST_ARCH}"
+case "$TARGET_ARCH" in
+    x86_64|amd64)    ALPINE_ARCH="x86_64"; GO_ARCH="amd64" ;;
+    aarch64|arm64)   ALPINE_ARCH="aarch64"; GO_ARCH="arm64" ;;
+    *) echo "unsupported TARGET_ARCH: $TARGET_ARCH"; exit 1 ;;
+esac
+case "$HOST_ARCH" in
+    x86_64|amd64)    HOST_ALPINE_ARCH="x86_64" ;;
+    aarch64|arm64)   HOST_ALPINE_ARCH="aarch64" ;;
+    *) echo "unsupported HOST_ARCH: $HOST_ARCH"; exit 1 ;;
 esac
 
 ROOTFS_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/${ALPINE_ARCH}/alpine-minirootfs-${ALPINE_MINOR}-${ALPINE_ARCH}.tar.gz"
@@ -58,7 +76,7 @@ echo "Rootfs: $(du -sh "$WORK_DIR" | awk '{print $1}')"
 
 # --- Step 2: Kernel + modules ---
 echo "--- Step 2: Alpine virt kernel + modules ---"
-KERNEL_APK="${CACHE}/linux-virt.apk"
+KERNEL_APK="${CACHE}/linux-virt-${ALPINE_ARCH}.apk"
 if [ ! -f "$KERNEL_APK" ]; then
     curl -fSL -o "$KERNEL_APK" "$KERNEL_APK_URL"
 else
@@ -235,12 +253,15 @@ echo "Agent: $(ls -lh "${WORK_DIR}/usr/local/bin/dew-agent" | awk '{print $5}')"
 # on first boot.
 
 prepare_apk_static() {
-    local apk_static_bin="${CACHE}/apk.static"
+    # apk-tools-static is a native binary, so it must match the HOST
+    # arch — not the build target. With --arch=TARGET on the install
+    # command, apk happily cross-installs guest-arch packages.
+    local apk_static_bin="${CACHE}/apk.static-${HOST_ALPINE_ARCH}"
     if [ -x "$apk_static_bin" ]; then
         echo "$apk_static_bin"
         return 0
     fi
-    local listing_url="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${ALPINE_ARCH}/"
+    local listing_url="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${HOST_ALPINE_ARCH}/"
     local apk_name
     apk_name=$(curl -sL "$listing_url" | grep -o 'apk-tools-static-[0-9][^"]*\.apk' | head -1)
     if [ -z "$apk_name" ]; then
@@ -334,7 +355,7 @@ fi
 EXTRA_PKGS="$EXTRA_PKGS iptables libxtables libmnl libnftnl"
 echo "Installing$EXTRA_PKGS..."
 for pkg in $EXTRA_PKGS; do
-    APK_FILE="${CACHE}/${pkg}.apk"
+    APK_FILE="${CACHE}/${pkg}-${ALPINE_ARCH}.apk"
     if [ ! -f "$APK_FILE" ]; then
         # Alpine ships an unrelated `iptables-0.7.x` placeholder alongside
         # the real `iptables-1.8.x`; require major>=1 so we don't pick
