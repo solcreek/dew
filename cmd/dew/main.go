@@ -1487,33 +1487,41 @@ func cmdUp(args []string) error {
 	totalElapsed := time.Since(start)
 	totalMs := totalElapsed.Milliseconds()
 	if healthy {
+		// `ready` is the canonical signal an agent should grep for.
+		// Always emit it in machine-readable modes — agents shouldn't
+		// have to scrape "http://" out of human progress lines (which
+		// can collide with kernel dmesg noise like the X.509 cert log).
+		readyEvent := map[string]interface{}{
+			"type": "ready", "url": url, "port": proj.Port,
+			"framework": proj.Framework, "elapsed_ms": totalMs,
+		}
+		// emit() fires in either --events or --json mode (see the
+		// emit closure above). So one call is enough; no double-print.
+		emit(readyEvent)
+		// Keep the legacy health event for tools wired to the old name.
 		emit(map[string]interface{}{
 			"type": "health", "status": "ok",
 			"url": url, "elapsed_ms": totalMs,
 		})
-		if flagJSON {
-			enc := json.NewEncoder(os.Stdout)
-			enc.Encode(map[string]interface{}{
-				"status": "ready", "url": url, "port": proj.Port,
-				"framework": proj.Framework, "elapsed_ms": totalMs,
-			})
-		} else if spin != nil {
+		if !flagJSON && !flagEvents && spin != nil {
 			spin.Done(url)
 			fmt.Fprintf(os.Stderr, "  Ctrl+C to stop\n")
 		}
 	} else {
+		// Same shape as ready, but with type=timeout — lets an agent
+		// distinguish "URL is up" from "URL was tried, server didn't
+		// answer in time" with a single grep.
+		timeoutEvent := map[string]interface{}{
+			"type": "timeout", "url": url, "port": proj.Port,
+			"framework": proj.Framework, "elapsed_ms": totalMs,
+			"hint": "server may still be starting, try opening the URL manually",
+		}
+		emit(timeoutEvent)
 		emit(map[string]interface{}{
 			"type": "health", "status": "timeout",
 			"url": url, "elapsed_ms": totalMs,
-			"suggestion": "server may still be starting, try opening the URL manually",
 		})
-		if flagJSON {
-			enc := json.NewEncoder(os.Stdout)
-			enc.Encode(map[string]interface{}{
-				"status": "timeout", "url": url, "port": proj.Port,
-				"framework": proj.Framework, "elapsed_ms": totalMs,
-			})
-		} else if spin != nil {
+		if !flagJSON && !flagEvents && spin != nil {
 			spin.Timeout(url)
 			fmt.Fprintf(os.Stderr, "  Ctrl+C to stop\n")
 		}
