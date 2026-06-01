@@ -19,7 +19,9 @@ import (
 	"github.com/solcreek/dew/pkg/dewerr"
 )
 
-const registryBase = "https://raw.githubusercontent.com/solcreek/dew-apps/main"
+// registryBase is the dew-apps registry root. var (not const) so
+// tests can point it at httptest servers without hitting the network.
+var registryBase = "https://raw.githubusercontent.com/solcreek/dew-apps/main"
 
 type appManifest struct {
 	Name        string            `json:"name"`
@@ -215,9 +217,35 @@ func cmdAppRun(args []string) error {
 
 	if flagDryRun {
 		exposedPort := manifest.Port
-		if hostPort > 0 { exposedPort = hostPort }
+		if hostPort > 0 {
+			exposedPort = hostPort
+		}
+		if flagJSON {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"ok":             true,
+				"schema_version": schemaVersion,
+				"data": map[string]any{
+					"type":        "dry-run",
+					"app":         manifest.Name,
+					"version":     manifest.Version,
+					"runtime":     runtime,
+					"image":       manifest.DockerImage,
+					"port":        manifest.Port,
+					"host_port":   exposedPort,
+					"would_pull":  manifest.DockerImage != "",
+					"would_start": false,
+				},
+			})
+		}
 		fmt.Fprintf(os.Stderr, "  Dry run:\n")
-		fmt.Fprintf(os.Stderr, "  Would pull %s\n", manifest.DockerImage)
+		// Empty image case (node-runtime apps): say so explicitly
+		// rather than "Would pull " with a blank line — the agent
+		// report flagged uptime-kuma's empty pull as confusing.
+		if manifest.DockerImage != "" {
+			fmt.Fprintf(os.Stderr, "  Would pull %s\n", manifest.DockerImage)
+		} else {
+			fmt.Fprintf(os.Stderr, "  No image to pull (%s runtime — built from source)\n", runtime)
+		}
 		fmt.Fprintf(os.Stderr, "  Would expose port %d\n", exposedPort)
 		fmt.Fprintf(os.Stderr, "  No containers started.\n")
 		return nil
@@ -365,6 +393,47 @@ func cmdInstallList() error {
 		Apps []string `json:"apps"`
 	}
 	json.NewDecoder(resp.Body).Decode(&reg)
+
+	// --json: emit a single object with the full per-app manifests an
+	// agent might want to filter on (port, runtime, version, image).
+	// One round-trip per app to fetch the manifest matches the human
+	// path; this isn't a hot loop and the registry is small.
+	if flagJSON {
+		type appEntry struct {
+			Name        string   `json:"name"`
+			Version     string   `json:"version"`
+			Description string   `json:"description"`
+			Runtime     string   `json:"runtime"`
+			Type        string   `json:"type"`
+			Port        int      `json:"port"`
+			Image       string   `json:"image,omitempty"`
+			Tags        []string `json:"tags,omitempty"`
+			Error       string   `json:"error,omitempty"`
+		}
+		entries := make([]appEntry, 0, len(reg.Apps))
+		for _, name := range reg.Apps {
+			m, err := fetchManifest(name)
+			if err != nil {
+				entries = append(entries, appEntry{Name: name, Error: err.Error()})
+				continue
+			}
+			entries = append(entries, appEntry{
+				Name:        m.Name,
+				Version:     m.Version,
+				Description: m.Description,
+				Runtime:     m.Runtime,
+				Type:        m.Type,
+				Port:        m.Port,
+				Image:       m.DockerImage,
+				Tags:        m.Tags,
+			})
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"ok":             true,
+			"schema_version": schemaVersion,
+			"data":           map[string]any{"apps": entries},
+		})
+	}
 
 	fmt.Printf("Available apps (%d):\n\n", len(reg.Apps))
 	for _, name := range reg.Apps {
