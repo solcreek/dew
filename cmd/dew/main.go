@@ -840,24 +840,41 @@ func cmdRun(args []string) error {
 	}
 
 	if flagJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		enc.Encode(result)
-	} else {
-		if result.Stdout != "" {
-			fmt.Print(result.Stdout)
-		}
-		if result.Stderr != "" {
-			fmt.Fprint(os.Stderr, result.Stderr)
-		}
-		fmt.Fprintf(os.Stderr, "dew: exit code %d\n", result.ExitCode)
+		// Under --json, dew exits 0 if dew itself succeeded (VM came up,
+		// command dispatched, result captured). The guest's exit code
+		// lives inside `data.guest_exit_code` so an agent reading the
+		// JSON never has to disambiguate "did dew fail or did the guest
+		// fail" from $?. See docs/exit-codes.md.
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"ok":             true,
+			"schema_version": schemaVersion,
+			"data": map[string]any{
+				"guest_exit_code": result.ExitCode,
+				"stdout":          result.Stdout,
+				"stderr":          result.Stderr,
+			},
+		})
+		d.Stop(context.Background())
+		hostReader.Close()
+		hostWriter.Close()
+		return nil
 	}
+
+	if result.Stdout != "" {
+		fmt.Print(result.Stdout)
+	}
+	if result.Stderr != "" {
+		fmt.Fprint(os.Stderr, result.Stderr)
+	}
+	fmt.Fprintf(os.Stderr, "dew: exit code %d\n", result.ExitCode)
 	exitCode := result.ExitCode
 
 	d.Stop(context.Background())
 	hostReader.Close()
 	hostWriter.Close()
 
+	// Shell mode: pass the guest's exit code through to the host shell
+	// so $? carries it. Mirror docker/podman/kubectl exec.
 	if exitCode != 0 {
 		os.Exit(exitCode)
 	}
@@ -1409,26 +1426,57 @@ func cmdDown() error {
 }
 
 func cmdExec(args []string) error {
+	// Strip --json so it isn't joined into the guest command.
+	wantJSON := flagJSON
+	filtered := args[:0]
+	for _, a := range args {
+		if a == "--json" {
+			wantJSON = true
+			flagJSON = true
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	args = filtered
 	if len(args) == 0 {
-		return fmt.Errorf("usage: dew exec <cmd...>")
+		return dewerr.New(dewerr.CodeUsage, "usage: dew exec <cmd...>")
 	}
 	cmd := strings.Join(args, " ")
 
 	sockPath := daemon.SocketPath("")
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
-		return fmt.Errorf("no running VM (socket %s): %w", sockPath, err)
+		return dewerr.Wrapf(err, dewerr.CodeConflict, "no running VM (socket %s)", sockPath)
 	}
 	defer conn.Close()
 
 	req := daemon.ExecRequest{Command: cmd}
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
-		return fmt.Errorf("send: %w", err)
+		return dewerr.Wrap(err, dewerr.CodeNetwork, "send")
 	}
 
 	var resp vsockProto.ExecResponse
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-		return fmt.Errorf("recv: %w", err)
+		return dewerr.Wrap(err, dewerr.CodeNetwork, "recv")
+	}
+
+	if wantJSON {
+		// JSON mode: dew exits 0 if dew itself succeeded; the guest's
+		// exit code lives in data.guest_exit_code. See cmdRun.
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"ok":             resp.Error == "",
+			"schema_version": schemaVersion,
+			"data": map[string]any{
+				"guest_exit_code": resp.ExitCode,
+				"stdout":          resp.Stdout,
+				"stderr":          resp.Stderr,
+			},
+		})
+		if resp.Error != "" {
+			// dew-side problem, not guest exit — surface as an error.
+			return dewerr.New(dewerr.CodeGeneric, resp.Error)
+		}
+		return nil
 	}
 
 	if resp.Stdout != "" {
@@ -1438,8 +1486,9 @@ func cmdExec(args []string) error {
 		fmt.Fprint(os.Stderr, resp.Stderr)
 	}
 	if resp.Error != "" {
-		return fmt.Errorf("%s", resp.Error)
+		return dewerr.New(dewerr.CodeGeneric, resp.Error)
 	}
+	// Shell mode: passthrough guest exit (mirror docker exec / kubectl exec).
 	if resp.ExitCode != 0 {
 		os.Exit(resp.ExitCode)
 	}
