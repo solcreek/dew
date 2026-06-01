@@ -841,6 +841,41 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// summariseApkFailure picks a one-line hint out of apk's stderr/stdout
+// for display in the spinner. Full output is preserved in the
+// --events stream.
+func summariseApkFailure(out string) string {
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return "apk install failed (no output)"
+	}
+	switch {
+	case strings.Contains(out, "Could not resolve") ||
+		strings.Contains(out, "Name or service not known") ||
+		strings.Contains(out, "no address associated") ||
+		strings.Contains(strings.ToLower(out), "temporary failure in name resolution"):
+		return "apk install failed — DNS/network unreachable"
+	case strings.Contains(out, "no such file or directory") ||
+		strings.Contains(out, "ERROR: unable to select packages"):
+		return "apk install failed — package name or repo error"
+	case strings.Contains(out, "Permission denied"):
+		return "apk install failed — permission denied (unexpected; report this)"
+	default:
+		// Show the last non-empty line; usually the most useful.
+		lines := strings.Split(out, "\n")
+		for i := len(lines) - 1; i >= 0; i-- {
+			l := strings.TrimSpace(lines[i])
+			if l != "" {
+				if len(l) > 100 {
+					l = l[:97] + "..."
+				}
+				return "apk install failed — " + l
+			}
+		}
+		return "apk install failed"
+	}
+}
+
 func generateToken() string {
 	b := make([]byte, 16)
 	rand.Read(b)
@@ -1070,7 +1105,7 @@ func cmdUp(args []string) error {
 				10*time.Minute)
 			return res, err, time.Since(t).Milliseconds()
 		}
-		installBuildTools := func(reason string) {
+		installBuildTools := func(reason string) (success bool) {
 			emit(map[string]interface{}{"type": "build-tools", "status": "starting", "reason": reason})
 			if spin != nil {
 				spin.Step(fmt.Sprintf("installing build tools (%s)", reason))
@@ -1079,16 +1114,48 @@ func cmdUp(args []string) error {
 			// build-base = gcc + g++ + make + musl-dev + binutils; python3
 			// is required by node-gyp. apk install over the network on
 			// musl is typically 25-40 s on aarch64, 20-35 s on x86_64.
-			_, _ = execInVMTimeout(
-				"apk update >/dev/null 2>&1 && apk add --no-cache build-base python3 >/dev/null 2>&1",
+			res, execErr := execInVMTimeout(
+				"apk update 2>&1 && apk add --no-cache build-base python3 2>&1",
 				5*time.Minute)
+			elapsed := time.Since(t).Milliseconds()
+			failed := execErr != nil || (res != nil && res.ExitCode != 0)
+			if failed {
+				stderr := ""
+				if res != nil {
+					stderr = res.Stderr
+					if stderr == "" {
+						stderr = res.Stdout
+					}
+				} else if execErr != nil {
+					stderr = execErr.Error()
+				}
+				emit(map[string]interface{}{
+					"type": "build-tools", "status": "failed",
+					"reason": reason, "elapsed_ms": elapsed, "error": stderr,
+				})
+				if spin != nil {
+					// Surface a one-line hint; full stderr stays in the
+					// --events stream / JSON output.
+					hint := summariseApkFailure(stderr)
+					spin.Fail(hint)
+				}
+				return false
+			}
 			emit(map[string]interface{}{
 				"type": "build-tools", "status": "done",
-				"elapsed_ms": time.Since(t).Milliseconds(),
+				"reason": reason, "elapsed_ms": elapsed,
 			})
+			return true
 		}
 
+		// Pre-flight install if the lockfile names anything known to need
+		// node-gyp. We treat a build-tools install failure as fatal-ish:
+		// surface it, but still try `npm install` — sharp et al. usually
+		// have prebuilt binaries, so the install may still succeed
+		// (network was just down for apk briefly).
+		var buildToolsTried bool
 		if needs, matched := detect.NeedsNativeBuildTools(dir); needs {
+			buildToolsTried = true
 			installBuildTools(strings.Join(matched, ", "))
 		}
 
@@ -1099,16 +1166,19 @@ func cmdUp(args []string) error {
 		result, err, installMs := runInstall()
 
 		// Reactive fallback: if the first install failed with what looks
-		// like a missing-toolchain error, install build-base + python3
-		// and retry once. Catches projects where the native dep is
-		// transitive or uses an unlisted package name.
-		if err == nil && result != nil && result.ExitCode != 0 &&
+		// like a missing-toolchain error AND we haven't tried installing
+		// the toolchain yet, install build-base + python3 and retry once.
+		// Catches projects where the native dep is transitive or uses an
+		// unlisted package name.
+		if !buildToolsTried &&
+			err == nil && result != nil && result.ExitCode != 0 &&
 			detect.ScanInstallStderrForNativeBuild(result.Stderr) {
-			installBuildTools("npm install failed - needs native compile")
-			if spin != nil {
-				spin.Step("installing deps (retry)")
+			if installBuildTools("npm install needs native compile") {
+				if spin != nil {
+					spin.Step("installing deps (retry)")
+				}
+				result, err, installMs = runInstall()
 			}
-			result, err, installMs = runInstall()
 		}
 
 		if err != nil || (result != nil && result.ExitCode != 0) {
@@ -1116,8 +1186,15 @@ func cmdUp(args []string) error {
 			suggestion := ""
 			if result != nil {
 				errMsg = result.Stderr
-				if strings.Contains(errMsg, "peer dep") || strings.Contains(errMsg, "ERESOLVE") {
+				switch {
+				case strings.Contains(errMsg, "peer dep") || strings.Contains(errMsg, "ERESOLVE"):
 					suggestion = "try adding --legacy-peer-deps to install command"
+				case detect.ScanInstallStderrForNativeBuild(errMsg):
+					if buildToolsTried {
+						suggestion = "build tools installed but compile still failed; check stderr above"
+					} else {
+						suggestion = "looks like a missing-toolchain failure dew didn't catch; please file an issue with the package name"
+					}
 				}
 			}
 			emit(map[string]interface{}{
@@ -1125,7 +1202,11 @@ func cmdUp(args []string) error {
 				"elapsed_ms": installMs, "error": errMsg, "suggestion": suggestion,
 			})
 			if spin != nil {
-				spin.Fail("install failed")
+				if suggestion != "" {
+					spin.Fail(suggestion)
+				} else {
+					spin.Fail("install failed")
+				}
 			}
 		} else {
 			emit(map[string]interface{}{"type": "install", "status": "done", "elapsed_ms": installMs})
