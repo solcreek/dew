@@ -466,7 +466,7 @@ Output:
   --json        Machine-readable JSON (all commands)
   --events      NDJSON lifecycle stream
   --stream      Stream stdout/stderr
-  --dry-run     Validate without executing (deploy, app run, server create)
+  --dry-run     Validate without executing (up, deploy, app run, server create)
 
 Network (for commands that take --network):
   --network-policy open|restricted
@@ -619,12 +619,30 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 			flagStream = true
 		case "--json":
 			flagJSON = true
+		case "--dry-run":
+			flagDryRun = true
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				return cfg, nil, fmt.Errorf("unknown flag %q", args[i])
 			}
 			remaining = args[i:]
-			return cfg, remaining, nil
+			// Continue scanning past the first positional so flags
+			// appearing AFTER it still get parsed. Without this,
+			// `dew up <dir> --dry-run` silently dropped --dry-run.
+			collected := []string{args[i]}
+			for j := i + 1; j < len(args); j++ {
+				if strings.HasPrefix(args[j], "-") {
+					// Recurse the remaining flag stream so each
+					// known flag still gets its case-arm.
+					_, _, err := parseFlags(args[j:])
+					if err != nil {
+						return cfg, nil, err
+					}
+					break
+				}
+				collected = append(collected, args[j])
+			}
+			return cfg, collected, nil
 		}
 	}
 
@@ -1037,6 +1055,51 @@ func cmdUp(args []string) error {
 	if flagWith != "" && flagProfile != "standard" {
 		flagProfile = "standard"
 	}
+
+	// --dry-run: print the resolved plan and exit. No VM boot, no
+	// asset download, no install. The plan is the same data we'd
+	// otherwise act on, so an agent piping --json | jq can preview
+	// exactly what will happen.
+	if flagDryRun {
+		plan := map[string]interface{}{
+			"type":          "dry-run",
+			"project_dir":   absDir,
+			"framework":     proj.Framework,
+			"runtime":       proj.Runtime,
+			"package_mgr":   proj.PackageMgr,
+			"profile":       flagProfile,
+			"install_cmd":   proj.InstallCmd,
+			"dev_cmd":       proj.DevCmd,
+			"port":          proj.Port,
+			"cpus":          parsedCfg.CPUs,
+			"memory_mb":     parsedCfg.MemoryMB,
+			"with_services": flagWith,
+			"would_boot":    false,
+		}
+		if flagJSON || flagEvents {
+			b, _ := json.Marshal(plan)
+			fmt.Println(string(b))
+		} else {
+			fmt.Fprintf(os.Stderr, "  dry run — would do:\n")
+			fmt.Fprintf(os.Stderr, "    project: %s (%s)\n", absDir, proj.Framework)
+			fmt.Fprintf(os.Stderr, "    profile: %s\n", flagProfile)
+			if proj.InstallCmd != "" {
+				fmt.Fprintf(os.Stderr, "    install: %s\n", proj.InstallCmd)
+			}
+			if proj.DevCmd != "" {
+				fmt.Fprintf(os.Stderr, "    dev:     %s\n", proj.DevCmd)
+			}
+			if proj.Port > 0 {
+				fmt.Fprintf(os.Stderr, "    port:    %d → host %d\n", proj.Port, proj.Port)
+			}
+			if flagWith != "" {
+				fmt.Fprintf(os.Stderr, "    with:    %s\n", flagWith)
+			}
+			fmt.Fprintf(os.Stderr, "\n  No VM started. No changes made.\n\n")
+		}
+		return nil
+	}
+
 	cfg := vm.Config{
 		CPUs:     parsedCfg.CPUs,
 		MemoryMB: parsedCfg.MemoryMB,
