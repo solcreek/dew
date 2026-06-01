@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-05-31
+
+### Fixed
+
+- `dew up` end-to-end aha works again. v0.7.8 fixed DHCP but a deeper
+  layer was still broken: the guest agent's exec timeout was 30 s
+  while `npm install` of a fresh Vite + React project legitimately
+  takes 30-60 s, so install was being killed mid-flight and reported
+  as "install failed" with an empty error message. The dev server
+  then never had `node_modules` to start from. Install now has a
+  10-minute timeout, matching the bounded-but-long nature of the
+  call.
+- First-boot apk install of `build-base` and `python3` no longer
+  blocks the guest agent from coming up. The released node-profile
+  initramfs bakes node + npm, so only the optional native-build
+  tooling is fetched at first boot; that fetch now runs in the
+  background while `dew up`'s `npm install` proceeds in parallel.
+  Cold-start `dew up` on a Vite project went from "never reaches the
+  URL" to a reliable 40-65 s end-to-end. Verified over 10 fresh
+  cold boots, 10/10 ✓.
+
+### Tests
+
+- New smoke-test entry runs the actual `dew up` aha — scaffolds a
+  Vite + React project, boots, asserts `curl http://localhost:5173/`
+  returns the React HTML within 180 s. Catches end-to-end layered
+  failures that the per-component tests can't reach.
+
 ## [0.7.8] - 2026-05-31
 
 Same user-visible scope as 0.7.7 plus two regressions found right

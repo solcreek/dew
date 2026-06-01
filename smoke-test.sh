@@ -193,6 +193,57 @@ else
     test_result "node: first-boot DHCP" "skip"
 fi
 
+# --- Test 6c: `dew up` aha — boot, install, dev-server, curl from host ---
+# End-to-end regression guard. Scaffolds a fresh Vite+React project,
+# runs `dew up`, asserts `curl http://localhost:5173/` returns the
+# React HTML within 180 s. Catches the layered failures the prior
+# tests can't: vsock auth race during first-boot apk install, dev
+# server detachment, --host 0.0.0.0 binding, node_modules bind mount.
+if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ] && command -v npm >/dev/null 2>&1; then
+    pkill -9 -f 'dew start\|dew run\|dew up' 2>/dev/null
+    lsof -ti:5173 2>/dev/null | xargs -r kill -9 2>/dev/null
+    sleep 1
+    rm -f ~/.local/state/dew/default.sock ~/.local/share/dew/node.img
+    PROJ=$(mktemp -d -t dew-smoke-up)
+    (
+        cd "$PROJ"
+        npm create vite@latest my-app -- --template react >/dev/null 2>&1
+    )
+    UP_OK=0
+    UP_T=0
+    if [ -d "$PROJ/my-app" ]; then
+        (
+            cd "$PROJ/my-app"
+            $DEW up --kernel "$KERNEL" --initrd "$INITRD_NODE" >/tmp/dew-smoke-up.log 2>&1
+        ) &
+        UP_PID=$!
+        START=$(date +%s)
+        for i in $(seq 1 90); do
+            sleep 2
+            code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://localhost:5173/ 2>/dev/null || echo 000)
+            if [ "$code" = "200" ] || [ "$code" = "304" ]; then
+                BODY=$(curl -sS --max-time 5 http://localhost:5173/ 2>/dev/null)
+                if echo "$BODY" | grep -q '<!doctype html>'; then
+                    UP_OK=1
+                    UP_T=$(($(date +%s)-START))
+                    break
+                fi
+            fi
+        done
+        kill -9 $UP_PID 2>/dev/null; wait $UP_PID 2>/dev/null
+        pkill -9 -f 'dew start\|dew up' 2>/dev/null
+        rm -f ~/.local/state/dew/default.sock
+    fi
+    rm -rf "$PROJ"
+    if [ "$UP_OK" = "1" ]; then
+        test_result "dew up: vite project serves React HTML in ${UP_T}s" "pass"
+    else
+        test_result "dew up: vite project never served (waited 180s)" "fail"
+    fi
+else
+    test_result "dew up: vite e2e" "skip"
+fi
+
 # --- Test 7: Detect (unit-level) ---
 GO_TEST=$(cd "$(dirname "$0")" && go test ./internal/detect/ -count=1 2>&1 | tail -1)
 if echo "$GO_TEST" | grep -q "ok"; then

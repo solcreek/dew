@@ -1025,13 +1025,16 @@ func cmdUp(args []string) error {
 	}
 	dmn.Start()
 
-	execInVM := func(cmd string) (*RunResult, error) {
+	execInVMTimeout := func(cmd string, timeout time.Duration) (*RunResult, error) {
 		conn, err := connectVsock(d, cfg.VsockPort)
 		if err != nil {
 			return nil, err
 		}
 		defer conn.Close()
-		return execVsockConn(conn, token, cmd)
+		return execVsockConnTimeout(conn, token, cmd, timeout)
+	}
+	execInVM := func(cmd string) (*RunResult, error) {
+		return execInVMTimeout(cmd, 0)
 	}
 
 	// Project is mounted via virtiofs at /app (live sync from host).
@@ -1052,10 +1055,16 @@ func cmdUp(args []string) error {
 			spin.Step("installing deps")
 		}
 		t := time.Now()
-		result, err := execInVM(
-			"mkdir -p /tmp/nm /app/node_modules && " +
-				"mountpoint -q /app/node_modules || mount --bind /tmp/nm /app/node_modules && " +
-				"cd /app && " + proj.InstallCmd)
+		// `npm install` on a fresh Vite + React tree runs ~15-60 s; the
+		// agent's default 30 s timeout was killing it mid-fetch and
+		// surfacing as "install failed" with an empty error string.
+		// Give project installs up to 10 minutes — they're long-running
+		// but bounded, and the user can Ctrl+C dew up if truly stuck.
+		result, err := execInVMTimeout(
+			"mkdir -p /tmp/nm /app/node_modules && "+
+				"mountpoint -q /app/node_modules || mount --bind /tmp/nm /app/node_modules && "+
+				"cd /app && "+proj.InstallCmd,
+			10*time.Minute)
 		installMs := time.Since(t).Milliseconds()
 		if err != nil || (result != nil && result.ExitCode != 0) {
 			errMsg := ""
@@ -1274,7 +1283,18 @@ func cmdExec(args []string) error {
 }
 
 func execVsockConn(conn net.Conn, token string, cmd string) (*RunResult, error) {
+	return execVsockConnTimeout(conn, token, cmd, 0)
+}
+
+// execVsockConnTimeout sends a per-call timeout to the guest agent so
+// long-running commands (`npm install`, `pip install`, the dependency
+// install path in `dew up`) don't trip the agent's default 30 s exec
+// timeout. Pass 0 to use the agent default.
+func execVsockConnTimeout(conn net.Conn, token string, cmd string, timeout time.Duration) (*RunResult, error) {
 	req := vsockProto.ExecRequest{Token: token, Command: "/bin/sh", Args: []string{"-c", cmd}}
+	if timeout > 0 {
+		req.TimeoutMs = int(timeout / time.Millisecond)
+	}
 	if err := vsockProto.WriteJSON(conn, &req); err != nil {
 		return nil, err
 	}

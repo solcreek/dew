@@ -625,35 +625,6 @@ mkdir -p /etc/sudoers.d 2>/dev/null || true
 echo "dew ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/dew 2>/dev/null || true
 chmod 440 /etc/sudoers.d/dew 2>/dev/null || true
 
-# Per-runtime first-boot install. Whatever wasn't baked into the
-# initramfs at build time gets pulled here. With a fully-baked
-# Linux build (nodejs, npm pre-installed) this block is a no-op for
-# the heavy packages — only the optional native-build tools install.
-if [ -f /.dew-node-profile ]; then
-    NEED_APK=""
-    command -v node    >/dev/null 2>&1 || NEED_APK="$NEED_APK nodejs npm"
-    command -v gcc     >/dev/null 2>&1 || NEED_APK="$NEED_APK build-base"
-    command -v python3 >/dev/null 2>&1 || NEED_APK="$NEED_APK python3"
-    if [ -n "$NEED_APK" ]; then
-        echo "dew: installing$NEED_APK (first boot)..."
-        apk update 2>/dev/null || true
-        apk upgrade --no-cache musl 2>&1 | tail -1
-        apk add --no-cache $NEED_APK 2>&1 | tail -1
-    fi
-fi
-
-if [ -f /.dew-python-profile ]; then
-    NEED_APK=""
-    command -v python3 >/dev/null 2>&1 || NEED_APK="$NEED_APK python3 py3-pip"
-    command -v gcc     >/dev/null 2>&1 || NEED_APK="$NEED_APK build-base"
-    if [ -n "$NEED_APK" ]; then
-        echo "dew: installing$NEED_APK (first boot)..."
-        apk update 2>/dev/null || true
-        apk upgrade --no-cache musl 2>&1 | tail -1
-        apk add --no-cache $NEED_APK 2>&1 | tail -1
-    fi
-fi
-
 # containerd (standard profile, now on ext4 rootfs)
 if [ -x /usr/local/bin/containerd ]; then
     # CNI bridge networking modules. Without these the bridge plugin fails
@@ -679,14 +650,72 @@ if [ -x /usr/local/bin/containerd ]; then
     echo "containerd: started"
 fi
 
-# dew-agent
-# VM is the isolation boundary — run as root by default for full access.
-# Use DEW_EXEC_USER=dew for untrusted code sandboxing.
+# dew-agent. Start BEFORE the per-runtime apk install below — the
+# released node profile bakes nodejs+npm into the initramfs, so the
+# only first-boot install left is build-base + python3 (optional
+# native-build deps). cmdUp's `npm install` only needs node+npm and
+# can proceed in parallel; making it wait through a 30-60 s apk run
+# breaks `dew up` end-to-end (vsock auth races, install reported as
+# failed, dev server never reachable).
+# VM is the isolation boundary — run agent as root by default.
+# DEW_EXEC_USER=dew opts into unprivileged-user exec for untrusted code.
 AGENT_ENV=""
 if [ -x /usr/local/bin/dew-agent ] && [ -e /dev/vsock ]; then
     env $AGENT_ENV /usr/local/bin/dew-agent >/dev/null 2>&1 &
     echo "dew-agent: vsock ready"
 fi
+
+# Per-runtime first-boot install. Split into critical (the runtime
+# itself, blocking) and optional (build-base + python3, backgrounded).
+# The released Linux-CI initramfs bakes node+npm, so the critical
+# branch is a no-op and cmdUp's `npm install` proceeds in parallel
+# with the slow build-base/python3 fetch. The Darwin-local build path
+# can't bake (no apk-tools-static for the host's libc), so node falls
+# into the critical branch and still blocks — this is only us during
+# development, not what users see from the release.
+node_critical_apk() {
+    local CRITICAL_APK="" OPTIONAL_APK=""
+    command -v node    >/dev/null 2>&1 || CRITICAL_APK="$CRITICAL_APK nodejs npm"
+    command -v gcc     >/dev/null 2>&1 || OPTIONAL_APK="$OPTIONAL_APK build-base"
+    command -v python3 >/dev/null 2>&1 || OPTIONAL_APK="$OPTIONAL_APK python3"
+    if [ -n "$CRITICAL_APK" ]; then
+        echo "dew: installing$CRITICAL_APK (first boot)..."
+        apk update 2>/dev/null || true
+        apk upgrade --no-cache musl 2>&1 | tail -1
+        apk add --no-cache $CRITICAL_APK 2>&1 | tail -1
+    fi
+    if [ -n "$OPTIONAL_APK" ]; then
+        echo "dew: installing$OPTIONAL_APK (background)..."
+        (
+            [ -z "$CRITICAL_APK" ] && apk update >/dev/null 2>&1
+            apk add --no-cache $OPTIONAL_APK >/dev/null 2>&1
+            echo "dew: background install done:$OPTIONAL_APK"
+        ) &
+    fi
+}
+
+python_critical_apk() {
+    local CRITICAL_APK="" OPTIONAL_APK=""
+    command -v python3 >/dev/null 2>&1 || CRITICAL_APK="$CRITICAL_APK python3 py3-pip"
+    command -v gcc     >/dev/null 2>&1 || OPTIONAL_APK="$OPTIONAL_APK build-base"
+    if [ -n "$CRITICAL_APK" ]; then
+        echo "dew: installing$CRITICAL_APK (first boot)..."
+        apk update 2>/dev/null || true
+        apk upgrade --no-cache musl 2>&1 | tail -1
+        apk add --no-cache $CRITICAL_APK 2>&1 | tail -1
+    fi
+    if [ -n "$OPTIONAL_APK" ]; then
+        echo "dew: installing$OPTIONAL_APK (background)..."
+        (
+            [ -z "$CRITICAL_APK" ] && apk update >/dev/null 2>&1
+            apk add --no-cache $OPTIONAL_APK >/dev/null 2>&1
+            echo "dew: background install done:$OPTIONAL_APK"
+        ) &
+    fi
+}
+
+[ -f /.dew-node-profile ]   && node_critical_apk
+[ -f /.dew-python-profile ] && python_critical_apk
 
 # startup command
 if [ -n "$DEW_CMD" ]; then
