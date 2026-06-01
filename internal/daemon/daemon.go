@@ -29,10 +29,22 @@ type State struct {
 }
 
 // ExecRequest is received from CLI clients over the Unix socket.
+//
+// Two execution modes:
+//   - Command set (legacy / shell mode): treated as a string passed
+//     to /bin/sh -c. Use when the user wrote a single shell string
+//     with metacharacters: dew exec "echo a; echo b".
+//   - Argv set: treated as direct argv; argv[0] is the program,
+//     argv[1:] are its arguments. No shell wrap. Use when the user
+//     structured their input as argv: dew exec sh -c 'echo a; echo b'.
+//
+// When both are set, Argv wins. Older clients that only know about
+// Command still work without changes.
 type ExecRequest struct {
-	Command   string `json:"command"`
-	Stream    bool   `json:"stream,omitempty"`
-	TimeoutMs int    `json:"timeout_ms,omitempty"`
+	Command   string   `json:"command,omitempty"`
+	Argv      []string `json:"argv,omitempty"`
+	Stream    bool     `json:"stream,omitempty"`
+	TimeoutMs int      `json:"timeout_ms,omitempty"`
 }
 
 // SocketDir returns the directory for daemon sockets.
@@ -47,6 +59,34 @@ func SocketPath(name string) string {
 		name = "default"
 	}
 	return filepath.Join(SocketDir(), name+".sock")
+}
+
+// buildVsockExec translates a daemon.ExecRequest into the
+// vsockProto.ExecRequest the guest agent expects. Pure function so it
+// can be unit-tested without a VM or a socket.
+//
+// Argv mode (req.Argv non-empty): direct argv exec. Argv[0] is the
+// program, Argv[1:] are its args. No shell wrap.
+//
+// Shell mode (req.Command set, Argv empty): /bin/sh -c <Command>.
+// Legacy path for clients that send a single shell string.
+func buildVsockExec(req ExecRequest, token string) vsockProto.ExecRequest {
+	if len(req.Argv) > 0 {
+		return vsockProto.ExecRequest{
+			Token:     token,
+			Command:   req.Argv[0],
+			Args:      req.Argv[1:],
+			Stream:    req.Stream,
+			TimeoutMs: req.TimeoutMs,
+		}
+	}
+	return vsockProto.ExecRequest{
+		Token:     token,
+		Command:   "/bin/sh",
+		Args:      []string{"-c", req.Command},
+		Stream:    req.Stream,
+		TimeoutMs: req.TimeoutMs,
+	}
 }
 
 // Start begins listening on a Unix socket, proxying exec requests
@@ -101,14 +141,9 @@ func (s *State) handleClient(conn net.Conn) {
 	}
 	defer vsockConn.Close()
 
-	// Forward exec request to guest
-	execReq := vsockProto.ExecRequest{
-		Token:     s.Token,
-		Command:   "/bin/sh",
-		Args:      []string{"-c", req.Command},
-		Stream:    req.Stream,
-		TimeoutMs: req.TimeoutMs,
-	}
+	// Forward exec request to guest. Argv mode skips the shell wrap;
+	// shell mode wraps Command in /bin/sh -c. See ExecRequest doc.
+	execReq := buildVsockExec(req, s.Token)
 	if err := vsockProto.WriteJSON(vsockConn, &execReq); err != nil {
 		json.NewEncoder(conn).Encode(map[string]string{"error": err.Error()})
 		return

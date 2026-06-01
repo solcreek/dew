@@ -814,14 +814,18 @@ func cmdRun(args []string) error {
 	// somehow don't bring up vsock (rare; older agent builds).
 	go func() { sExec.WaitReady(time.Duration(vsockReadySec) * time.Second) }()
 
-	cmd := strings.Join(cmdArgs, " ")
+	// argv-or-shell decision: 2+ args → exec argv directly (no
+	// outer sh -c wrap). Single arg → shell-wrap so users can still
+	// pass `dew run "echo a; echo b"`. See argvOrShellWrap.
+	execCommand, execArgs := argvOrShellWrap(cmdArgs)
+	cmd := strings.Join(cmdArgs, " ") // retained for the serial-fallback path below, which has no argv mode
 	var result *RunResult
 
 	if tokenSent {
 		conn, err := connectVsock(d, cfg.VsockPort)
 		if err == nil {
 			if flagStream {
-				exitCode, serr := execVsockStream(conn, token, cmd)
+				exitCode, serr := execVsockStreamArgv(conn, token, execCommand, execArgs)
 				conn.Close()
 				d.Stop(context.Background())
 				hostReader.Close()
@@ -834,7 +838,7 @@ func cmdRun(args []string) error {
 				}
 				return nil
 			}
-			result, err = execVsockConn(conn, token, cmd)
+			result, err = execVsockConnArgv(conn, token, execCommand, execArgs, 0)
 			conn.Close()
 		}
 	}
@@ -957,9 +961,13 @@ func generateToken() string {
 }
 
 func execVsockStream(conn net.Conn, token string, cmd string) (int, error) {
+	return execVsockStreamArgv(conn, token, "/bin/sh", []string{"-c", cmd})
+}
+
+func execVsockStreamArgv(conn net.Conn, token, command string, args []string) (int, error) {
 	req := vsockProto.ExecRequest{
 		Type: vsockProto.TypeExec, Token: token, Stream: true,
-		Command: "/bin/sh", Args: []string{"-c", cmd},
+		Command: command, Args: args,
 	}
 	if err := vsockProto.WriteJSON(conn, &req); err != nil {
 		return -1, err
@@ -1584,7 +1592,6 @@ func cmdExec(args []string) error {
 	if len(args) == 0 {
 		return dewerr.New(dewerr.CodeUsage, "usage: dew exec <cmd...>")
 	}
-	cmd := strings.Join(args, " ")
 
 	sockPath := daemon.SocketPath("")
 	conn, err := net.Dial("unix", sockPath)
@@ -1593,7 +1600,14 @@ func cmdExec(args []string) error {
 	}
 	defer conn.Close()
 
-	req := daemon.ExecRequest{Command: cmd}
+	// argv-or-shell: see argvOrShellWrap in cmdRun. 2+ args → argv
+	// path (no double sh -c wrap); 1 arg → legacy shell string.
+	var req daemon.ExecRequest
+	if len(args) >= 2 {
+		req = daemon.ExecRequest{Argv: args}
+	} else {
+		req = daemon.ExecRequest{Command: args[0]}
+	}
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return dewerr.Wrap(err, dewerr.CodeNetwork, "send")
 	}
@@ -1638,6 +1652,31 @@ func cmdExec(args []string) error {
 	return nil
 }
 
+// argvOrShellWrap turns a slice of CLI args into the (command, args)
+// pair we send to the guest agent.
+//
+//   - len >= 2: direct argv. argv[0] is the program, argv[1:] its
+//     args, no shell wrapping. `dew run -- sh -c 'echo a; echo b'`
+//     becomes /bin/sh -c "echo a; echo b" exactly — no outer shell.
+//   - len == 1: legacy shell wrap. Single-arg input like
+//     `dew run "echo a; echo b"` is treated as a shell string and
+//     wrapped in /bin/sh -c.
+//   - len == 0: returns empty pair; caller validates.
+//
+// The rule comes from the principle that a user who has already
+// structured their input as argv knows they're not going through a
+// shell; the only time we should wrap is when there's a single string
+// that the user implicitly expects shell parsing on.
+func argvOrShellWrap(cliArgs []string) (command string, args []string) {
+	if len(cliArgs) == 0 {
+		return "", nil
+	}
+	if len(cliArgs) == 1 {
+		return "/bin/sh", []string{"-c", cliArgs[0]}
+	}
+	return cliArgs[0], cliArgs[1:]
+}
+
 func execVsockConn(conn net.Conn, token string, cmd string) (*RunResult, error) {
 	return execVsockConnTimeout(conn, token, cmd, 0)
 }
@@ -1645,9 +1684,22 @@ func execVsockConn(conn net.Conn, token string, cmd string) (*RunResult, error) 
 // execVsockConnTimeout sends a per-call timeout to the guest agent so
 // long-running commands (`npm install`, `pip install`, the dependency
 // install path in `dew up`) don't trip the agent's default 30 s exec
-// timeout. Pass 0 to use the agent default.
+// timeout. Pass 0 to use the agent default. The cmd is shell-wrapped;
+// for argv-direct exec see execVsockConnArgv.
 func execVsockConnTimeout(conn net.Conn, token string, cmd string, timeout time.Duration) (*RunResult, error) {
-	req := vsockProto.ExecRequest{Token: token, Command: "/bin/sh", Args: []string{"-c", cmd}}
+	return execVsockExec(conn, token, "/bin/sh", []string{"-c", cmd}, timeout)
+}
+
+// execVsockConnArgv runs a program directly in the guest without an
+// implicit /bin/sh -c wrap. Used when the host has CLI argv structured
+// by the user (dew run -- sh -c '...'). See argvOrShellWrap for the
+// argv-vs-shell decision.
+func execVsockConnArgv(conn net.Conn, token, command string, args []string, timeout time.Duration) (*RunResult, error) {
+	return execVsockExec(conn, token, command, args, timeout)
+}
+
+func execVsockExec(conn net.Conn, token, command string, args []string, timeout time.Duration) (*RunResult, error) {
+	req := vsockProto.ExecRequest{Token: token, Command: command, Args: args}
 	if timeout > 0 {
 		req.TimeoutMs = int(timeout / time.Millisecond)
 	}
