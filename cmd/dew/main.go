@@ -1050,22 +1050,67 @@ func cmdUp(args []string) error {
 	// /tmp/nm, regardless of whatever stale tree the host still has
 	// underneath.
 	if proj.InstallCmd != "" {
+		// Pre-flight: does this project's lockfile (or package.json,
+		// pre-install) reference a package that compiles native code?
+		// If so, install build-base + python3 upfront so npm install
+		// doesn't fail mid-flight. If we miss here, the reactive
+		// fallback below catches it from npm's stderr.
+		runInstall := func() (*RunResult, error, int64) {
+			t := time.Now()
+			// `npm install` on a fresh Vite + React tree runs ~15-60 s;
+			// the agent's default 30 s timeout was killing it mid-fetch
+			// and surfacing as "install failed" with an empty error
+			// string. Give project installs up to 10 minutes — they're
+			// long-running but bounded, and the user can Ctrl+C if
+			// truly stuck.
+			res, err := execInVMTimeout(
+				"mkdir -p /tmp/nm /app/node_modules && "+
+					"mountpoint -q /app/node_modules || mount --bind /tmp/nm /app/node_modules && "+
+					"cd /app && "+proj.InstallCmd,
+				10*time.Minute)
+			return res, err, time.Since(t).Milliseconds()
+		}
+		installBuildTools := func(reason string) {
+			emit(map[string]interface{}{"type": "build-tools", "status": "starting", "reason": reason})
+			if spin != nil {
+				spin.Step(fmt.Sprintf("installing build tools (%s)", reason))
+			}
+			t := time.Now()
+			// build-base = gcc + g++ + make + musl-dev + binutils; python3
+			// is required by node-gyp. apk install over the network on
+			// musl is typically 25-40 s on aarch64, 20-35 s on x86_64.
+			_, _ = execInVMTimeout(
+				"apk update >/dev/null 2>&1 && apk add --no-cache build-base python3 >/dev/null 2>&1",
+				5*time.Minute)
+			emit(map[string]interface{}{
+				"type": "build-tools", "status": "done",
+				"elapsed_ms": time.Since(t).Milliseconds(),
+			})
+		}
+
+		if needs, matched := detect.NeedsNativeBuildTools(dir); needs {
+			installBuildTools(strings.Join(matched, ", "))
+		}
+
 		emit(map[string]interface{}{"type": "install", "status": "starting", "cmd": proj.InstallCmd})
 		if spin != nil {
 			spin.Step("installing deps")
 		}
-		t := time.Now()
-		// `npm install` on a fresh Vite + React tree runs ~15-60 s; the
-		// agent's default 30 s timeout was killing it mid-fetch and
-		// surfacing as "install failed" with an empty error string.
-		// Give project installs up to 10 minutes — they're long-running
-		// but bounded, and the user can Ctrl+C dew up if truly stuck.
-		result, err := execInVMTimeout(
-			"mkdir -p /tmp/nm /app/node_modules && "+
-				"mountpoint -q /app/node_modules || mount --bind /tmp/nm /app/node_modules && "+
-				"cd /app && "+proj.InstallCmd,
-			10*time.Minute)
-		installMs := time.Since(t).Milliseconds()
+		result, err, installMs := runInstall()
+
+		// Reactive fallback: if the first install failed with what looks
+		// like a missing-toolchain error, install build-base + python3
+		// and retry once. Catches projects where the native dep is
+		// transitive or uses an unlisted package name.
+		if err == nil && result != nil && result.ExitCode != 0 &&
+			detect.ScanInstallStderrForNativeBuild(result.Stderr) {
+			installBuildTools("npm install failed - needs native compile")
+			if spin != nil {
+				spin.Step("installing deps (retry)")
+			}
+			result, err, installMs = runInstall()
+		}
+
 		if err != nil || (result != nil && result.ExitCode != 0) {
 			errMsg := ""
 			suggestion := ""
