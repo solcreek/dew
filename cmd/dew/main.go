@@ -24,6 +24,7 @@ import (
 
 	"github.com/solcreek/dew/internal/daemon"
 	"github.com/solcreek/dew/internal/detect"
+	"github.com/solcreek/dew/internal/nmcache"
 	"github.com/solcreek/dew/internal/progress"
 	"github.com/solcreek/dew/internal/selfupdate"
 	"github.com/solcreek/dew/internal/services"
@@ -1128,18 +1129,65 @@ func cmdUp(args []string) error {
 	}
 
 	// Project is mounted via virtiofs at /app (live sync from host).
-	// node_modules is intentionally redirected to the guest's tmpfs so
-	// the native bindings are Linux+musl (the host might be macOS) and
-	// so npm doesn't churn the host filesystem.
+	// node_modules is redirected away from virtiofs to a path that's
+	// (a) Linux+musl ABI-compatible (the host might be macOS), and
+	// (b) not on virtiofs, where `rm -rf` is unreliable.
 	//
-	// Earlier versions tried `ln -sf /tmp/nm node_modules`, which
-	// silently descended into a pre-existing node_modules directory.
-	// virtiofs also makes `rm -rf` unreliable from inside the guest
-	// (exit code 1, partial deletion). A bind mount sidesteps both:
-	// /app/node_modules as seen by the guest is the empty tmpfs at
-	// /tmp/nm, regardless of whatever stale tree the host still has
-	// underneath.
+	// Two destinations are possible:
+	//   - With a lockfile: /var/cache/dew/nm/{key}/node_modules on the
+	//     persistent node-profile disk, keyed by project path. Survives
+	//     `dew down`, so a subsequent `dew up` skips npm install
+	//     entirely if the lockfile hasn't changed (see internal/nmcache).
+	//   - Without a lockfile: /tmp/nm on tmpfs. Disappears with the VM.
+	//     We can't safely cache without a stable input hash.
 	if proj.InstallCmd != "" {
+		// Decide cache strategy by looking for a supported lockfile.
+		// ErrNoLockfile → tmpfs fallback (matches pre-cache behavior).
+		// Anything else (read error, etc.) is non-fatal: log and fall
+		// back to tmpfs.
+		cacheKey := nmcache.ProjectKey(dir)
+		wantStamp, stampErr := nmcache.ComputeStamp(dir)
+		cacheable := stampErr == nil
+		cacheHit := false
+
+		if cacheable {
+			// Setup script bind-mounts the persistent path and tells
+			// us whether the existing stamp matches the want stamp.
+			// Crash recovery (wiping a half-installed tree from a
+			// previous failed install) also happens here, inside the
+			// script — see internal/nmcache/cache.sh.
+			setupCmd := nmcache.SetupCommand(cacheKey, wantStamp.Marshal())
+			res, err := execInVMTimeout(setupCmd, 30*time.Second)
+			switch {
+			case err != nil:
+				emit(map[string]interface{}{
+					"type": "cache", "status": "setup-failed",
+					"error": err.Error(),
+				})
+				cacheable = false
+			case res != nil && res.ExitCode != 0:
+				emit(map[string]interface{}{
+					"type": "cache", "status": "setup-failed",
+					"error": res.Stderr,
+				})
+				cacheable = false
+			case res != nil && strings.Contains(res.Stdout, "DEW_NM_CACHE=hit"):
+				cacheHit = true
+				emit(map[string]interface{}{
+					"type": "cache", "status": "hit",
+					"lockfile": wantStamp.Lockfile,
+				})
+				if spin != nil {
+					spin.Step("node_modules cached")
+				}
+			default:
+				emit(map[string]interface{}{
+					"type": "cache", "status": "miss",
+					"lockfile": wantStamp.Lockfile,
+				})
+			}
+		}
+
 		// Pre-flight: does this project's lockfile (or package.json,
 		// pre-install) reference a package that compiles native code?
 		// If so, install build-base + python3 upfront so npm install
@@ -1153,6 +1201,11 @@ func cmdUp(args []string) error {
 			// string. Give project installs up to 10 minutes — they're
 			// long-running but bounded, and the user can Ctrl+C if
 			// truly stuck.
+			//
+			// When the cache layer has already bind-mounted
+			// /app/node_modules to a persistent path, the mount step
+			// here is a no-op (mountpoint -q skips it). When it
+			// hasn't (no lockfile case), this falls back to tmpfs.
 			res, err := execInVMTimeout(
 				"mkdir -p /tmp/nm /app/node_modules && "+
 					"mountpoint -q /app/node_modules || mount --bind /tmp/nm /app/node_modules && "+
@@ -1214,6 +1267,16 @@ func cmdUp(args []string) error {
 			installBuildTools(strings.Join(matched, ", "))
 		}
 
+		// Cache hit: install was committed on a previous boot, skip
+		// the package-manager step entirely. The bind-mount has
+		// already been set up by the setup script above.
+		if cacheHit {
+			emit(map[string]interface{}{"type": "install", "status": "cached"})
+			// Skip past the rest of the install block to whatever
+			// runs after (services, app start). The closing brace
+			// further down handles flow.
+		} else {
+
 		emit(map[string]interface{}{"type": "install", "status": "starting", "cmd": proj.InstallCmd})
 		if spin != nil {
 			spin.Step("installing deps")
@@ -1265,7 +1328,24 @@ func cmdUp(args []string) error {
 			}
 		} else {
 			emit(map[string]interface{}{"type": "install", "status": "done", "elapsed_ms": installMs})
+			// Install succeeded; atomically commit the cache stamp.
+			// Failure here is non-fatal — the cache just stays in
+			// "in-progress" state, and the next boot will rebuild
+			// (crash-recovery path).
+			if cacheable {
+				if _, cerr := execInVMTimeout(nmcache.CommitCommand(cacheKey), 10*time.Second); cerr != nil {
+					emit(map[string]interface{}{
+						"type": "cache", "status": "commit-failed",
+						"error": cerr.Error(),
+					})
+				} else {
+					emit(map[string]interface{}{
+						"type": "cache", "status": "committed",
+					})
+				}
+			}
 		}
+		} // end of else: non-cache-hit install
 	}
 
 	// Start services (--with postgres,redis)
