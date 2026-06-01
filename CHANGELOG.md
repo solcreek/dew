@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.17] - 2026-06-01
+
+`dew up` now skips `npm install` when nothing has changed.
+
+### Added
+
+- **`node_modules` cache** for `dew up`. The first time a project
+  boots, dependencies install as before and the result is stamped
+  with the lockfile's hash. On subsequent boots, if the lockfile
+  hasn't changed, the install step is skipped entirely — boot
+  becomes <500 ms warm vs. the cold install time.
+
+  The cache is keyed by the project directory (so each project
+  has its own `node_modules` — no cross-project pollution) and
+  invalidates automatically when the lockfile changes. Symlinked
+  project paths resolve to the same cache entry as their target.
+
+  Supported lockfiles: `pnpm-lock.yaml`, `bun.lock`, `bun.lockb`,
+  `yarn.lock`, `package-lock.json`. Projects without a supported
+  lockfile fall back to the pre-0.7.17 behavior (install on every
+  boot) — without a stable input hash, caching isn't safe.
+
+  No new flags. No new CLI commands. The cache lives inside the
+  existing node-profile VM disk and survives `dew down`.
+
+### Fixed
+
+- A `dew up` that crashed mid-install no longer leaves a
+  half-populated `node_modules` that the next boot would treat as
+  valid. The cache uses a write-ahead pointer
+  (`.dew-stamp.inprogress.json`) that the next boot detects and
+  wipes before letting a new install run.
+
 ## [0.7.16] - 2026-06-01
 
 Agent-native hardening: typed errors, classified exit codes, and a
