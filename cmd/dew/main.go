@@ -325,6 +325,21 @@ func main() {
 		go selfupdate.CheckBackground(version)
 	}
 
+	// Per-subcommand --help: intercept before dispatch so commands
+	// that didn't previously parse the flag (most of them) don't
+	// error with "unknown flag". A user running `dew up --help`
+	// expects a help block, not a flag error.
+	if len(os.Args) >= 3 {
+		for _, a := range os.Args[2:] {
+			if a == "--help" || a == "-h" {
+				if printSubcommandHelp(os.Args[1]) {
+					return
+				}
+				break
+			}
+		}
+	}
+
 	var err error
 	switch os.Args[1] {
 	case "start":
