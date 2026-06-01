@@ -33,12 +33,13 @@ func isTTY() bool {
 
 // Spinner displays an animated spinner on stderr.
 type Spinner struct {
-	mu      sync.Mutex
-	label   string
-	steps   int
-	start   time.Time
-	done    chan struct{}
-	stopped bool
+	mu        sync.Mutex
+	label     string
+	steps     int
+	start     time.Time // creation time, for the final summary
+	stepStart time.Time // current-step start, for per-step elapsed display
+	done      chan struct{}
+	stopped   bool
 }
 
 // New creates a spinner. Call Step() to start each phase.
@@ -52,6 +53,7 @@ func (s *Spinner) Step(label string) {
 	s.mu.Lock()
 	s.steps++
 	s.label = label
+	s.stepStart = time.Now()
 	s.stopped = false
 	s.done = make(chan struct{})
 	s.mu.Unlock()
@@ -83,7 +85,7 @@ func (s *Spinner) spin() {
 	}
 }
 
-// finish stops the current spinner and prints ✓.
+// finish stops the current spinner and prints ✓ with step elapsed time.
 func (s *Spinner) finish() {
 	s.mu.Lock()
 	if s.stopped || s.done == nil {
@@ -92,20 +94,22 @@ func (s *Spinner) finish() {
 	}
 	s.stopped = true
 	label := s.label
+	elapsed := time.Since(s.stepStart)
 	ch := s.done
 	tty := isTTY()
 	s.mu.Unlock()
 
+	dur := formatStepDuration(elapsed)
 	if tty {
 		close(ch)
-		fmt.Fprintf(os.Stderr, "\r\033[K  %s ✓\n", label)
+		fmt.Fprintf(os.Stderr, "\r\033[K  %s ✓ %s\n", label, dur)
 	} else {
 		// Non-TTY: spinner goroutine wasn't started, just print ✓.
-		fmt.Fprintf(os.Stderr, "  %s ✓\n", label)
+		fmt.Fprintf(os.Stderr, "  %s ✓ %s\n", label, dur)
 	}
 }
 
-// Fail stops the current spinner and prints ✗.
+// Fail stops the current spinner and prints ✗ with step elapsed time.
 func (s *Spinner) Fail(reason string) {
 	s.mu.Lock()
 	if s.stopped || s.done == nil {
@@ -114,15 +118,34 @@ func (s *Spinner) Fail(reason string) {
 	}
 	s.stopped = true
 	label := s.label
+	elapsed := time.Since(s.stepStart)
 	ch := s.done
 	tty := isTTY()
 	s.mu.Unlock()
 
+	dur := formatStepDuration(elapsed)
 	if tty {
 		close(ch)
-		fmt.Fprintf(os.Stderr, "\r\033[K  %s ✗ %s\n", label, reason)
+		fmt.Fprintf(os.Stderr, "\r\033[K  %s ✗ %s — %s\n", label, dur, reason)
 	} else {
-		fmt.Fprintf(os.Stderr, "  %s ✗ %s\n", label, reason)
+		fmt.Fprintf(os.Stderr, "  %s ✗ %s — %s\n", label, dur, reason)
+	}
+}
+
+// formatStepDuration renders a per-step elapsed time in a short form
+// that reads naturally next to the step label: 380ms / 3.2s / 1m12s.
+func formatStepDuration(d time.Duration) string {
+	switch {
+	case d < time.Second:
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	case d < 10*time.Second:
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	default:
+		m := int(d.Minutes())
+		s := int(d.Seconds()) - m*60
+		return fmt.Sprintf("%dm%ds", m, s)
 	}
 }
 
