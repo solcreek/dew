@@ -181,9 +181,11 @@ jobs:
 
       - name: Stage darwin binaries where goreleaser prebuilt expects
         run: |
-          # macos-binaries artifact preserves the `prebuilt/dew-darwin-{arch}/dew` layout
+          # upload-artifact strips the common path prefix, so when all
+          # uploaded paths sit under `prebuilt/` the artifact root is
+          # the `dew-darwin-{arch}/` directories themselves.
           mkdir -p prebuilt
-          cp -r ${{ runner.temp }}/artifacts/macos-binaries/prebuilt/* prebuilt/
+          cp -r ${{ runner.temp }}/artifacts/macos-binaries/dew-darwin-* prebuilt/
           ls -la prebuilt/dew-darwin-*/
 
       - name: Mint short-lived token for homebrew-tap

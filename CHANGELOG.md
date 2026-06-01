@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.11] - 2026-06-01
+## [0.7.12] - 2026-06-01
 
 ### Fixed
 
@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Apple Silicon had to fetch the full Node runtime from Alpine repos
   before the dev server could even start. Cross-built from the Linux
   runner now, so both arches ship with the runtime preinstalled.
+- Release pipeline staging step matches the new artifact layout.
+
+## [0.7.11] - 2026-06-01 — withdrawn
+
+Failed at the goreleaser staging step before any release artifacts
+were published. Re-shipped as 0.7.12 with the same scope plus a CI
+fix.
 
 ## [0.7.10] - 2026-06-01
 
