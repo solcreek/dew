@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -23,7 +24,6 @@ import (
 
 	"github.com/solcreek/dew/internal/daemon"
 	"github.com/solcreek/dew/internal/detect"
-	"github.com/solcreek/dew/internal/jsonerr"
 	"github.com/solcreek/dew/internal/progress"
 	"github.com/solcreek/dew/internal/selfupdate"
 	"github.com/solcreek/dew/internal/services"
@@ -32,7 +32,13 @@ import (
 	"github.com/solcreek/dew/internal/vm"
 	"github.com/solcreek/dew/internal/vm/darwin"
 	vsockProto "github.com/solcreek/dew/internal/vsock"
+	"github.com/solcreek/dew/pkg/dewerr"
 )
+
+// schemaVersion is the version of the --json envelope dew emits. Bumps
+// when the shape changes incompatibly; additive changes don't bump.
+// See pkg/dewerr/README.md for the policy.
+const schemaVersion = "1.0"
 
 var version = "dev"
 
@@ -300,20 +306,22 @@ func cmdAssets(args []string) error {
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
-		os.Exit(1)
+		os.Exit(int(dewerr.CodeUsage))
 	}
 
-	// Only check for updates on user-facing commands, not internal (exec, start).
-	// Skip if --json is anywhere in args — agents don't want noise.
-	cmd := os.Args[1]
-	hasJSON := false
-	for _, a := range os.Args[2:] {
+	// Pre-scan args for --json so the global flag is set BEFORE any
+	// cmd dispatch (including the unknown-command error path).
+	for _, a := range os.Args[1:] {
 		if a == "--json" {
-			hasJSON = true
+			flagJSON = true
 			break
 		}
 	}
-	if !hasJSON && cmd != "exec" && cmd != "start" && cmd != "run" && cmd != "serve" {
+
+	// Only check for updates on user-facing commands, not internal (exec, start).
+	// Skip in JSON mode — agents don't want noise.
+	cmd := os.Args[1]
+	if !flagJSON && cmd != "exec" && cmd != "start" && cmd != "run" && cmd != "serve" {
 		go selfupdate.CheckBackground(version)
 	}
 
@@ -347,8 +355,8 @@ func main() {
 		err = cmdAssets(os.Args[2:])
 	case "session":
 		if len(os.Args) < 3 {
-			fmt.Fprintf(os.Stderr, "usage: dew session <create|exec|destroy> [args]\n")
-			os.Exit(1)
+			err = dewerr.New(dewerr.CodeUsage, "usage: dew session <create|exec|destroy> [args]")
+			break
 		}
 		err = cmdSession(os.Args[2], os.Args[3:])
 	case "auth":
@@ -368,17 +376,48 @@ func main() {
 	case "help", "--help", "-h":
 		printUsage()
 	default:
-		fmt.Fprintf(os.Stderr, "dew: unknown command %q\n", os.Args[1])
-		printUsage()
-		os.Exit(1)
+		err = dewerr.Newf(dewerr.CodeUsage, "unknown command %q", os.Args[1])
+		if !flagJSON {
+			fmt.Fprintf(os.Stderr, "dew: %v\n", err)
+			printUsage()
+			os.Exit(int(dewerr.CodeUsage))
+		}
 	}
 	if err != nil {
+		code := dewerr.CodeOf(err)
 		if flagJSON {
-			jsonerr.Exit(err, true)
+			emitErrorJSON(err, code)
+		} else {
+			fmt.Fprintf(os.Stderr, "dew: %v\n", err)
 		}
-		fmt.Fprintf(os.Stderr, "dew: %v\n", err)
-		os.Exit(1)
+		os.Exit(int(code))
 	}
+}
+
+// emitErrorJSON writes the --json error envelope to stdout. The shape
+// is documented in docs/exit-codes.md and is stable across additive
+// schema_version minor bumps.
+func emitErrorJSON(err error, code dewerr.Code) {
+	errObj := map[string]any{
+		"code":      code.Slug(),
+		"exit_code": int(code),
+		"message":   err.Error(),
+		"retryable": dewerr.Retryable(err),
+	}
+	var typed *dewerr.Error
+	if errors.As(err, &typed) {
+		if typed.RetryAfter > 0 {
+			errObj["retry_after_ms"] = typed.RetryAfter.Milliseconds()
+		}
+		if len(typed.Hint) > 0 {
+			errObj["hint"] = typed.Hint
+		}
+	}
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+		"ok":             false,
+		"schema_version": schemaVersion,
+		"error":          errObj,
+	})
 }
 
 func printUsage() {
