@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.16] - 2026-06-01
+
+Agent-native hardening: typed errors, classified exit codes, and a
+versioned `--json` envelope. The change is additive — shell scripts
+that only branched on `$? == 0` keep working, and the only behavior
+shift in shell mode is that `dew bogus` and unknown-command paths
+now exit 2 (usage) instead of 1 (generic).
+
+### Added
+
+- **`pkg/dewerr`** — typed error package with stable `Code` constants
+  and `Slug()` mapping. Public under `pkg/` so the future agent SDK
+  can pattern-match on errors without depending on the dew binary.
+- **`docs/exit-codes.md`** — the public contract. Codes never get
+  re-mapped; new categories take a new code from the reserved 106-119
+  range; the `--json` envelope is versioned via `schema_version`.
+
+### Changed
+
+- **Exit codes are now classified:**
+  - 0 success
+  - 1 generic
+  - 2 usage / validation
+  - 100 auth (token expired, unauthorized)
+  - 101 network (DNS, connection refused — retryable by default)
+  - 102 not_found (resource doesn't exist)
+  - 103 conflict (state mismatch, precondition failed)
+  - 104 timeout (retryable by default)
+  - 105 unavailable (rate-limited, disk full — retryable)
+  - 106-119 reserved, append-only
+  - 120-127 deliberately unused (timeout(1) / chroot tradition)
+  - 128-255 untouched (POSIX signal range)
+- **`--json` error envelope is now stable + versioned:**
+  ```json
+  {
+    "ok": false,
+    "schema_version": "1.0",
+    "error": {
+      "code": "auth",
+      "exit_code": 100,
+      "message": "...",
+      "retryable": false,
+      "hint": { ... }
+    }
+  }
+  ```
+- **`dew run` and `dew exec` no longer collide exit-code spaces with
+  the guest under `--json`:**
+  - shell mode (no flag): guest's exit code passes through to the
+    host shell as before
+  - `--json` mode: dew exits 0 if dew itself was fine, and the guest
+    code lives in `data.guest_exit_code`. Agents can stop
+    disambiguating "did dew fail or did the guest fail" from `$?`.
+
+### Fixed
+
+- The previous error-classification (`strings.Contains(msg, "unauthorized")`)
+  is gone. Codes are carried in typed `errs.Error` values that survive
+  arbitrary wrapping via `errors.As`, so renaming an error message
+  no longer silently re-routes it.
+
+### Removed
+
+- `internal/jsonerr` — replaced by the typed `pkg/dewerr` package.
+
 ## [0.7.15] - 2026-06-01
 
 ### Fixed
