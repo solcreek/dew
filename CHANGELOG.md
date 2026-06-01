@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.10] - 2026-06-01
+
+### Fixed
+
+- **Apple Silicon: `dew up` / `dew run` failed at VM start** with
+  `VZErrorDomain Code=1 "Internal Virtualization error"` on every cold
+  invocation. Cause: Alpine 3.21's `linux-virt` ARM64 kernel ships in EFI
+  zboot format (PE32+ wrapper around a gzip-compressed payload), and
+  Apple's Virtualization framework only accepts the raw ARM64 Image. The
+  release pipeline now detects the wrapper and extracts the payload
+  before publishing. Affected v0.7.7, v0.7.8 and v0.7.9.
+
+  Intel Macs were unaffected (Alpine ships x86_64 as plain bzImage,
+  which VZ does accept).
+
 ## [0.7.9] - 2026-05-31
 
 ### Fixed

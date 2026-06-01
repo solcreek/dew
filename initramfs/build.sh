@@ -70,6 +70,34 @@ mkdir -p "$APK_EXTRACT"
 tar xzf "$KERNEL_APK" -C "$APK_EXTRACT" 2>/dev/null
 
 cp "$APK_EXTRACT/boot/vmlinuz-virt" "$OUT_KERNEL"
+
+# Alpine 3.21's linux-virt aarch64 kernel ships in EFI zboot format
+# (PE32+ wrapper around a gzip-compressed payload). Apple VZ on Apple
+# Silicon rejects this with VZErrorDomain Code=1 "Internal Virtualization
+# error" — it requires a raw ARM64 Linux Image. Detect and extract.
+# x86_64 bzImage also starts with "MZ" but has no zimg marker, so the
+# check is safe across both arches.
+if [ "$(head -c2 "$OUT_KERNEL")" = "MZ" ] && \
+   [ "$(dd if="$OUT_KERNEL" bs=1 skip=4 count=4 2>/dev/null)" = "zimg" ]; then
+    echo "  Detected EFI zboot wrapper; extracting raw Image payload..."
+    python3 - "$OUT_KERNEL" <<'PY'
+import struct, gzip, sys, pathlib
+p = pathlib.Path(sys.argv[1])
+data = p.read_bytes()
+if data[:2] != b'MZ' or data[4:8] != b'zimg':
+    sys.exit("not zboot")
+# zboot header: MZ(2) padding(2) 'zimg'(4) payload_offset(4 LE) payload_size(4 LE)
+off, size = struct.unpack('<II', data[8:16])
+payload = data[off:off+size]
+if payload[:2] == b'\x1f\x8b':
+    payload = gzip.decompress(payload)
+# Raw ARM64 Image must have 'ARM\x64' magic at offset 0x38.
+if payload[0x38:0x3c] != b'ARM\x64':
+    sys.exit(f"extracted payload missing ARM64 magic: got {payload[0x38:0x3c].hex()}")
+p.write_bytes(payload)
+print(f"  -> {len(payload)} bytes raw ARM64 Image")
+PY
+fi
 echo "Kernel: $(ls -lh "$OUT_KERNEL" | awk '{print $5}')"
 
 # Kernel modules. Alpine ships ~900 .ko.gz files (~72MB decompressed)

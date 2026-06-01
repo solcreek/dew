@@ -42,3 +42,6 @@ website/public/install.sh
 # artifact, consumed by .goreleaser.yaml `prebuilt.path`.
 /dist/
 /prebuilt/
+
+# Internal R&D experiments — never commit
+experiments/

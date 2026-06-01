@@ -83,6 +83,48 @@ func TestInitramfsBuildScript_RefreshesKernelModulesEveryBoot(t *testing.T) {
 	}
 }
 
+// Alpine 3.21's linux-virt aarch64 kernel ships in EFI zboot format
+// (PE32+ wrapper + gzip payload). Apple VZ on Apple Silicon rejects it
+// with VZErrorDomain Code=1 — it requires a raw ARM64 Image. This
+// regressed dew silently for every Apple Silicon brew user on v0.7.7–9
+// because Code-Hex/vz forwards the file straight to VZ without stripping
+// the wrapper. build.sh now detects and extracts; this test catches a
+// future revert.
+func TestInitramfsBuildScript_StripsAArch64ZBootWrapper(t *testing.T) {
+	repoRoot, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(repoRoot, "initramfs", "build.sh"))
+	if err != nil {
+		t.Fatalf("read build.sh: %v", err)
+	}
+	script := string(data)
+
+	for _, want := range []string{
+		`= "MZ"`,           // detection
+		`"zimg"`,           // zboot marker check
+		"EFI zboot",        // human-readable signal
+		`b'ARM\x64'`,       // post-extract magic check (ensures we caught a broken extract)
+		"gzip.decompress",  // payload decompression
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("build.sh missing %q — zboot strip path may be broken; Apple Silicon boot will fail with VZErrorDomain Code=1", want)
+		}
+	}
+
+	// The strip must happen BEFORE the "Kernel: <size>" reporting line so
+	// the reported size reflects the extracted Image, not the wrapper.
+	stripIdx := strings.Index(script, "Detected EFI zboot wrapper")
+	reportIdx := strings.LastIndex(script, `echo "Kernel:`)
+	if stripIdx == -1 || reportIdx == -1 {
+		t.Fatal("could not locate zboot-strip block or kernel-size report")
+	}
+	if stripIdx > reportIdx {
+		t.Errorf("zboot strip happens AFTER the size report — reported sizes will be wrong")
+	}
+}
+
 // The module allowlist in build.sh decides which .ko files survive the prune
 // step. Any modprobe that init/init-stage2 runs MUST be in the allowlist or
 // it will silently fail at boot (modprobe lines are `|| true` because some
