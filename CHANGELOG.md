@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.14] - 2026-06-01
+
+### Changed
+
+- Each spinner step on `dew up` now shows how long it took:
+  `installing deps ✓ 12.3s` instead of `installing deps ✓`. Format
+  adapts from `380ms` for sub-second work up to `1m12s` for the
+  long-running ones (apk fetch on a slow network, big monorepo
+  installs).
+
+### Fixed
+
+- Build-tools install failures (network unreachable, apk repo error)
+  now surface a one-line reason in the spinner instead of being
+  swallowed: `installing build tools (sharp) ✗ 4.1s — apk install
+  failed — DNS/network unreachable`. The full apk stderr is preserved
+  in the `--events` stream.
+- The "install failed" summary now picks the most useful suggestion
+  for the failure mode: peer-dep conflicts get "try
+  --legacy-peer-deps"; node-gyp errors after the build tools were
+  already installed get "build tools installed but compile still
+  failed; check stderr above"; node-gyp errors when build tools were
+  not installed get "looks like a missing-toolchain failure dew
+  didn't catch; please file an issue with the package name".
+
+### Tests
+
+- Smoke test gains two regression guards for the v0.7.13 lockfile
+  scanner: a stock Vite+React project must NOT trigger the
+  build-tools install (false-positive guard), and a project that
+  pins sharp MUST trigger build tools before npm install (correctness
+  + ordering guard).
+
 ## [0.7.13] - 2026-06-01
 
 ### Changed
