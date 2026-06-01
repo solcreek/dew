@@ -471,14 +471,18 @@ Output:
   --stream      Stream stdout/stderr
   --dry-run     Validate without executing (up, deploy, app run, server create)
 
-Network (for commands that take --network):
+Network:
+  --network     Enable guest networking (off by default for dew run).
+                dew up and dew start enable it automatically.
   --network-policy open|restricted
-                When restricted, the guest's outbound traffic is
-                default-DROP except loopback, DNS, and IPs added via
-                --allow-host. Hostname-aware allowlist is planned.
+                Implies --network. open (default when --network is
+                set) allows all outbound; restricted is default-DROP
+                except loopback, DNS, and IPs added via --allow-host.
+                Package installs (apk, npm, pip) will fail under
+                restricted unless you allow the registry's hosts.
   --allow-host HOST
-                Repeatable. Resolves HOST at the host and permits the
-                guest to reach those IPs. Only meaningful with
+                Repeatable. Resolves HOST on the host side and permits
+                the guest to reach those IPs. Only meaningful with
                 --network-policy=restricted.
 `)
 }
@@ -665,6 +669,19 @@ func appendGuestParams(cfg *vm.Config) {
 		cfg.CmdLine += " dew.netpolicy=restricted"
 		if len(cfg.AllowHosts) > 0 {
 			cfg.CmdLine += " dew.allow=" + strings.Join(cfg.AllowHosts, ",")
+		} else if !flagJSON {
+			// Surface the most common foot-gun: restricted mode
+			// blocks everything outbound by default, so package
+			// installs (apk add, npm install, pip install) silently
+			// fail when no --allow-host has been passed. The agent
+			// report flagged apk under restricted as "exits -1 with
+			// no error output" — this hint sits before the boot so
+			// the user has a chance to ^C and retry.
+			fmt.Fprintf(os.Stderr,
+				"dew: --network-policy=restricted with no --allow-host — "+
+					"package installs and other outbound traffic will be blocked.\n"+
+					"     Add --allow-host <host> for each registry/dependency host, "+
+					"or use --network-policy=open.\n")
 		}
 	}
 }
