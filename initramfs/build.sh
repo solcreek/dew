@@ -714,57 +714,44 @@ if [ -x /usr/local/bin/dew-agent ] && [ -e /dev/vsock ]; then
     echo "dew-agent: vsock ready"
 fi
 
-# Per-runtime first-boot install. Split into critical (the runtime
-# itself, blocking) and optional (build-base + python3, backgrounded).
-# The released Linux-CI initramfs bakes node+npm, so the critical
-# branch is a no-op and cmdUp's `npm install` proceeds in parallel
-# with the slow build-base/python3 fetch. The Darwin-local build path
-# can't bake (no apk-tools-static for the host's libc), so node falls
-# into the critical branch and still blocks — this is only us during
-# development, not what users see from the release.
-node_critical_apk() {
-    local CRITICAL_APK="" OPTIONAL_APK=""
-    command -v node    >/dev/null 2>&1 || CRITICAL_APK="$CRITICAL_APK nodejs npm"
-    command -v gcc     >/dev/null 2>&1 || OPTIONAL_APK="$OPTIONAL_APK build-base"
-    command -v python3 >/dev/null 2>&1 || OPTIONAL_APK="$OPTIONAL_APK python3"
-    if [ -n "$CRITICAL_APK" ]; then
-        echo "dew: installing$CRITICAL_APK (first boot)..."
+# First-boot runtime install. The released initramfs (Linux CI) bakes
+# nodejs + npm into the node profile and python3 + pip into the python
+# profile, so the install below is a no-op for users. The Darwin-local
+# dev build can't bake (no apk-tools-static for Darwin), so node/python
+# get fetched on first boot here.
+#
+# build-base + python3 (for node-gyp) used to be installed in the
+# background here so npm install of a project with native deps would
+# eventually succeed. That work moved to cmdUp on the host side
+# (internal/detect.NeedsNativeBuildTools): cmdUp now scans the
+# project's lockfile and triggers the apk install with a user-visible
+# progress message when and only when the project actually needs it.
+# Removing the eager background install means pure-JS projects pay
+# zero apk cost.
+node_first_boot_apk() {
+    local NEED=""
+    command -v node >/dev/null 2>&1 || NEED="$NEED nodejs npm"
+    if [ -n "$NEED" ]; then
+        echo "dew: installing$NEED (first boot)..."
         apk update 2>/dev/null || true
         apk upgrade --no-cache musl 2>&1 | tail -1
-        apk add --no-cache $CRITICAL_APK 2>&1 | tail -1
-    fi
-    if [ -n "$OPTIONAL_APK" ]; then
-        echo "dew: installing$OPTIONAL_APK (background)..."
-        (
-            [ -z "$CRITICAL_APK" ] && apk update >/dev/null 2>&1
-            apk add --no-cache $OPTIONAL_APK >/dev/null 2>&1
-            echo "dew: background install done:$OPTIONAL_APK"
-        ) &
+        apk add --no-cache $NEED 2>&1 | tail -1
     fi
 }
 
-python_critical_apk() {
-    local CRITICAL_APK="" OPTIONAL_APK=""
-    command -v python3 >/dev/null 2>&1 || CRITICAL_APK="$CRITICAL_APK python3 py3-pip"
-    command -v gcc     >/dev/null 2>&1 || OPTIONAL_APK="$OPTIONAL_APK build-base"
-    if [ -n "$CRITICAL_APK" ]; then
-        echo "dew: installing$CRITICAL_APK (first boot)..."
+python_first_boot_apk() {
+    local NEED=""
+    command -v python3 >/dev/null 2>&1 || NEED="$NEED python3 py3-pip"
+    if [ -n "$NEED" ]; then
+        echo "dew: installing$NEED (first boot)..."
         apk update 2>/dev/null || true
         apk upgrade --no-cache musl 2>&1 | tail -1
-        apk add --no-cache $CRITICAL_APK 2>&1 | tail -1
-    fi
-    if [ -n "$OPTIONAL_APK" ]; then
-        echo "dew: installing$OPTIONAL_APK (background)..."
-        (
-            [ -z "$CRITICAL_APK" ] && apk update >/dev/null 2>&1
-            apk add --no-cache $OPTIONAL_APK >/dev/null 2>&1
-            echo "dew: background install done:$OPTIONAL_APK"
-        ) &
+        apk add --no-cache $NEED 2>&1 | tail -1
     fi
 }
 
-[ -f /.dew-node-profile ]   && node_critical_apk
-[ -f /.dew-python-profile ] && python_critical_apk
+[ -f /.dew-node-profile ]   && node_first_boot_apk
+[ -f /.dew-python-profile ] && python_first_boot_apk
 
 # startup command
 if [ -n "$DEW_CMD" ]; then
