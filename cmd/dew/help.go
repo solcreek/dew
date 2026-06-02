@@ -148,7 +148,11 @@ a Cloudflare tunnel; the tunnel dies when you ^C.
 }
 
 func appHelpText() string {
-	return `dew app — run an open-source app locally
+	return `dew app — run an open-source app locally (deprecated)
+
+This catalog will move to a separate tool in a future release.
+Existing functionality keeps working until then; see the dew
+ROADMAP for migration details.
 
 Usage:
   dew apps                       Browse available apps.

@@ -453,13 +453,6 @@ Dev:
 Share:
   dew share [port]               Create temporary public HTTPS URL
 
-Apps:
-  Run open-source apps locally — no Docker needed.
-  dew apps                       Browse available apps
-  dew app run <name> [--port N]  Run an app
-  dew app stop <name>            Stop an app
-  dew app list [--json]           Show running apps
-
 Deploy (to a server from 'dew server create' or any VPS):
   dew build [dir]                Package app for deployment
   dew deploy <target>            Deploy to remote server
@@ -484,7 +477,7 @@ Output:
   --json        Machine-readable JSON (all commands)
   --events      NDJSON lifecycle stream
   --stream      Stream stdout/stderr
-  --dry-run     Validate without executing (up, deploy, app run, server create)
+  --dry-run     Validate without executing (up, deploy, server create)
 
 Network:
   --network     Enable guest networking (off by default for dew run).

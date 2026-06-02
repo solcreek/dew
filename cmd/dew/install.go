@@ -39,6 +39,7 @@ type appManifest struct {
 }
 
 func cmdInstall(args []string) error {
+	printAppsDeprecationNotice()
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
 		fmt.Println(`dew app — run open-source apps from the registry
 
@@ -383,6 +384,7 @@ func cmdAppRun(args []string) error {
 }
 
 func cmdInstallList() error {
+	printAppsDeprecationNotice()
 	resp, err := http.Get(registryBase + "/registry.json")
 	if err != nil {
 		return dewerr.Wrap(err, dewerr.CodeNetwork, "fetch registry")

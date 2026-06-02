@@ -17,9 +17,6 @@ $ dew up
 
 $ dew exec --json "go test ./..."
   {"stdout":"PASS\nok  ./...","exitCode":0}
-
-$ dew app run ghost --port 3000
-  ✓ http://localhost:3000
 ```
 
 ## Install
@@ -47,20 +44,6 @@ dew run -- uname -a
 ```
 
 ## What it does
-
-### Run open-source apps
-
-Browse and run apps from the [dew-apps](https://github.com/solcreek/dew-apps) catalog.
-
-```bash
-dew apps                              # browse 11 available apps
-dew app run ghost --port 3000         # run Ghost blog
-dew app run uptime-kuma --port 3001   # run Uptime Kuma
-dew app list                          # see what's running
-dew app stop ghost                    # stop an app
-```
-
-Apps run in an isolated VM, not on your host. No extra runtime to install.
 
 ### Dev environments
 
@@ -102,8 +85,8 @@ The server runs `dew serve` (7.1MB Linux binary) — containerd for isolation, s
 Every command supports `--json` for machine-readable output and `--dry-run` for validation without execution.
 
 ```bash
-dew app run ghost --port 3000 --json
-# {"ok":true,"app":"ghost","port":3000,"url":"http://localhost:3000"}
+dew up --dry-run --json
+# {"type":"dry-run","framework":"vite","profile":"node",...}
 
 dew deploy prod --dry-run
 # Would deploy my-app.tar.gz to https://prod:9080
@@ -122,7 +105,7 @@ Local                       Linux server
 ─────                       ────────────
 dew                         dew (deploy receiver)
 ├── dew up                  ├── HTTP deploy API
-├── dew app run             ├── containers
+├── dew run                 ├── containers
 ├── dew exec                ├── TLS
 ├── dew build               ├── process management
 ├── dew deploy ──────────→  └── health check
@@ -137,7 +120,7 @@ dew                         dew (deploy receiver)
 | minimal | Generic Linux shell, lightest footprint |
 | node | Node.js / npm projects |
 | python | Python projects |
-| standard | App catalog, containers, services |
+| standard | Containers, services |
 
 ## Security
 
@@ -153,12 +136,6 @@ Dev:
 
 Share:
   dew share [port]               Temporary public HTTPS URL
-
-Apps:
-  dew apps                       Browse available apps
-  dew app run <name> [--port N]  Run an app
-  dew app stop <name>            Stop an app
-  dew app list [--json]          Show running apps
 
 Deploy:
   dew build [dir]                Package app for deployment
