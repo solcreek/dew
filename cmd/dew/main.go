@@ -418,6 +418,8 @@ func main() {
 		err = cmdDoctor(subArgs)
 	case "update":
 		err = selfupdate.Update(version)
+	case "status":
+		err = cmdStatus(subArgs)
 	case "version", "--version", "-v":
 		fmt.Printf("dew %s\n", version)
 	case "help", "--help", "-h":
@@ -495,6 +497,7 @@ Infrastructure:
 Advanced:
   dew run [--] <cmd>             Execute in ephemeral VM
   dew exec <cmd>                 Execute in running VM
+  dew status                     Show whether a VM is running
   dew assets ...                 Manage VM images
   dew doctor                     Diagnose environment issues
   dew update                     Update to latest version
