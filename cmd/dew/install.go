@@ -21,17 +21,19 @@ import (
 
 // registryBase is the apps registry root.
 //
-// The repo stays as solcreek/dew-apps for the lifetime of the
-// dew apps surface — it's the compatibility anchor for existing
-// dew binaries (v0.7.18 and earlier) and will be archived rather
-// than renamed when the surface is fully removed. The replacement
-// (Grove's catalog) will live in its own freshly-designed repo
-// with a different schema; mixing the two would just leak the
-// prototype into the new product. See the v0.7.19 commit history
-// for the brief rename round-trip that confirmed this.
+// The repo was renamed solcreek/dew-apps → solcreek/grove-apps in
+// 2026-06-01. The old name "dew-apps" was misleading: apps don't
+// belong to dew (dew is the engine), and dew's apps surface is
+// being deprecated anyway. Pointing the deprecated surface at
+// grove-apps during its sunset window is the correct graceful
+// handoff — the catalog's permanent home is grove-apps, the
+// deprecated dew surface uses it for as long as it exists.
+//
+// Old dew binaries (v0.7.19 and earlier) that hardcoded the
+// dew-apps URL keep working via GitHub's automatic redirect.
 //
 // var (not const) so tests can override it.
-var registryBase = "https://raw.githubusercontent.com/solcreek/dew-apps/main"
+var registryBase = "https://raw.githubusercontent.com/solcreek/grove-apps/main"
 
 type appManifest struct {
 	Name        string            `json:"name"`
