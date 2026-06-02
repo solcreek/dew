@@ -54,6 +54,52 @@ func dewDataDir() string {
 	return filepath.Join(home, ".local", "share", "dew")
 }
 
+// applyProfileDefaults fills in CPU / memory / disk values that the
+// caller left at the global default (CPUs=1, MemoryMB=512, DiskPath="").
+// minimal stays light — ad-hoc `dew run` shouldn't claim 4 host cores.
+// Real-work profiles get 4 vCPUs + 2 GB because a single vCPU bottlenecks
+// npm-install reify and Vite/Next transform pipelines, and modern
+// bundlers (esbuild worker threads, tsx) blow past 1 GB during boot.
+// Explicit --cpus / --memory overrides win because the caller set them
+// to non-default values before this runs.
+func applyProfileDefaults(cfg *vm.Config, profile, dataDir string) {
+	switch profile {
+	case "node":
+		if cfg.CPUs == 1 {
+			cfg.CPUs = 4
+		}
+		if cfg.MemoryMB == 512 {
+			cfg.MemoryMB = 2048
+		}
+		if cfg.DiskPath == "" {
+			cfg.DiskPath = filepath.Join(dataDir, "node.img")
+			cfg.DiskGB = 4
+		}
+	case "python":
+		if cfg.CPUs == 1 {
+			cfg.CPUs = 4
+		}
+		if cfg.MemoryMB == 512 {
+			cfg.MemoryMB = 2048
+		}
+		if cfg.DiskPath == "" {
+			cfg.DiskPath = filepath.Join(dataDir, "python.img")
+			cfg.DiskGB = 4
+		}
+	case "standard":
+		if cfg.CPUs == 1 {
+			cfg.CPUs = 4
+		}
+		if cfg.MemoryMB == 512 {
+			cfg.MemoryMB = 2048
+		}
+		if cfg.DiskPath == "" {
+			cfg.DiskPath = filepath.Join(dataDir, "standard.img")
+			cfg.DiskGB = 10
+		}
+	}
+}
+
 func resolveAssets(cfg *vm.Config) error {
 	dataDir := dewDataDir()
 	profile := flagProfile
@@ -67,33 +113,7 @@ func resolveAssets(cfg *vm.Config) error {
 		profile = "minimal"
 	}
 
-	// Profile-aware defaults
-	switch profile {
-	case "node":
-		if cfg.MemoryMB == 512 {
-			cfg.MemoryMB = 1024
-		}
-		if cfg.DiskPath == "" {
-			cfg.DiskPath = filepath.Join(dataDir, "node.img")
-			cfg.DiskGB = 4
-		}
-	case "python":
-		if cfg.MemoryMB == 512 {
-			cfg.MemoryMB = 1024
-		}
-		if cfg.DiskPath == "" {
-			cfg.DiskPath = filepath.Join(dataDir, "python.img")
-			cfg.DiskGB = 4
-		}
-	case "standard":
-		if cfg.MemoryMB == 512 {
-			cfg.MemoryMB = 2048
-		}
-		if cfg.DiskPath == "" {
-			cfg.DiskPath = filepath.Join(dataDir, "standard.img")
-			cfg.DiskGB = 10
-		}
-	}
+	applyProfileDefaults(cfg, profile, dataDir)
 
 	if cfg.Kernel == "" {
 		cfg.Kernel = filepath.Join(dataDir, "vmlinuz")
