@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.20] - 2026-06-02
+
+The pre-packaged apps surface — deprecated in v0.7.19 — is removed.
+dew is now a pure sandboxed-Linux-compute primitive: it boots VMs,
+runs commands in them, mounts directories, deploys tarballs. The
+curated app catalog moved to a standalone tool.
+
+Also: global no-value flags (`--json`, `--events`, `--stream`,
+`--dry-run`) now work before *or* after the subcommand
+(`dew --json apps`-style ordering, common in agent one-liners),
+and `dew run` / `dew up` help text now documents ephemeral
+semantics and the `/app` mount path.
+
+### Removed
+
+- **`dew apps`** — was: browse pre-packaged catalog. Now: usage
+  error pointing at `dew run` for arbitrary container workloads.
+- **`dew app run <name> / stop / list`** — same removal.
+- **`dew install <name>`** — same removal.
+- The internal `appManifest` struct, `registryBase` URL, and
+  `fetchManifest` helper.
+
+A user who runs any removed subcommand gets:
+
+```
+dew: dew apps was removed in v0.7.20.
+The pre-packaged apps catalog now lives in a separate tool.
+For arbitrary container workloads in dew, use:
+  dew run --network -- <cmd>
+```
+
+Exit code 2 (CodeUsage).
+
+### Added
+
+- **Global flag position freedom** — `dew --json apps`,
+  `dew --events up`, `dew --dry-run up` etc. all work. Previously
+  the dispatcher took `--json` literally as a subcommand and
+  errored. Flags that take values still go in their command-
+  specific position.
+- **`dew run --help`** now documents that state is ephemeral
+  across invocations and points at `dew start` + `dew exec` for
+  persistent VMs.
+- **`dew up --help`** now documents the `/app` virtiofs mount
+  path so `dew exec` users know where to `cd`.
+
+### Fixed
+
+- **`brew info solcreek/tap/dew`** description now matches the
+  current positioning ("Sandbox Linux compute on macOS — no
+  Docker, no VPN, agent-friendly") instead of the pre-v0.7.16
+  tagline.
+
 ## [0.7.19] - 2026-06-01
 
 Deprecates the pre-packaged apps surface. dew is settling on its
