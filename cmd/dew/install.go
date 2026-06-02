@@ -19,9 +19,12 @@ import (
 	"github.com/solcreek/dew/pkg/dewerr"
 )
 
-// registryBase is the dew-apps registry root. var (not const) so
-// tests can point it at httptest servers without hitting the network.
-var registryBase = "https://raw.githubusercontent.com/solcreek/dew-apps/main"
+// registryBase is the apps registry root. The repo was renamed
+// from solcreek/dew-apps to solcreek/grove-apps in v0.7.19; GitHub
+// auto-redirects requests against the old URL, but we point at the
+// new one directly so log lines and error messages don't show a
+// stale name. var (not const) so tests can override it.
+var registryBase = "https://raw.githubusercontent.com/solcreek/grove-apps/main"
 
 type appManifest struct {
 	Name        string            `json:"name"`
