@@ -22,6 +22,12 @@ var subcommandHelp = map[string]string{
 Usage:
   dew up [dir] [flags]
 
+The project directory is mounted into the guest at /app (read-write,
+live sync via virtiofs). The dev server runs there; package
+managers install into a cached /app/node_modules that survives
+` + "`dew down`" + ` (see CHANGELOG v0.7.17 for cache details). Use ` + "`dew exec`" + `
+to run commands against the running VM after ` + "`dew up`" + `.
+
 Flags:
   --profile minimal|node|python|standard
                 Override auto-detected profile.
@@ -52,6 +58,17 @@ Usage:
 Argv form (after --): args are passed straight to the guest, no
 shell wrap. Single-string form: wrapped in /bin/sh -c so shell
 metacharacters work.
+
+The VM is ephemeral — each ` + "`dew run`" + ` boots a fresh VM and tears
+it down on exit. Packages you install, files you write outside
+--share mounts, and any other state DO NOT persist across runs.
+For persistent state, start a VM once with ` + "`dew start`" + ` (or
+` + "`dew up`" + ` for a project), then attach with ` + "`dew exec`" + ` as many
+times as you want.
+
+Without --share, the guest has no view of host files. With
+--share <hostdir>, the host directory appears at /<tag> inside
+the guest (default tag is the directory's basename).
 
 Flags:
   --profile minimal|node|python|standard

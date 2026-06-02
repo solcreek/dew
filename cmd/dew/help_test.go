@@ -60,6 +60,35 @@ func TestSubcommandHelp_FlagsTheReportFlagged(t *testing.T) {
 	}
 }
 
+// The fresh-eyes report flagged two doc gaps the agent had to learn
+// the hard way: dew run's ephemeral semantics (state doesn't persist
+// between invocations) and the /app mount path that dew up uses. The
+// per-subcommand help now states both explicitly. This test pins the
+// docs so a future refactor doesn't silently drop them.
+func TestSubcommandHelp_EphemeralAndMountPathsDocumented(t *testing.T) {
+	runHelp := subcommandHelp["run"]
+	for _, must := range []string{
+		"ephemeral",     // explicit word — agents grep this
+		"DO NOT persist", // concrete consequence
+		"dew start",     // pointer to the persistent alternative
+		"dew exec",      // and how to use it
+	} {
+		if !strings.Contains(runHelp, must) {
+			t.Errorf("dew run --help missing ephemeral-state hint %q\nhelp:\n%s", must, runHelp)
+		}
+	}
+
+	upHelp := subcommandHelp["up"]
+	for _, must := range []string{
+		"/app",         // the mount path itself
+		"virtiofs",     // the mechanism (so technically-curious users know)
+	} {
+		if !strings.Contains(upHelp, must) {
+			t.Errorf("dew up --help missing /app mount-path doc %q\nhelp:\n%s", must, upHelp)
+		}
+	}
+}
+
 // printSubcommandHelp returns true when it found a registered block,
 // false otherwise. The dispatcher relies on this signal to decide
 // whether to short-circuit or fall through to the regular command
