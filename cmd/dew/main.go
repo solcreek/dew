@@ -1698,19 +1698,37 @@ func cmdDown() error {
 
 func cmdExec(args []string) error {
 	// Strip --json so it isn't joined into the guest command.
+	// Also consume --timeout DURATION so callers can override the
+	// guest agent's 30s default. Without this, a `dew exec nerdctl
+	// pull <big-image>` against an 800 MB image gets cut off mid-
+	// download with an unhelpful "timeout after 30s" stderr line.
 	wantJSON := flagJSON
+	var timeoutMs int
 	filtered := args[:0]
-	for _, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		if a == "--json" {
 			wantJSON = true
 			flagJSON = true
+			continue
+		}
+		if a == "--timeout" {
+			i++
+			if i >= len(args) {
+				return dewerr.New(dewerr.CodeUsage, "--timeout requires a duration (e.g. 5m, 300s)")
+			}
+			d, perr := time.ParseDuration(args[i])
+			if perr != nil {
+				return dewerr.Newf(dewerr.CodeUsage, "--timeout: invalid duration %q: %v", args[i], perr)
+			}
+			timeoutMs = int(d / time.Millisecond)
 			continue
 		}
 		filtered = append(filtered, a)
 	}
 	args = filtered
 	if len(args) == 0 {
-		return dewerr.New(dewerr.CodeUsage, "usage: dew exec <cmd...>")
+		return dewerr.New(dewerr.CodeUsage, "usage: dew exec [--timeout DUR] <cmd...>")
 	}
 
 	sockPath := daemon.SocketPath("")
@@ -1728,6 +1746,7 @@ func cmdExec(args []string) error {
 	} else {
 		req = daemon.ExecRequest{Command: args[0]}
 	}
+	req.TimeoutMs = timeoutMs
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return dewerr.Wrap(err, dewerr.CodeNetwork, "send")
 	}
