@@ -318,9 +318,23 @@ func main() {
 		}
 	}
 
+	// Allow global no-value flags to appear before the subcommand:
+	// `dew --json apps`, `dew --events up`, etc. Previously the
+	// dispatcher saw `--json` as the command and errored. Per-command
+	// parseFlags() still picks up flags wherever they sit; we only
+	// need to skip past leading flags when finding the subcommand
+	// token. Flags that take a value go in their command-specific
+	// position as before.
+	dispatchArgs := stripLeadingGlobalFlags(os.Args[1:])
+	if len(dispatchArgs) == 0 {
+		// `dew --json` with nothing else — show usage, exit 2.
+		printUsage()
+		os.Exit(int(dewerr.CodeUsage))
+	}
+
 	// Only check for updates on user-facing commands, not internal (exec, start).
 	// Skip in JSON mode — agents don't want noise.
-	cmd := os.Args[1]
+	cmd := dispatchArgs[0]
 	if !flagJSON && cmd != "exec" && cmd != "start" && cmd != "run" && cmd != "serve" {
 		go selfupdate.CheckBackground(version)
 	}
@@ -329,10 +343,11 @@ func main() {
 	// that didn't previously parse the flag (most of them) don't
 	// error with "unknown flag". A user running `dew up --help`
 	// expects a help block, not a flag error.
-	if len(os.Args) >= 3 {
-		for _, a := range os.Args[2:] {
+	subArgs := dispatchArgs[1:]
+	if len(subArgs) > 0 {
+		for _, a := range subArgs {
 			if a == "--help" || a == "-h" {
-				if printSubcommandHelp(os.Args[1]) {
+				if printSubcommandHelp(cmd) {
 					return
 				}
 				break
@@ -341,33 +356,33 @@ func main() {
 	}
 
 	var err error
-	switch os.Args[1] {
+	switch cmd {
 	case "start":
-		err = cmdStart(os.Args[2:])
+		err = cmdStart(subArgs)
 	case "run":
-		err = cmdRun(os.Args[2:])
+		err = cmdRun(subArgs)
 	case "exec":
-		err = cmdExec(os.Args[2:])
+		err = cmdExec(subArgs)
 	case "install":
-		err = cmdInstall(os.Args[2:])
+		err = cmdInstall(subArgs)
 	case "app":
-		err = cmdInstall(os.Args[2:])
+		err = cmdInstall(subArgs)
 	case "apps":
 		err = cmdInstallList()
 	case "build":
-		err = cmdBuild(os.Args[2:])
+		err = cmdBuild(subArgs)
 	case "deploy":
-		err = cmdDeploy(os.Args[2:])
+		err = cmdDeploy(subArgs)
 	case "rollback":
-		err = cmdRollback(os.Args[2:])
+		err = cmdRollback(subArgs)
 	case "share":
-		err = cmdShare(os.Args[2:])
+		err = cmdShare(subArgs)
 	case "up":
-		err = cmdUp(os.Args[2:])
+		err = cmdUp(subArgs)
 	case "down":
 		err = cmdDown()
 	case "assets":
-		err = cmdAssets(os.Args[2:])
+		err = cmdAssets(subArgs)
 	case "session":
 		// `dew session` shipped in earlier versions storing the VM
 		// handle in an in-process map. The CLI handed out an ID but
@@ -380,15 +395,15 @@ func main() {
 			"dew session was removed in v0.7.18 — it stored state in-process and `session exec` could never find the VM.\n"+
 				"For persistent VMs use `dew up` (project) or `dew start` (manual profile) — both register with the daemon and `dew exec` works against them.")
 	case "auth":
-		err = cmdAuth(os.Args[2:])
+		err = cmdAuth(subArgs)
 	case "env":
-		err = cmdEnv(os.Args[2:])
+		err = cmdEnv(subArgs)
 	case "serve":
-		err = cmdServe(os.Args[2:])
+		err = cmdServe(subArgs)
 	case "server":
-		err = cmdServer(os.Args[2:])
+		err = cmdServer(subArgs)
 	case "doctor":
-		err = cmdDoctor(os.Args[2:])
+		err = cmdDoctor(subArgs)
 	case "update":
 		err = selfupdate.Update(version)
 	case "version", "--version", "-v":
@@ -396,7 +411,7 @@ func main() {
 	case "help", "--help", "-h":
 		printUsage()
 	default:
-		err = dewerr.Newf(dewerr.CodeUsage, "unknown command %q", os.Args[1])
+		err = dewerr.Newf(dewerr.CodeUsage, "unknown command %q", cmd)
 		if !flagJSON {
 			fmt.Fprintf(os.Stderr, "dew: %v\n", err)
 			printUsage()
@@ -493,6 +508,34 @@ Network:
                 the guest to reach those IPs. Only meaningful with
                 --network-policy=restricted.
 `)
+}
+
+// stripLeadingGlobalFlags consumes leading no-value global flags
+// (--json / --events / --stream / --dry-run) and returns the remaining
+// args starting at the subcommand. The flags themselves are not lost:
+// the main pre-scan above already set flagJSON, and each subcommand's
+// parseFlags() picks the others up wherever they appear. The point is
+// just to skip past them when picking the dispatch token, so users
+// can write `dew --json apps` instead of being forced into the rigid
+// `dew apps --json`.
+//
+// Flags that take a value (--cpus N, --memory N, --with X, --profile X,
+// etc.) are not skipped here — they go in their command-specific
+// position as before. If someone writes `dew --with postgres apps`, the
+// first non-flag token (postgres) wins as the subcommand, which surfaces
+// a clear unknown-command error rather than silently misparsing.
+func stripLeadingGlobalFlags(args []string) []string {
+	noValueGlobals := map[string]bool{
+		"--json":    true,
+		"--events":  true,
+		"--stream":  true,
+		"--dry-run": true,
+	}
+	i := 0
+	for i < len(args) && noValueGlobals[args[i]] {
+		i++
+	}
+	return args[i:]
 }
 
 func parseFlags(args []string) (vm.Config, []string, error) {
