@@ -420,6 +420,8 @@ func main() {
 		err = selfupdate.Update(version)
 	case "status":
 		err = cmdStatus(subArgs)
+	case "forward":
+		err = cmdForward(subArgs)
 	case "version", "--version", "-v":
 		fmt.Printf("dew %s\n", version)
 	case "help", "--help", "-h":
@@ -498,6 +500,9 @@ Advanced:
   dew run [--] <cmd>             Execute in ephemeral VM
   dew exec <cmd>                 Execute in running VM
   dew status                     Show whether a VM is running
+  dew forward add HOST:GUEST     Add a host→guest port forward
+  dew forward remove HOST:GUEST  Remove an existing forward
+  dew forward list               List active forwards
   dew assets ...                 Manage VM images
   dew doctor                     Diagnose environment issues
   dew update                     Update to latest version
@@ -809,9 +814,10 @@ func cmdStart(args []string) error {
 	if !tokenSent {
 		fmt.Fprintf(os.Stderr, "dew: warning: token handshake failed, daemon may not work\n")
 	}
-	startPortForwards(d, token, cfg.Forwards)
 
-	// Start daemon socket AFTER token is set (so clients can exec immediately)
+	// Start daemon socket AFTER token is set (so clients can exec immediately).
+	// Initial cfg.Forwards register via daemon.AddForward so the same path
+	// serves runtime forward-add requests (`dew forward add ...`).
 	dmn := &daemon.State{
 		VM:         d,
 		Token:      token,
@@ -822,6 +828,13 @@ func cmdStart(args []string) error {
 		fmt.Fprintf(os.Stderr, "dew: daemon: %v\n", err)
 	} else {
 		fmt.Fprintf(os.Stderr, "dew: daemon socket %s\n", dmn.SocketPath)
+	}
+	for _, f := range cfg.Forwards {
+		if _, err := dmn.AddForward(f.HostPort, f.GuestPort); err != nil {
+			fmt.Fprintf(os.Stderr, "dew: %v\n", err)
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "dew: forwarding 127.0.0.1:%d → guest:%d\n", f.HostPort, f.GuestPort)
 	}
 
 	<-ctx.Done()
@@ -1265,13 +1278,16 @@ func cmdUp(args []string) error {
 		}
 	}
 
-	startPortForwards(d, token, cfg.Forwards)
-
 	dmn := &daemon.State{
 		VM: d, Token: token, VsockPort: cfg.VsockPort,
 		SocketPath: daemon.SocketPath(""),
 	}
 	dmn.Start()
+	for _, f := range cfg.Forwards {
+		if _, err := dmn.AddForward(f.HostPort, f.GuestPort); err != nil {
+			fmt.Fprintf(os.Stderr, "dew: %v\n", err)
+		}
+	}
 
 	execInVMTimeout := func(cmd string, timeout time.Duration) (*RunResult, error) {
 		conn, err := connectVsock(d, cfg.VsockPort)
@@ -1528,21 +1544,12 @@ func cmdUp(args []string) error {
 			runCmd := services.NerdctlRunCmd(*svc)
 			execInVM(runCmd)
 
-			// Add port forward for this service
+			// Add port forward for this service via the daemon so
+			// runtime additions and initial cfg.Forwards share one path.
 			cfg.Forwards = append(cfg.Forwards, vm.PortForward{HostPort: svc.Port, GuestPort: svc.Port})
-			go func(f vm.PortForward) {
-				ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", f.HostPort))
-				if err != nil {
-					return
-				}
-				for {
-					tcpConn, err := ln.Accept()
-					if err != nil {
-						return
-					}
-					go proxyToGuest(d, token, tcpConn, f.GuestPort)
-				}
-			}(vm.PortForward{HostPort: svc.Port, GuestPort: svc.Port})
+			if _, err := dmn.AddForward(svc.Port, svc.Port); err != nil {
+				fmt.Fprintf(os.Stderr, "dew: forward %d: %v\n", svc.Port, err)
+			}
 
 			emit(map[string]interface{}{"type": "service", "status": "started", "name": svc.Name, "port": svc.Port})
 		}
@@ -1855,59 +1862,6 @@ func parseForward(s string) (vm.PortForward, error) {
 		return vm.PortForward{}, fmt.Errorf("--forward: invalid ports %q", s)
 	}
 	return vm.PortForward{HostPort: host, GuestPort: guest}, nil
-}
-
-func startPortForwards(v vm.VM, token string, forwards []vm.PortForward) {
-	for _, fwd := range forwards {
-		go func(f vm.PortForward) {
-			ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", f.HostPort))
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "dew: forward %d:%d listen failed: %v\n", f.HostPort, f.GuestPort, err)
-				return
-			}
-			fmt.Fprintf(os.Stderr, "dew: forwarding 127.0.0.1:%d → guest:%d\n", f.HostPort, f.GuestPort)
-			for {
-				tcpConn, err := ln.Accept()
-				if err != nil {
-					return
-				}
-				go proxyToGuest(v, token, tcpConn, f.GuestPort)
-			}
-		}(fwd)
-	}
-}
-
-func proxyToGuest(v vm.VM, token string, tcpConn net.Conn, guestPort int) {
-	defer tcpConn.Close()
-
-	vsockConn, err := v.VsockConnect(uint32(vsockProto.DefaultPort))
-	if err != nil {
-		return
-	}
-	defer vsockConn.Close()
-
-	req := vsockProto.ConnectRequest{
-		Type:  vsockProto.TypeConnect,
-		Token: token,
-		Addr:  fmt.Sprintf("127.0.0.1:%d", guestPort),
-	}
-	if err := vsockProto.WriteJSON(vsockConn, &req); err != nil {
-		return
-	}
-
-	var resp vsockProto.ConnectResponse
-	if err := vsockProto.ReadJSON(vsockConn, &resp); err != nil {
-		return
-	}
-	if !resp.OK {
-		fmt.Fprintf(os.Stderr, "dew: forward connect failed: %s\n", resp.Error)
-		return
-	}
-
-	done := make(chan struct{})
-	go func() { io.Copy(vsockConn, tcpConn); close(done) }()
-	io.Copy(tcpConn, vsockConn)
-	<-done
 }
 
 func parseShare(s string) (vm.SharedDir, error) {

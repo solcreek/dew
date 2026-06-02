@@ -8,6 +8,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -19,13 +20,28 @@ import (
 
 // State holds the daemon's runtime state.
 type State struct {
-	VM        vm.VM
-	Token     string
-	VsockPort uint32
+	VM         vm.VM
+	Token      string
+	VsockPort  uint32
 	SocketPath string
 
 	listener net.Listener
 	mu       sync.Mutex
+
+	// Port forwards live as long as the daemon does. The daemon
+	// owns them so a separate CLI invocation (`dew forward add ...`)
+	// can register a new one against the same VM without restarting.
+	forwardMu sync.Mutex
+	forwards  map[string]*ForwardEntry
+}
+
+// ForwardEntry records a live host→guest TCP forward. Keyed by
+// "host:guest" in State.forwards so duplicate adds are idempotent
+// and forward-remove can find the listener.
+type ForwardEntry struct {
+	HostPort  int
+	GuestPort int
+	listener  net.Listener
 }
 
 // ExecRequest is received from CLI clients over the Unix socket.
@@ -41,10 +57,22 @@ type State struct {
 // When both are set, Argv wins. Older clients that only know about
 // Command still work without changes.
 type ExecRequest struct {
+	// Kind dispatches inside the daemon. Empty string keeps the
+	// pre-v0.7.22 wire format compatible (treated as "exec"); newer
+	// clients can request "forward-add", "forward-remove", or
+	// "forward-list" to manage runtime port forwards without
+	// restarting the VM.
+	Kind string `json:"kind,omitempty"`
+
+	// exec mode
 	Command   string   `json:"command,omitempty"`
 	Argv      []string `json:"argv,omitempty"`
 	Stream    bool     `json:"stream,omitempty"`
 	TimeoutMs int      `json:"timeout_ms,omitempty"`
+
+	// forward mode (kind = "forward-*")
+	HostPort  int `json:"host_port,omitempty"`
+	GuestPort int `json:"guest_port,omitempty"`
 }
 
 // SocketDir returns the directory for daemon sockets.
@@ -133,6 +161,159 @@ func (s *State) handleClient(conn net.Conn) {
 		return
 	}
 
+	switch req.Kind {
+	case "", "exec":
+		s.handleExec(conn, req)
+	case "forward-add":
+		s.handleForwardAdd(conn, req)
+	case "forward-remove":
+		s.handleForwardRemove(conn, req)
+	case "forward-list":
+		s.handleForwardList(conn)
+	default:
+		json.NewEncoder(conn).Encode(map[string]string{"error": "unknown kind: " + req.Kind})
+	}
+}
+
+// AddForward spawns a host TCP listener that proxies into the
+// guest via vsock. Idempotent on (host,guest) pairs — re-adding the
+// same forward is a no-op rather than an error so callers (initial
+// dew start AND runtime forward-add) can share one entry point.
+//
+// Returns the resolved listening address (host:port) so the caller
+// can confirm what was actually bound.
+func (s *State) AddForward(hostPort, guestPort int) (string, error) {
+	if hostPort == 0 || guestPort == 0 {
+		return "", fmt.Errorf("forward: host_port and guest_port required")
+	}
+	key := fmt.Sprintf("%d:%d", hostPort, guestPort)
+
+	s.forwardMu.Lock()
+	if s.forwards == nil {
+		s.forwards = map[string]*ForwardEntry{}
+	}
+	if existing, ok := s.forwards[key]; ok {
+		s.forwardMu.Unlock()
+		return existing.listener.Addr().String(), nil
+	}
+	s.forwardMu.Unlock()
+
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", hostPort))
+	if err != nil {
+		return "", fmt.Errorf("forward listen %d: %w", hostPort, err)
+	}
+
+	entry := &ForwardEntry{HostPort: hostPort, GuestPort: guestPort, listener: ln}
+	s.forwardMu.Lock()
+	s.forwards[key] = entry
+	s.forwardMu.Unlock()
+
+	go func() {
+		for {
+			tcpConn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go s.proxyToGuest(tcpConn, guestPort)
+		}
+	}()
+	return ln.Addr().String(), nil
+}
+
+// RemoveForward closes the host listener for the given pair. The
+// forward goroutine exits on the resulting Accept error. Returns
+// nil if no such forward existed — callers (grove uninstall, etc.)
+// can call defensively without first checking.
+func (s *State) RemoveForward(hostPort, guestPort int) error {
+	key := fmt.Sprintf("%d:%d", hostPort, guestPort)
+	s.forwardMu.Lock()
+	entry, ok := s.forwards[key]
+	if ok {
+		delete(s.forwards, key)
+	}
+	s.forwardMu.Unlock()
+	if !ok {
+		return nil
+	}
+	return entry.listener.Close()
+}
+
+// ListForwards returns a snapshot of active forwards. Order is not
+// guaranteed; callers wanting deterministic output sort by
+// HostPort themselves.
+func (s *State) ListForwards() []ForwardEntry {
+	s.forwardMu.Lock()
+	defer s.forwardMu.Unlock()
+	out := make([]ForwardEntry, 0, len(s.forwards))
+	for _, e := range s.forwards {
+		out = append(out, ForwardEntry{HostPort: e.HostPort, GuestPort: e.GuestPort})
+	}
+	return out
+}
+
+// proxyToGuest is the per-connection bridge: read from the host
+// TCP conn, push over vsock to the guest agent's TCP-proxy port,
+// copy bytes both ways. Mirrors the original cmd/dew implementation
+// that lived next to startPortForwards.
+func (s *State) proxyToGuest(tcpConn net.Conn, guestPort int) {
+	defer tcpConn.Close()
+	vsockConn, err := s.VM.VsockConnect(s.VsockPort)
+	if err != nil {
+		return
+	}
+	defer vsockConn.Close()
+
+	req := vsockProto.ConnectRequest{
+		Type:  vsockProto.TypeConnect,
+		Token: s.Token,
+		Addr:  fmt.Sprintf("127.0.0.1:%d", guestPort),
+	}
+	if err := vsockProto.WriteJSON(vsockConn, &req); err != nil {
+		return
+	}
+	var resp vsockProto.ConnectResponse
+	if err := vsockProto.ReadJSON(vsockConn, &resp); err != nil {
+		return
+	}
+	if !resp.OK {
+		return
+	}
+	done := make(chan struct{})
+	go func() { io.Copy(vsockConn, tcpConn); close(done) }()
+	io.Copy(tcpConn, vsockConn)
+	<-done
+}
+
+func (s *State) handleForwardAdd(conn net.Conn, req ExecRequest) {
+	addr, err := s.AddForward(req.HostPort, req.GuestPort)
+	if err != nil {
+		json.NewEncoder(conn).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	json.NewEncoder(conn).Encode(map[string]any{
+		"ok":         true,
+		"host_port":  req.HostPort,
+		"guest_port": req.GuestPort,
+		"addr":       addr,
+	})
+}
+
+func (s *State) handleForwardRemove(conn net.Conn, req ExecRequest) {
+	if err := s.RemoveForward(req.HostPort, req.GuestPort); err != nil {
+		json.NewEncoder(conn).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	json.NewEncoder(conn).Encode(map[string]any{"ok": true})
+}
+
+func (s *State) handleForwardList(conn net.Conn) {
+	json.NewEncoder(conn).Encode(map[string]any{
+		"ok":       true,
+		"forwards": s.ListForwards(),
+	})
+}
+
+func (s *State) handleExec(conn net.Conn, req ExecRequest) {
 	// Connect to guest agent via vsock
 	vsockConn, err := s.VM.VsockConnect(s.VsockPort)
 	if err != nil {
