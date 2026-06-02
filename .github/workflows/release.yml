@@ -279,7 +279,7 @@ jobs:
 
           cat > Formula/dew.rb <<FORMULA
           class Dew < Formula
-            desc "Ultra-lightweight VM + deploy tool. One Go binary for local dev and production."
+            desc "Sandbox Linux compute on macOS — no Docker, no VPN, agent-friendly"
             homepage "https://dewvm.dev"
             version "${VER}"
             license "MIT"
