@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.19] - 2026-06-01
+
+Deprecates the pre-packaged apps surface. dew is settling on its
+identity as a sandboxed Linux compute primitive; the curated app
+installer is a different product shape and will move to a separate
+tool. All existing functionality keeps working through the
+deprecation window.
+
+### Changed
+
+- **`dew apps` / `dew install` / `dew app run/stop/list`** now print
+  a one-line deprecation notice on stderr before doing their work:
+
+      dew: the pre-packaged apps catalog will move to a separate
+           tool in a future release.
+           Existing apps keep working until then; see
+           github.com/solcreek/dew ROADMAP for details.
+
+  Behavior is unchanged; `--json` suppresses the notice so
+  machine-readable output stays parseable.
+
+- **`dew --help`** main usage no longer lists the Apps block. The
+  per-subcommand `dew app --help` carries the same deprecation note
+  up top so anyone who finds the surface learns immediately.
+
+- README front-page example, "Run open-source apps" section,
+  architecture diagram, and profile table updated to reflect the
+  primitive-first identity.
+
+### Notes for tool authors
+
+- The deprecation notice deliberately does not name the target
+  tool, per dew's repo-independence policy. Watch the ROADMAP for
+  the migration plan once the new repo lands.
+
 ## [0.7.18] - 2026-06-01
 
 UX correctness + agent discoverability pass. Closes seven items
