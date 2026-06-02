@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"testing"
 
@@ -16,11 +17,49 @@ import (
 // minimal stub works.
 type stubVM struct{}
 
-func (stubVM) Start(context.Context) error                           { return nil }
-func (stubVM) Stop(context.Context) error                            { return nil }
-func (stubVM) State() vm.State                                       { return vm.StateRunning }
-func (stubVM) WaitForState(context.Context, vm.State) error          { return nil }
-func (stubVM) VsockConnect(uint32) (net.Conn, error)                 { return nil, nil }
+func (stubVM) Start(context.Context) error                  { return nil }
+func (stubVM) Stop(context.Context) error                   { return nil }
+func (stubVM) State() vm.State                              { return vm.StateRunning }
+func (stubVM) WaitForState(context.Context, vm.State) error { return nil }
+
+// VsockConnect returns an error in tests — proxyToGuest checks
+// the error and returns early. Returning (nil, nil) used to make
+// the proxy try to defer Close() on a nil net.Conn and panic.
+func (stubVM) VsockConnect(uint32) (net.Conn, error) {
+	return nil, fmt.Errorf("stub VM has no vsock")
+}
+
+// Dual-stack: the forward MUST bind both 127.0.0.1 and ::1 so
+// `localhost` works regardless of which family the resolver
+// returns first. Without this, the IPv6 leg of localhost ends up
+// at whatever else holds [::1]:PORT (or refuses), producing the
+// notorious "curl works but Safari 404s" mystery.
+func TestAddForward_DualStackBind(t *testing.T) {
+	s := &State{VM: stubVM{}}
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	if _, err := s.AddForward(port, 8090); err != nil {
+		t.Fatalf("AddForward: %v", err)
+	}
+	defer s.RemoveForward(port, 8090)
+
+	// Dialing the IPv6 loopback at the same port should succeed —
+	// that's the proof we bound both legs, not just IPv4.
+	conn6, err := net.Dial("tcp6", fmt.Sprintf("[::1]:%d", port))
+	if err != nil {
+		t.Fatalf("IPv6 dial failed: %v (forward isn't dual-stack)", err)
+	}
+	conn6.Close()
+
+	// IPv4 still works of course.
+	conn4, err := net.Dial("tcp4", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("IPv4 dial failed: %v", err)
+	}
+	conn4.Close()
+}
 
 // Adding a forward must actually start a host TCP listener — that's
 // the load-bearing observable behavior (the listener is what makes

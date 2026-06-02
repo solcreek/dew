@@ -38,10 +38,18 @@ type State struct {
 // ForwardEntry records a live host→guest TCP forward. Keyed by
 // "host:guest" in State.forwards so duplicate adds are idempotent
 // and forward-remove can find the listener.
+//
+// We bind BOTH 127.0.0.1 (IPv4) and ::1 (IPv6) per forward because
+// `localhost` on macOS resolves to both — curl/Safari/browsers
+// flip between legs unpredictably, and an IPv4-only forward sends
+// every IPv6 request to whatever else happens to be on that port
+// (or returns refused). Keeping both listeners in the same entry
+// means RemoveForward tears them down atomically.
 type ForwardEntry struct {
 	HostPort  int
 	GuestPort int
-	listener  net.Listener
+	listener  net.Listener // IPv4 loopback (127.0.0.1)
+	listener6 net.Listener // IPv6 loopback ([::1]) — nil if bind failed
 }
 
 // ExecRequest is received from CLI clients over the Unix socket.
@@ -202,21 +210,34 @@ func (s *State) AddForward(hostPort, guestPort int) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("forward listen %d: %w", hostPort, err)
 	}
+	// IPv6 leg is best-effort. Some sandboxed environments have ::1
+	// disabled — we still want the IPv4 path to work in that case.
+	// On macOS dev machines ::1 binds fine and the dual-stack pairing
+	// kills the "localhost flips to wrong process" bug class.
+	ln6, err6 := net.Listen("tcp", fmt.Sprintf("[::1]:%d", hostPort))
+	if err6 != nil {
+		fmt.Fprintf(os.Stderr, "dew: forward IPv6 leg unavailable for :%d (%v); IPv4 only\n", hostPort, err6)
+		ln6 = nil
+	}
 
-	entry := &ForwardEntry{HostPort: hostPort, GuestPort: guestPort, listener: ln}
+	entry := &ForwardEntry{HostPort: hostPort, GuestPort: guestPort, listener: ln, listener6: ln6}
 	s.forwardMu.Lock()
 	s.forwards[key] = entry
 	s.forwardMu.Unlock()
 
-	go func() {
+	acceptLoop := func(l net.Listener) {
 		for {
-			tcpConn, err := ln.Accept()
+			tcpConn, err := l.Accept()
 			if err != nil {
 				return
 			}
 			go s.proxyToGuest(tcpConn, guestPort)
 		}
-	}()
+	}
+	go acceptLoop(ln)
+	if ln6 != nil {
+		go acceptLoop(ln6)
+	}
 	return ln.Addr().String(), nil
 }
 
@@ -235,7 +256,14 @@ func (s *State) RemoveForward(hostPort, guestPort int) error {
 	if !ok {
 		return nil
 	}
-	return entry.listener.Close()
+	err := entry.listener.Close()
+	if entry.listener6 != nil {
+		// Always close both; surface only the first error.
+		if e6 := entry.listener6.Close(); e6 != nil && err == nil {
+			err = e6
+		}
+	}
+	return err
 }
 
 // ListForwards returns a snapshot of active forwards. Order is not
