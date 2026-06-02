@@ -103,20 +103,25 @@ Examples:
   dew exec -- sh -c 'echo hi; date'
   dew exec --json -- npm test
 `,
-	"start": `dew start — boot a VM without running a command
+	"start": `dew vm start — boot a VM without running a command
 
 Usage:
-  dew start [flags]
+  dew vm start [flags]
 
 Profile must be specified explicitly (no project detection):
   --profile minimal|node|python|standard
 
 The VM registers with the daemon at ~/.local/state/dew/default.sock,
-so dew exec can attach to it. Use dew down to stop.
+so dew exec can attach to it. Networking is on by default; pass
+--network-policy=restricted to lock down outbound. Use dew vm stop
+(or its alias dew down) to stop.
 
 Examples:
-  dew start --profile minimal
-  dew start --profile node --share ./code:rw
+  dew vm start --profile minimal
+  dew vm start --profile standard --forward 8090:8090
+
+Note: ` + "`dew start`" + ` is the legacy alias for this command and is
+slated for removal in v0.9.x.
 `,
 	"down": `dew down — stop the running VM
 

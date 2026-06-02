@@ -365,7 +365,10 @@ func main() {
 
 	var err error
 	switch cmd {
+	case "vm":
+		err = cmdVM(subArgs)
 	case "start":
+		deprecationHint("start", "vm start")
 		err = cmdStart(subArgs)
 	case "run":
 		err = cmdRun(subArgs)
@@ -419,8 +422,10 @@ func main() {
 	case "update":
 		err = selfupdate.Update(version)
 	case "status":
+		deprecationHint("status", "vm status")
 		err = cmdStatus(subArgs)
 	case "forward":
+		deprecationHint("forward", "vm forward")
 		err = cmdForward(subArgs)
 	case "version", "--version", "-v":
 		fmt.Printf("dew %s\n", version)
@@ -476,10 +481,18 @@ func printUsage() {
 
 Try: dew run -- uname -a
 
-Dev:
+Dev (project-aware):
   dew up [dir]                   Start dev environment (auto-detect project)
   dew up --with postgres,redis   Dev with services
   dew down                       Stop dev environment
+
+VM (generic compute primitive):
+  dew vm start [--profile X]     Boot a VM without project detection
+  dew vm stop                    Stop the running VM
+  dew vm status                  Show whether a VM is running
+  dew vm forward add HOST:GUEST  Add a host→guest port forward
+  dew vm forward remove H:G      Remove an existing forward
+  dew vm forward list            List active forwards
 
 Share:
   dew share [port]               Create temporary public HTTPS URL
@@ -499,10 +512,6 @@ Infrastructure:
 Advanced:
   dew run [--] <cmd>             Execute in ephemeral VM
   dew exec <cmd>                 Execute in running VM
-  dew status                     Show whether a VM is running
-  dew forward add HOST:GUEST     Add a host→guest port forward
-  dew forward remove HOST:GUEST  Remove an existing forward
-  dew forward list               List active forwards
   dew assets ...                 Manage VM images
   dew doctor                     Diagnose environment issues
   dew update                     Update to latest version
@@ -764,6 +773,16 @@ func cmdStart(args []string) error {
 	}
 	if err := resolveAssets(&cfg); err != nil {
 		return err
+	}
+
+	// Network on by default for `dew vm start` (and its legacy alias
+	// `dew start`). The help text has always claimed this; the
+	// implementation did not. Aligning the two — grove and any other
+	// caller that expects a network-enabled VM no longer has to pass
+	// --network. Opt-out is `--network-policy=restricted` (which
+	// still implies Network=true but locks down outbound traffic).
+	if !cfg.Network && cfg.NetworkPolicy == "" {
+		cfg.Network = true
 	}
 
 	// Always enable vsock (needed for daemon exec + port forwarding)
