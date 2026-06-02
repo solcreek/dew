@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.22] - 2026-06-02
+
+The VM-lifecycle commands move under a `dew vm` namespace and
+networking is on by default for fresh VM boots. The legacy top-level
+commands keep working with a deprecation hint and are scheduled for
+removal in v0.9.x.
+
+### Added
+
+- **`dew vm` namespace** — `dew vm start | stop | status | forward`
+  group VM-primitive commands distinct from `dew up` (project dev
+  workload). The root help now surfaces both side by side.
+- **`dew status`** — query whether a VM is running without side
+  effects. Distinguishes a clean stopped state from a stale socket
+  (crash leftover). Always exits 0.
+- **`dew forward add | remove | list`** — manage host→guest port
+  forwards on a running VM without restarting it. Initial forwards
+  from `--forward` flags go through the same daemon path.
+
+### Changed
+
+- **`dew vm start` enables networking by default.** The help text
+  always claimed this; the implementation now matches. Pass
+  `--network-policy=restricted` to lock down outbound.
+
+### Deprecated
+
+- Top-level `dew start | stop | status | forward` — use the
+  `dew vm` namespace forms. Aliases keep working for one release
+  cycle and print a stderr hint pointing at the new path.
+
 ## [0.7.21] - 2026-06-02
 
 `dew share` gains an NDJSON event stream for tools and agents that
