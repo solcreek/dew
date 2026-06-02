@@ -298,39 +298,7 @@ func TestShouldSkip_Files(t *testing.T) {
 }
 
 // ── Manifest fetch (mock) ──
-
-func TestFetchManifest(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{
-			"name":         "test-app",
-			"version":      "1.0.0",
-			"description":  "A test app",
-			"port":         3000,
-			"runtime":      "node",
-			"docker_image": "test/app:latest",
-			"health_check": "/",
-		})
-	}))
-	defer srv.Close()
-
-	// Can't easily test fetchManifest since it hardcodes the URL.
-	// But we can test the JSON parsing.
-	resp, _ := http.Get(srv.URL)
-	defer resp.Body.Close()
-
-	var m appManifest
-	json.NewDecoder(resp.Body).Decode(&m)
-
-	if m.Name != "test-app" {
-		t.Errorf("name = %q", m.Name)
-	}
-	if m.Port != 3000 {
-		t.Errorf("port = %d", m.Port)
-	}
-	if m.DockerImage != "test/app:latest" {
-		t.Errorf("docker_image = %q", m.DockerImage)
-	}
-}
+// Removed in v0.7.20 with the apps surface itself.
 
 // ── Token generation ──
 

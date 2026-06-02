@@ -160,28 +160,6 @@ Usage:
 The port defaults to 3000. Returns a temporary public URL backed by
 a Cloudflare tunnel; the tunnel dies when you ^C.
 `,
-	"app":  appHelpText(),
-	"apps": appHelpText(),
-}
-
-func appHelpText() string {
-	return `dew app — run an open-source app locally (deprecated)
-
-This catalog will move to a separate tool in a future release.
-Existing functionality keeps working until then; see the dew
-ROADMAP for migration details.
-
-Usage:
-  dew apps                       Browse available apps.
-  dew app run <name> [flags]     Run an app (boots if needed).
-  dew app stop <name>            Stop a running app.
-  dew app list [--json]          List running apps.
-
-Flags:
-  --port N      Override the host port.
-  --dry-run     Print the plan without running.
-  --json        Machine-readable output.
-`
 }
 
 // printSubcommandHelp prints the help block for subcommand and

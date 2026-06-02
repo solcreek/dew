@@ -363,12 +363,16 @@ func main() {
 		err = cmdRun(subArgs)
 	case "exec":
 		err = cmdExec(subArgs)
-	case "install":
-		err = cmdInstall(subArgs)
-	case "app":
-		err = cmdInstall(subArgs)
-	case "apps":
-		err = cmdInstallList()
+	case "install", "app", "apps":
+		// The pre-packaged apps catalog moved to a standalone tool in
+		// v0.7.20. The deprecation notice in v0.7.19 gave the heads-up;
+		// this is the removal. Subcommands respond with a clean usage
+		// error so scripts that survived the deprecation window fail
+		// fast and obvious.
+		err = dewerr.New(dewerr.CodeUsage,
+			"dew "+cmd+" was removed in v0.7.20.\n"+
+				"The pre-packaged apps catalog now lives in a separate tool.\n"+
+				"For arbitrary container workloads in dew, use: dew run --network -- <cmd>")
 	case "build":
 		err = cmdBuild(subArgs)
 	case "deploy":

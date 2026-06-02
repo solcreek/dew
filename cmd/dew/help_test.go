@@ -22,8 +22,7 @@ func TestSubcommandHelp_CoversUserFacingCommands(t *testing.T) {
 		"build",
 		"deploy",
 		"share",
-		"app",     // dew app run, dew app stop, dew app list
-		"apps",    // dew apps (catalog)
+		// "app" / "apps" removed in v0.7.20 with the apps surface itself
 	}
 	for _, name := range mustHave {
 		t.Run(name, func(t *testing.T) {
@@ -48,7 +47,6 @@ func TestSubcommandHelp_FlagsTheReportFlagged(t *testing.T) {
 	cases := map[string][]string{
 		"up":  {"--dry-run", "--with", "--profile", "--json"},
 		"run": {"--network", "--share", "--json", "--profile"},
-		"app": {"--port", "--dry-run", "--json"},
 	}
 	for cmd, flags := range cases {
 		text := subcommandHelp[cmd]

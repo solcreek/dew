@@ -1,8 +1,7 @@
 #!/bin/bash
 set -uo pipefail
 
-# Benchmark: Lima vs Dew (Alpine) vs Dew (Turbo)
-# Measures: boot time, exec latency, total time, binary/image sizes
+# Benchmark: Lima (cold/warm) vs Dew (Alpine/Turbo/Session)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEW="$SCRIPT_DIR/dew"
@@ -17,68 +16,75 @@ echo "Runs: $RUNS per target"
 echo ""
 
 # --- Sizes ---
-echo "--- Binary / Image Sizes ---"
+echo "--- Sizes ---"
 echo "dew binary:       $(ls -lh "$DEW" | awk '{print $5}')"
-echo "dew-agent:        $(ls -lh "$SCRIPT_DIR/dew-agent-linux-amd64" 2>/dev/null | awk '{print $5}' || echo 'N/A')"
 echo "initramfs:        $(ls -lh "$INITRD" | awk '{print $5}')"
 echo "Alpine kernel:    $(ls -lh "$KERNEL_ALPINE" | awk '{print $5}')"
 [ -f "$KERNEL_TURBO" ] && echo "Turbo kernel:     $(ls -lh "$KERNEL_TURBO" | awk '{print $5}')"
-echo "Lima binary:      $(ls -lhL "$(which limactl)" | awk '{print $5}')"
-echo "Lima VM disk:     $(du -sh ~/.lima/creek-sandbox/diffdisk 2>/dev/null | awk '{print $1}' || echo 'N/A')"
+echo "Lima binary:      $(ls -lhL "$(which limactl)" 2>/dev/null | awk '{print $5}' || echo 'N/A')"
 echo ""
 
-# --- Lima ---
-echo "--- Lima ---"
-if limactl list 2>/dev/null | grep -q creek-sandbox; then
+# --- Lima warm ---
+echo "--- Lima (warm, SSH on running VM) ---"
+if limactl list 2>/dev/null | grep -q "Running"; then
     for i in $(seq 1 $RUNS); do
         T1=$(python3 -c "import time; print(int(time.time()*1000))")
-        OUTPUT=$(limactl shell creek-sandbox -- bash -c 'cat /proc/uptime && uname -r' 2>&1 | grep -v mux_client | grep -v ControlSocket)
+        limactl shell creek-sandbox -- cat /proc/uptime 2>&1 | grep -v mux_client | grep -v ControlSocket >/dev/null
         T2=$(python3 -c "import time; print(int(time.time()*1000))")
-        WALL=$((T2 - T1))
-        UPTIME=$(echo "$OUTPUT" | head -1 | awk '{print $1}')
-        KVER=$(echo "$OUTPUT" | tail -1)
-        echo "  Run $i: wall=${WALL}ms  guest_uptime=${UPTIME}s  kernel=$KVER"
+        echo "  Run $i: wall=$((T2-T1))ms"
     done
-    echo "  Note: Lima VM already running (no cold boot measured)"
 else
-    echo "  Lima VM not running, skipping"
+    echo "  VM not running, skipping"
 fi
 echo ""
 
-# --- Dew Alpine ---
-echo "--- Dew (Alpine official kernel) ---"
+# --- Lima cold ---
+echo "--- Lima (cold boot → exec → stop) ---"
+if which limactl >/dev/null 2>&1 && limactl list 2>/dev/null | grep -q creek-sandbox; then
+    # Stop if running
+    limactl stop creek-sandbox 2>/dev/null || true
+    sleep 1
+    for i in $(seq 1 $RUNS); do
+        T1=$(python3 -c "import time; print(int(time.time()*1000))")
+        limactl start creek-sandbox 2>&1 >/dev/null
+        limactl shell creek-sandbox -- cat /proc/uptime 2>&1 | grep -v mux_client | grep -v ControlSocket >/dev/null
+        T2=$(python3 -c "import time; print(int(time.time()*1000))")
+        echo "  Run $i: wall=$((T2-T1))ms"
+        if [ $i -lt $RUNS ]; then
+            limactl stop creek-sandbox 2>/dev/null || true
+            sleep 1
+        fi
+    done
+else
+    echo "  Lima not available, skipping"
+fi
+echo ""
+
+# --- Dew Alpine cold ---
+echo "--- Dew Alpine (cold boot → exec → shutdown) ---"
 if [ -f "$DEW" ] && [ -f "$KERNEL_ALPINE" ]; then
     for i in $(seq 1 $RUNS); do
         T1=$(python3 -c "import time; print(int(time.time()*1000))")
-        OUTPUT=$($DEW run --kernel "$KERNEL_ALPINE" --initrd "$INITRD" -- "cat /proc/uptime && uname -r" 2>&1)
+        OUTPUT=$($DEW run --kernel "$KERNEL_ALPINE" --initrd "$INITRD" -- "cat /proc/uptime" 2>&1)
         T2=$(python3 -c "import time; print(int(time.time()*1000))")
-        WALL=$((T2 - T1))
         BOOT=$(echo "$OUTPUT" | grep "VM running" | grep -o '[0-9]*ms' || echo "?")
-        UPTIME=$(echo "$OUTPUT" | grep -E '^[0-9]+\.[0-9]' | head -1 | awk '{print $1}')
-        KVER=$(echo "$OUTPUT" | grep -E '^[0-9]+\.' -v | grep -v "dew:" | tail -1)
-        echo "  Run $i: wall=${WALL}ms  boot=${BOOT}  guest_uptime=${UPTIME}s  kernel=$KVER"
+        echo "  Run $i: wall=$((T2-T1))ms  boot=$BOOT"
     done
-else
-    echo "  Not available"
 fi
 echo ""
 
-# --- Dew Turbo ---
-echo "--- Dew (Turbo kernel, vsock built-in) ---"
+# --- Dew Turbo cold ---
+echo "--- Dew Turbo (cold boot → exec → shutdown) ---"
 if [ -f "$DEW" ] && [ -f "$KERNEL_TURBO" ]; then
-    # Turbo doesn't need modprobe, build initramfs without modules
     for i in $(seq 1 $RUNS); do
         T1=$(python3 -c "import time; print(int(time.time()*1000))")
-        OUTPUT=$($DEW run --kernel "$KERNEL_TURBO" --initrd "$INITRD" -- "cat /proc/uptime && uname -r" 2>&1)
+        OUTPUT=$($DEW run --kernel "$KERNEL_TURBO" --initrd "$INITRD" -- "cat /proc/uptime" 2>&1)
         T2=$(python3 -c "import time; print(int(time.time()*1000))")
-        WALL=$((T2 - T1))
         BOOT=$(echo "$OUTPUT" | grep "VM running" | grep -o '[0-9]*ms' || echo "?")
-        UPTIME=$(echo "$OUTPUT" | grep -E '^[0-9]+\.[0-9]' | head -1 | awk '{print $1}')
-        KVER=$(echo "$OUTPUT" | grep -E '^[0-9]+\.' -v | grep -v "dew:" | tail -1)
-        echo "  Run $i: wall=${WALL}ms  boot=${BOOT}  guest_uptime=${UPTIME}s  kernel=$KVER"
+        echo "  Run $i: wall=$((T2-T1))ms  boot=$BOOT"
     done
 else
-    echo "  Turbo kernel not built yet, skipping"
+    echo "  Turbo kernel not built, skipping"
 fi
 echo ""
 
