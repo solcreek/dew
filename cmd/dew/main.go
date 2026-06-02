@@ -1233,7 +1233,14 @@ func cmdUp(args []string) error {
 		Initrd:   parsedCfg.Initrd,
 		CmdLine:  "console=hvc0",
 		Network:  true,
-		Forwards: []vm.PortForward{{HostPort: proj.Port, GuestPort: proj.Port}},
+		// Initial host-port is provisional: it's the framework's
+		// default (Vite=5173, Next=3000, etc.). The dev server may
+		// bind to a different port (vite.config.ts can override),
+		// in which case the launch loop below detects + adds the
+		// real forward dynamically. We also shift the host side if
+		// preferred is busy — matches grove's anti-collision logic
+		// so a stray dev server on the host doesn't break dew up.
+		Forwards: []vm.PortForward{provisionalForward(proj.Port)},
 		SharedDirs: []vm.SharedDir{
 			{Tag: "project", HostPath: absDir, ReadOnly: false},
 		},
@@ -1585,9 +1592,44 @@ func cmdUp(args []string) error {
 	}
 	execInVM("cd /app && setsid sh -c " + shellQuote(proj.DevCmd) + " </dev/null >>/tmp/dew-dev.log 2>&1 &")
 	healthy := false
-	url := fmt.Sprintf("http://localhost:%d/", proj.Port)
+	// HostPort and GuestPort start at proj.Port (framework default).
+	// On detection of the dev server's actual announced port we
+	// dynamically add a new forward and switch the URL we probe.
+	// Without this, a Vite app whose vite.config.ts sets port=3000
+	// would have us forward 5173 forever and the agent could never
+	// reach the dev server.
+	hostPort := cfg.Forwards[0].HostPort
+	guestPort := proj.Port
+	url := fmt.Sprintf("http://localhost:%d/", hostPort)
+	detected := false
 	for i := 0; i < 30; i++ {
 		time.Sleep(500 * time.Millisecond)
+
+		// Re-detect the real port until we've found one different
+		// from the provisional guess; then stop scanning the log to
+		// avoid pointless exec calls every tick.
+		if !detected {
+			if p := readDetectedDevPort(d, token, cfg.VsockPort); p > 0 && p != guestPort {
+				freeHost, _, perr := pickFreeHostPort(p, 50)
+				if perr == nil {
+					if _, err := dmn.AddForward(freeHost, p); err == nil {
+						hostPort = freeHost
+						guestPort = p
+						url = fmt.Sprintf("http://localhost:%d/", hostPort)
+						emit(map[string]interface{}{
+							"type": "port-redetected",
+							"detected_guest_port": p, "host_port": freeHost,
+							"replaces_initial": proj.Port,
+						})
+						if !flagJSON && !flagEvents {
+							fmt.Fprintf(os.Stderr, "  detected actual dev port: %d → %s\n", p, url)
+						}
+					}
+				}
+				detected = true
+			}
+		}
+
 		resp, err := http.Get(url)
 		if err == nil {
 			resp.Body.Close()
@@ -1595,6 +1637,8 @@ func cmdUp(args []string) error {
 			break
 		}
 	}
+	// Final URL printed downstream reflects whatever the loop
+	// converged on (provisional or detected).
 
 	totalElapsed := time.Since(start)
 	totalMs := totalElapsed.Milliseconds()
@@ -1604,7 +1648,8 @@ func cmdUp(args []string) error {
 		// have to scrape "http://" out of human progress lines (which
 		// can collide with kernel dmesg noise like the X.509 cert log).
 		readyEvent := map[string]interface{}{
-			"type": "ready", "url": url, "port": proj.Port,
+			"type": "ready", "url": url, "port": hostPort,
+			"guest_port": guestPort,
 			"framework": proj.Framework, "elapsed_ms": totalMs,
 		}
 		// emit() fires in either --events or --json mode (see the
@@ -1624,7 +1669,8 @@ func cmdUp(args []string) error {
 		// distinguish "URL is up" from "URL was tried, server didn't
 		// answer in time" with a single grep.
 		timeoutEvent := map[string]interface{}{
-			"type": "timeout", "url": url, "port": proj.Port,
+			"type": "timeout", "url": url, "port": hostPort,
+			"guest_port": guestPort,
 			"framework": proj.Framework, "elapsed_ms": totalMs,
 			"hint": "server may still be starting, try opening the URL manually",
 		}
