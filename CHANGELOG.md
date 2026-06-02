@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.21] - 2026-06-02
+
+`dew share` gains an NDJSON event stream for tools and agents that
+want to react to tunnel lifecycle in real time. One JSON object per
+line on stdout; existing `--json` single-shot output is unchanged.
+
+### Added
+
+- **`dew share --events <port>`** — emit lifecycle events as NDJSON.
+  Events: `starting`, `tunnel-url`, `established`, `probe-timeout`,
+  `closed`. Each carries `event` + `ts` (RFC3339Nano) plus event-
+  specific fields. Help text and contract pinned by unit tests so
+  downstream parsers can rely on the shape.
+
 ## [0.7.20] - 2026-06-02
 
 The pre-packaged apps surface — deprecated in v0.7.19 — is removed.
