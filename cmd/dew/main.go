@@ -309,12 +309,20 @@ func main() {
 		os.Exit(int(dewerr.CodeUsage))
 	}
 
-	// Pre-scan args for --json so the global flag is set BEFORE any
-	// cmd dispatch (including the unknown-command error path).
+	// Pre-scan args for global no-value flags so they're set BEFORE
+	// cmd dispatch — covers cases where a subcommand's own arg parser
+	// doesn't run parseFlags() (e.g. cmdShare). Position-independent:
+	// `dew --events share 3000` and `dew share --events 3000` both work.
 	for _, a := range os.Args[1:] {
-		if a == "--json" {
+		switch a {
+		case "--json":
 			flagJSON = true
-			break
+		case "--events":
+			flagEvents = true
+		case "--stream":
+			flagStream = true
+		case "--dry-run":
+			flagDryRun = true
 		}
 	}
 

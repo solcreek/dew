@@ -158,7 +158,25 @@ Usage:
   dew share [port]
 
 The port defaults to 3000. Returns a temporary public URL backed by
-a Cloudflare tunnel; the tunnel dies when you ^C.
+a tunnel implementation; the tunnel dies when you ^C.
+
+Output modes:
+  --json     Single-shot JSON on stdout once the URL is ready:
+               {"url":"https://...","port":"3000"}
+  --events   NDJSON event stream — one JSON object per line — for
+             agents and other tools that want to react to tunnel
+             lifecycle. Events fire in this order:
+               starting       — share invoked; port validated
+               tunnel-url     — URL obtained (load-bearing event)
+               established    — HTTP probe confirmed traffic
+               probe-timeout  — probe ran out before 2xx/3xx
+               closed         — tunnel process exited
+             Each event has ` + "`event`" + ` and ` + "`ts`" + ` (RFC3339Nano);
+             additional fields documented per event in the source.
+
+Examples:
+  dew share 3000
+  dew share --events 3000 | jq 'select(.event=="established")'
 `,
 }
 

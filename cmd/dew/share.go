@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -16,6 +17,46 @@ import (
 
 	"github.com/solcreek/dew/internal/progress"
 )
+
+// emitShareEvent writes a single NDJSON event line to stdout when
+// --events is set. Each event is a self-contained JSON object on
+// one line, terminated by \n. Consumers parse line-by-line.
+//
+// Event contract — see docs/exit-codes.md (and corresponding doc
+// at share-events.md once it lands). Five events fire in order:
+//
+//	starting        — share invoked; port validated
+//	tunnel-url      — public URL obtained from the tunnel impl
+//	established     — HTTP probe confirmed traffic reaches the app
+//	probe-timeout   — probe loop ended without 2xx/3xx
+//	                  (tunnel may still come up; tunnel-url still valid)
+//	closed          — tunnel process exited / signal received
+//
+// Schema is technology-agnostic — events stay valid if we swap
+// cloudflared for our own tunnel implementation later. Fields:
+//
+//	event   string         — one of the names above
+//	ts      string (RFC3339Nano)
+//	url     string         — present from tunnel-url onward
+//	port    string         — present from tunnel-url onward
+//	reason  string         — present on closed (optional)
+//
+// New fields may be added in minor versions; existing fields are
+// stable. Consumers should ignore unknown fields.
+func emitShareEvent(event string, fields map[string]any) {
+	if !flagEvents {
+		return
+	}
+	e := map[string]any{
+		"event": event,
+		"ts":    time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	for k, v := range fields {
+		e[k] = v
+	}
+	b, _ := json.Marshal(e)
+	fmt.Println(string(b))
+}
 
 var tunnelURLPattern = regexp.MustCompile(`https://[a-z0-9-]+\.trycloudflare\.com`)
 
@@ -39,6 +80,8 @@ func cmdShare(args []string) error {
 	if err := checkPort(port); err != nil {
 		return fmt.Errorf("nothing running on port %s", port)
 	}
+
+	emitShareEvent("starting", map[string]any{"port": port})
 
 	cfPath, err := ensureCloudflared()
 	if err != nil {
@@ -81,8 +124,11 @@ func cmdShare(args []string) error {
 	if publicURL == "" {
 		sp.Fail("no tunnel URL received")
 		cmd.Process.Kill()
+		emitShareEvent("closed", map[string]any{"reason": "no_tunnel_url"})
 		return fmt.Errorf("cloudflared did not return a tunnel URL")
 	}
+
+	emitShareEvent("tunnel-url", map[string]any{"url": publicURL, "port": port})
 
 	sp.Step("Verifying tunnel")
 	ready := false
@@ -101,8 +147,10 @@ func cmdShare(args []string) error {
 		sp.Timeout(publicURL)
 		fmt.Fprintf(os.Stderr, "  Tunnel created but edge may still be connecting.\n")
 		fmt.Fprintf(os.Stderr, "  Try opening the URL in a few seconds.\n\n")
+		emitShareEvent("probe-timeout", map[string]any{"url": publicURL, "port": port})
 	} else {
 		sp.Done(publicURL)
+		emitShareEvent("established", map[string]any{"url": publicURL, "port": port})
 	}
 	fmt.Fprintf(os.Stderr, "  localhost:%s → %s\n", port, publicURL)
 	fmt.Fprintf(os.Stderr, "  Press Ctrl+C to stop\n\n")
@@ -112,6 +160,7 @@ func cmdShare(args []string) error {
 	}
 
 	cmd.Wait()
+	emitShareEvent("closed", map[string]any{"reason": "tunnel-exited"})
 	return nil
 }
 
