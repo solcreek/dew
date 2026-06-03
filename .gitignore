@@ -45,3 +45,8 @@ website/public/install.sh
 
 # Internal R&D experiments — never commit
 experiments/
+
+# CI copies repo README into npm/ at publish time so npmjs.com has
+# something to display on the package page. Source of truth is the
+# repo root README; the copy is a build artifact, never committed.
+npm/README.md
