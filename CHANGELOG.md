@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.25] - 2026-06-03
+
+### Fixed
+
+- **Windows: `dew setup` now auto-downloads the rootfs.** Previous
+  builds errored "rootfs not found — download from GitHub Releases"
+  (the auto-download was a TODO). Setup now fetches
+  `dew-rootfs-{x86_64,aarch64}.tar.gz` from the latest release
+  based on the wrapper's GOARCH, streams to a `.part` file, then
+  atomic-renames so a partial download can't leave a corrupt
+  archive that subsequent runs trust.
+- **Windows: `dew vm start` / `dew exec` now find the imported
+  distro.** The lookup parsed `wsl -l -q` output as UTF-8, but
+  wsl.exe emits UTF-16LE with a BOM; the partial NUL-strip
+  workaround left the BOM bytes attached to the first line so a
+  freshly-imported distro could read as absent. Decode UTF-16LE
+  explicitly with BOM detection (also handles UTF-16BE and plain
+  ASCII fallbacks for older WSL builds).
+
+Both bugs blocked the unattended Windows-on-ARM flow after
+v0.7.24 shipped the matching aarch64 rootfs. With both fixed,
+`dew setup → dew vm start → dew exec` runs end-to-end without
+manual intervention.
+
 ## [0.7.24] - 2026-06-03
 
 ### Added
