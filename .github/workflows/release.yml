@@ -92,9 +92,17 @@ jobs:
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dew-agent-linux-amd64 ./cmd/dew-agent/
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dew-agent-linux-arm64 ./cmd/dew-agent/
 
-      - name: Build Windows wrapper
+      - name: Build Windows wrappers (x86_64 + arm64)
+        # Two targets because Windows-on-ARM (Snapdragon laptops, the
+        # Apple Silicon Windows VMs people use to validate Windows
+        # support) can't run the x86_64 binary end-to-end: Microsoft's
+        # x64 emulator (Prism) needs hardware virtualization to work,
+        # and that's exactly what an emulated Apple Silicon Windows
+        # guest doesn't have. The arm64 build runs natively on both
+        # real Windows-ARM hardware and emulated guests.
         run: |
           GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dew-windows-x86_64.exe ./cmd/dew-win/
+          GOOS=windows GOARCH=arm64 go build -ldflags="-s -w" -o dew-windows-arm64.exe ./cmd/dew-win/
 
       - name: Build x86_64 initramfs profiles
         run: bash initramfs/build.sh minimal && bash initramfs/build.sh node && bash initramfs/build.sh standard
@@ -137,7 +145,7 @@ jobs:
           name: linux-assets
           path: |
             dew-agent-linux-*
-            dew-windows-x86_64.exe
+            dew-windows-*.exe
             vmlinuz-x86_64
             initramfs-*-x86_64.cpio.gz
             dew-rootfs-x86_64.tar.gz
@@ -234,6 +242,7 @@ jobs:
             "$ARTIFACTS/linux-assets/dew-agent-linux-amd64" \
             "$ARTIFACTS/linux-assets/dew-agent-linux-arm64" \
             "$ARTIFACTS/linux-assets/dew-windows-x86_64.exe" \
+            "$ARTIFACTS/linux-assets/dew-windows-arm64.exe" \
             "$ARTIFACTS/linux-assets/vmlinuz-x86_64" \
             "$ARTIFACTS/linux-assets/initramfs-minimal-x86_64.cpio.gz" \
             "$ARTIFACTS/linux-assets/initramfs-node-x86_64.cpio.gz" \
