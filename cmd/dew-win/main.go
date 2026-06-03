@@ -1,12 +1,26 @@
 //go:build windows
 
-// dew-win is the Windows wrapper for Dew. It delegates to a custom
-// WSL2 distro that contains the Linux dew-agent + containerd.
+// dew-win is the Windows wrapper for Dew. WSL2 is the VM platform
+// on Windows — Microsoft maintains the kernel and lifecycle, we
+// just import a Linux rootfs as a custom distro ("dew") and run
+// commands inside it via wsl.exe.
 //
-// Flow:
-//   1. Check if WSL2 is available
-//   2. Import Dew distro if not already imported
-//   3. Forward commands to: wsl -d dew -- dew-native <args>
+// Because WSL2 manages the VM, the wrapper translates dew commands
+// directly into WSL operations rather than forwarding them to a
+// dedicated in-distro CLI:
+//
+//   dew setup       → download rootfs + wsl --import dew
+//   dew vm start    → ensure distro is running (wsl auto-starts on use)
+//   dew vm stop     → wsl --terminate dew
+//   dew vm status   → check if distro is registered
+//   dew down        → alias for vm stop
+//   dew exec <cmd>  → wsl -d dew -- <cmd>
+//
+// This is fundamentally different from the macOS path (where we
+// drive Apple Virtualization + our own kernel + initramfs); on
+// Windows the rootfs is the only thing we control, and the wrapper
+// keeps the user-facing command surface aligned so the muscle
+// memory survives the platform switch.
 package main
 
 import (
@@ -37,25 +51,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	var err error
 	switch os.Args[1] {
 	case "version":
 		fmt.Printf("dew %s (windows/wsl2)\n", version)
 	case "help", "--help", "-h":
 		printUsage()
 	case "setup":
-		if err := cmdSetup(); err != nil {
-			fmt.Fprintf(os.Stderr, "dew: %v\n", err)
-			os.Exit(1)
-		}
+		err = cmdSetup()
+	case "vm":
+		err = cmdVM(os.Args[2:])
+	case "exec":
+		err = cmdExec(os.Args[2:])
+	case "down":
+		// alias for `dew vm stop`
+		err = cmdVM([]string{"stop"})
 	default:
-		if err := ensureDistro(); err != nil {
-			fmt.Fprintf(os.Stderr, "dew: %v\n", err)
-			os.Exit(1)
-		}
-		if err := forward(os.Args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "dew: %v\n", err)
-			os.Exit(1)
-		}
+		fmt.Fprintf(os.Stderr, "dew: %q is not implemented in the Windows wrapper yet.\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "Supported on Windows today: setup, vm start|stop|status, exec, down.\n")
+		os.Exit(1)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dew: %v\n", err)
+		os.Exit(1)
 	}
 }
 
@@ -63,14 +81,18 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `dew — ultra-lightweight dev environment (Windows via WSL2)
 
 Usage:
-  dew up [dir]           Auto-detect project and start dev environment
-  dew vm start [flags]   Start a persistent VM
-  dew exec <cmd>         Execute in running environment
-  dew vm stop            Stop the VM (alias: dew down)
   dew setup              Install/update WSL2 distro
+  dew vm start           Ensure the WSL2 distro is running
+  dew vm stop            Terminate the WSL2 distro (alias: dew down)
+  dew vm status          Show whether the WSL2 distro is running
+  dew exec <cmd>         Run a command inside the WSL2 distro
   dew version            Print version
 
-All commands run inside a WSL2 Linux environment.
+WSL2 is the VM platform on Windows — Microsoft manages the kernel
+and lifecycle; the wrapper just imports a Linux rootfs as a custom
+distro and runs commands inside it.
+
+Project-aware dew up is macOS-only today.
 `)
 }
 
@@ -228,12 +250,68 @@ func ensureDistro() error {
 	return nil
 }
 
-// forward passes the command to the WSL2 distro.
-func forward(args []string) error {
-	wslArgs := []string{"-d", distroName, "--"}
-	wslArgs = append(wslArgs, "dew-native")
-	wslArgs = append(wslArgs, args...)
+// cmdVM dispatches `dew vm <subcommand>` to the WSL2 lifecycle.
+//
+// WSL2 manages distro lifecycle on demand: any command against a
+// distro auto-starts it, and the WSL daemon terminates idle distros
+// after a few seconds of inactivity (or on `wsl --terminate`).
+// So there's no separate "boot the VM" step we have to drive — the
+// distro presence check (which probes by running `true` inside it)
+// is the start.
+func cmdVM(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: dew vm start|stop|status")
+	}
+	switch args[0] {
+	case "start":
+		if err := ensureDistro(); err != nil {
+			return err
+		}
+		fmt.Println("dew: WSL2 distro running")
+		return nil
+	case "stop":
+		if !wslInstalled() {
+			return fmt.Errorf("WSL2 not installed")
+		}
+		// Idempotent: terminating a non-running distro exits 0.
+		c := exec.Command("wsl", "--terminate", distroName)
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
+		if err := c.Run(); err != nil {
+			return fmt.Errorf("wsl --terminate %s: %w", distroName, err)
+		}
+		fmt.Println("dew: stopped")
+		return nil
+	case "status":
+		if !wslInstalled() {
+			fmt.Println("dew: WSL2 not installed")
+			return nil
+		}
+		if distroExists() {
+			fmt.Println("dew: running")
+		} else {
+			fmt.Println("dew: not installed (run: dew setup)")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown vm subcommand %q (start|stop|status)", args[0])
+	}
+}
 
+// cmdExec runs a command inside the WSL2 distro, passing the
+// caller's argv through unchanged. The "--" separator in `wsl -d
+// <name> -- <cmd...>" tells wsl.exe everything after is the
+// command line for the distro, no further flag parsing on its side.
+// Stdin/stdout/stderr connect straight through so interactive
+// commands work and exit code propagates.
+func cmdExec(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: dew exec <cmd> [args...]")
+	}
+	if err := ensureDistro(); err != nil {
+		return err
+	}
+	wslArgs := append([]string{"-d", distroName, "--"}, args...)
 	cmd := exec.Command("wsl", wslArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

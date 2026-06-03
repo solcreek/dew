@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.27] - 2026-06-03
+
+### Fixed
+
+- **Windows: `dew vm start` / `dew exec` work without an in-distro
+  helper binary.** The previous design forwarded every command to a
+  `dew-native` binary inside the WSL2 distro that never existed in
+  the shipped rootfs (and wouldn't have understood `vm start` /
+  `exec` semantics if it did — `cmd/dew-linux` only handles
+  serve/update/version). The wrapper now translates commands
+  directly into WSL2 operations:
+
+      dew vm start    → ensure the distro is running (wsl auto-starts on use)
+      dew vm stop     → wsl --terminate dew
+      dew vm status   → check whether the distro is registered + alive
+      dew exec <cmd>  → wsl -d dew -- <cmd>
+      dew down        → alias for vm stop
+
+  Aligns with the actual WSL2 model: Microsoft manages the kernel
+  and VM lifecycle; the rootfs is the only thing we control.
+  Project-aware `dew up` stays macOS-only for now (no Windows
+  story yet for the project-detect + containerd-orchestrate path).
+
 ## [0.7.26] - 2026-06-03
 
 ### Fixed
