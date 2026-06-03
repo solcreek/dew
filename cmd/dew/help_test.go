@@ -66,10 +66,10 @@ func TestSubcommandHelp_FlagsTheReportFlagged(t *testing.T) {
 func TestSubcommandHelp_EphemeralAndMountPathsDocumented(t *testing.T) {
 	runHelp := subcommandHelp["run"]
 	for _, must := range []string{
-		"ephemeral",     // explicit word — agents grep this
-		"DO NOT persist", // concrete consequence
-		"dew start",     // pointer to the persistent alternative
-		"dew exec",      // and how to use it
+		"ephemeral",       // explicit word — agents grep this
+		"DO NOT persist",  // concrete consequence
+		"dew vm start",    // pointer to the persistent alternative
+		"dew exec",        // and how to use it
 	} {
 		if !strings.Contains(runHelp, must) {
 			t.Errorf("dew run --help missing ephemeral-state hint %q\nhelp:\n%s", must, runHelp)

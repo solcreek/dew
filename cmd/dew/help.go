@@ -62,7 +62,7 @@ metacharacters work.
 The VM is ephemeral — each ` + "`dew run`" + ` boots a fresh VM and tears
 it down on exit. Packages you install, files you write outside
 --share mounts, and any other state DO NOT persist across runs.
-For persistent state, start a VM once with ` + "`dew start`" + ` (or
+For persistent state, start a VM once with ` + "`dew vm start`" + ` (or
 ` + "`dew up`" + ` for a project), then attach with ` + "`dew exec`" + ` as many
 times as you want.
 
@@ -90,9 +90,9 @@ Examples:
 Usage:
   dew exec [flags] <cmd> [args...]
 
-Requires a VM started by ` + "`dew up`" + ` or ` + "`dew start`" + `. Same argv
-rules as ` + "`dew run`" + ` — argv when given multiple args, shell-wrap
-for single string.
+Requires a VM started by ` + "`dew up`" + ` or ` + "`dew vm start`" + `. Same
+argv rules as ` + "`dew run`" + ` — argv when given multiple args, shell-
+wrap for single string.
 
 Flags:
   --json     Wrap output in the standard envelope; dew exits 0,
@@ -129,7 +129,7 @@ Usage:
   dew down
 
 No flags. Removes the daemon socket and shuts down the VM that
-dew up or dew start brought up.
+dew up or dew vm start brought up.
 `,
 	"deploy": `dew deploy — push a built tarball to a remote dew server
 

@@ -63,10 +63,10 @@ func cmdStatus(args []string) error {
 		// so the user understands why "not running" coexists with
 		// a present socket file.
 		fmt.Printf("dew: not running (stale socket at %s)\n", sockPath)
-		fmt.Printf("  Start: dew start --profile standard\n")
+		fmt.Printf("  Start: dew vm start --profile standard\n")
 	default:
 		fmt.Printf("dew: not running\n")
-		fmt.Printf("  Start: dew start --profile standard\n")
+		fmt.Printf("  Start: dew vm start --profile standard\n")
 	}
 	_ = args // status takes no arguments today; reserve for future filters
 	return nil

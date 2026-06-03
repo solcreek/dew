@@ -32,7 +32,7 @@ func TestSessionCLI_RemovedWithMigrationHint(t *testing.T) {
 	// Keep in sync with cmd/dew/main.go's case "session".
 	err := dewerr.New(dewerr.CodeUsage,
 		"dew session was removed in v0.7.18 — it stored state in-process and `session exec` could never find the VM.\n"+
-			"For persistent VMs use `dew up` (project) or `dew start` (manual profile) — both register with the daemon and `dew exec` works against them.")
+			"For persistent VMs use `dew up` (project) or `dew vm start` (manual profile) — both register with the daemon and `dew exec` works against them.")
 
 	if err == nil {
 		t.Fatal("session removal must surface an error, not silently no-op")
@@ -45,7 +45,7 @@ func TestSessionCLI_RemovedWithMigrationHint(t *testing.T) {
 	must := []string{
 		"removed in v0.7.18", // tells them when
 		"dew up",             // tells them the project alternative
-		"dew start",          // tells them the manual alternative
+		"dew vm start",       // tells them the manual alternative
 		"dew exec",           // tells them how to talk to it after
 	}
 	for _, needle := range must {

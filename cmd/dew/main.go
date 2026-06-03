@@ -428,7 +428,7 @@ func main() {
 		// daemon work is the real solution.
 		err = dewerr.New(dewerr.CodeUsage,
 			"dew session was removed in v0.7.18 — it stored state in-process and `session exec` could never find the VM.\n"+
-				"For persistent VMs use `dew up` (project) or `dew start` (manual profile) — both register with the daemon and `dew exec` works against them.")
+				"For persistent VMs use `dew up` (project) or `dew vm start` (manual profile) — both register with the daemon and `dew exec` works against them.")
 	case "auth":
 		err = cmdAuth(subArgs)
 	case "env":
@@ -545,7 +545,7 @@ Output:
 
 Network:
   --network     Enable guest networking (off by default for dew run).
-                dew up and dew start enable it automatically.
+                dew up and dew vm start enable it automatically.
   --network-policy open|restricted
                 Implies --network. open (default when --network is
                 set) allows all outbound; restricted is default-DROP
@@ -1170,7 +1170,7 @@ func cmdUp(args []string) error {
 		// code `no_project_detected` is grep-able for agents. Every
 		// suggested command below must work today; never point at planned
 		// commands that don't yet exist.
-		return fmt.Errorf("no project detected in %s [no_project_detected]\n\nQuick options:\n  • dew up --profile minimal     — boot a minimal Linux VM here\n  • dew start --profile minimal  — same, returns immediately, use 'dew exec' afterwards\n  • dew app run code             — run an OSS app like VS Code\n\nDocs: https://dewvm.dev/start", dir)
+		return fmt.Errorf("no project detected in %s [no_project_detected]\n\nQuick options:\n  • dew up --profile minimal       — boot a minimal Linux VM here\n  • dew vm start --profile minimal — same, returns immediately, use 'dew exec' afterwards\n  • dew app run code               — run an OSS app like VS Code\n\nDocs: https://dewvm.dev/start", dir)
 	}
 
 	emit := func(data map[string]interface{}) {

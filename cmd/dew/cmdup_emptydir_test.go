@@ -38,7 +38,7 @@ func TestCmdUp_EmptyDir_SurfacesHelpfulOptions(t *testing.T) {
 	}{
 		{"no_project_detected", "agents need a grep-able error code"},
 		{"dew up --profile minimal", "explicit-profile escape hatch"},
-		{"dew start --profile minimal", "decouple boot from project context"},
+		{"dew vm start --profile minimal", "decouple boot from project context"},
 		{"dew app run", "another concrete next-step command"},
 		{"https://dewvm.dev/start", "docs link for full context"},
 	}

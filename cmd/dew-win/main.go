@@ -55,9 +55,9 @@ func printUsage() {
 
 Usage:
   dew up [dir]           Auto-detect project and start dev environment
-  dew start [flags]      Start a persistent VM
+  dew vm start [flags]   Start a persistent VM
   dew exec <cmd>         Execute in running environment
-  dew down               Stop the environment
+  dew vm stop            Stop the VM (alias: dew down)
   dew setup              Install/update WSL2 distro
   dew version            Print version
 
