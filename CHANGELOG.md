@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.24] - 2026-06-03
+
+### Added
+
+- **aarch64 WSL2 rootfs** — `dew-rootfs-aarch64.tar.gz` ships
+  alongside the x86_64 rootfs so `dew setup` on Windows-on-ARM
+  imports a kernel-matching distro. Without this, the aarch64
+  Windows binary from v0.7.23 had nowhere to land — WSL2 on ARM
+  runs an aarch64 kernel and rejects an x86_64 rootfs. The new
+  asset closes the loop end-to-end on Windows ARM.
+
 ## [0.7.23] - 2026-06-03
 
 ### Added
