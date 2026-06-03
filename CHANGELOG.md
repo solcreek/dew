@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.30] - 2026-06-03
+
+### Changed
+
+- **npm: install via `npm i -g dew`** (unscoped, primary). The
+  scoped `@solcreek/dew` continues to publish the same dispatcher
+  bytes at parity so existing installers keep working without
+  silent break, but every user-facing surface now points at the
+  unscoped name. CLI tool convention is overwhelmingly unscoped
+  (vercel, bun, pnpm, wrangler, astro, typescript); the shorter
+  form is friendlier for word-of-mouth, demos, and scripts.
+
+  Both names will continue to ship at parity for the foreseeable
+  future. Eventually `@solcreek/dew` will gain an npm deprecation
+  message nudging new installs to `dew`, but never be unpublished
+  (defensive ownership against typosquatting).
+
 ## [0.7.29] - 2026-06-03
 
 ### Fixed
