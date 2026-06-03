@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/solcreek/dew/actions/workflows/ci.yml/badge.svg)](https://github.com/solcreek/dew/actions/workflows/ci.yml)
 [![Release](https://github.com/solcreek/dew/actions/workflows/release.yml/badge.svg)](https://github.com/solcreek/dew/releases/latest)
-[![npm](https://img.shields.io/npm/v/@solcreek/dew)](https://www.npmjs.com/package/@solcreek/dew)
+[![npm](https://img.shields.io/npm/v/dew)](https://www.npmjs.com/package/dew)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Sandboxed Linux compute, agent-native and human-friendly.
@@ -29,7 +29,7 @@ curl -fsSL https://dewvm.dev/install.sh | sh
 brew install solcreek/tap/dew
 
 # npm (all platforms)
-npm install -g @solcreek/dew
+npm install -g dew
 
 # Windows (PowerShell)
 irm https://github.com/solcreek/dew/releases/latest/download/install.ps1 | iex

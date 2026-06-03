@@ -45,7 +45,7 @@
   var INSTALL = {
     mac: '$ curl -fsSL https://github.com/solcreek/dew/releases/latest/download/install.sh | sh',
     win: '$ irm https://github.com/solcreek/dew/releases/latest/download/install.ps1 | iex',
-    npm: '$ npx @solcreek/dew --help'
+    npm: '$ npx dew --help'
   };
   var tabs = document.getElementById('install-tabs');
   if (tabs) {

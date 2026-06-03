@@ -133,7 +133,7 @@ release:
     Install:
     - **macOS / Linux:** `curl -fsSL https://dewvm.dev/install.sh | sh`
     - **Homebrew:** `brew install solcreek/tap/dew`
-    - **npm:** `npm i -g @solcreek/dew`
+    - **npm:** `npm i -g dew`
 
     See [CHANGELOG.md](https://github.com/solcreek/dew/blob/{{ .Tag }}/CHANGELOG.md) for details.
   footer: |

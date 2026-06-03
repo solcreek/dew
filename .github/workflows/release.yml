@@ -391,7 +391,12 @@ jobs:
       upload-assets: true
 
   # ─── Publish thin dispatcher to npm via OIDC trusted publisher.
-  #     Single package now — no per-platform sub-packages.
+  #     Two packages from one source: `dew` (unscoped, primary) and
+  #     `@solcreek/dew` (mirror, kept alive for back-compat with
+  #     users who installed via the scoped name before we acquired
+  #     the unscoped one). Same bytes published to both names so
+  #     existing `npm i -g @solcreek/dew` workflows keep working
+  #     without a version-skew between the two.
   npm-publish:
     needs: [goreleaser]
     runs-on: ubuntu-latest
@@ -417,15 +422,50 @@ jobs:
           VERSION=${GITHUB_REF_NAME#v}
           npm version "$VERSION" --no-git-tag-version --allow-same-version
 
-      - name: Publish to npm
+      - name: Publish primary (dew, unscoped)
         working-directory: npm
         run: |
           set -euo pipefail
           if ! npm publish --provenance --access public 2> /tmp/npm-err.log; then
             if grep -qE 'E409|cannot publish over|previously published' /tmp/npm-err.log; then
-              echo "::notice::version already published, skipping"
+              echo "::notice::dew@<version> already published, skipping"
             else
               cat /tmp/npm-err.log
               exit 1
             fi
           fi
+
+      - name: Publish mirror (@solcreek/dew, same bytes)
+        working-directory: npm
+        # OIDC trusted-publisher entry for @solcreek/dew must also
+        # be configured (npmjs.com → @solcreek/dew → Settings →
+        # Trusted publishers, same workflow ref as the unscoped
+        # one). If the OIDC entry is missing, this step fails and
+        # the unscoped publish above still succeeds — primary
+        # remains current, the mirror lags one version.
+        run: |
+          set -euo pipefail
+          # Temporarily swap the name field, publish, then restore so
+          # subsequent test runs / local dev see the canonical name.
+          ORIG=$(node -e 'process.stdout.write(require("./package.json").name)')
+          node -e '
+            const fs = require("fs");
+            const pkg = require("./package.json");
+            pkg.name = "@solcreek/dew";
+            fs.writeFileSync("./package.json", JSON.stringify(pkg, null, 2) + "\n");
+          '
+          if ! npm publish --provenance --access public 2> /tmp/npm-err.log; then
+            if grep -qE 'E409|cannot publish over|previously published' /tmp/npm-err.log; then
+              echo "::notice::@solcreek/dew@<version> already published, skipping"
+            else
+              cat /tmp/npm-err.log
+              echo "::warning::mirror publish failed (primary already shipped — mirror will catch up next release)"
+            fi
+          fi
+          # Restore — repo source of truth is the unscoped name.
+          node -e '
+            const fs = require("fs");
+            const pkg = require("./package.json");
+            pkg.name = "'"$ORIG"'";
+            fs.writeFileSync("./package.json", JSON.stringify(pkg, null, 2) + "\n");
+          '

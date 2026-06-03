@@ -100,15 +100,32 @@ credentials.
 
 ### 3. Configure npm OIDC trusted publisher
 
-For `@solcreek/dew` (already exists on npm):
+`release.yml` publishes the same dispatcher to two npm names:
 
-1. Go to https://www.npmjs.com/package/@solcreek/dew → **Settings** → **Trusted publishers**
-2. Add a new Trusted Publisher:
-   - Repository: `solcreek/dew`
-   - Workflow filename: `release.yml`
-   - Environment: leave blank
+- **`dew`** (unscoped) — primary, all docs and install scripts
+  point here.
+- **`@solcreek/dew`** — mirror, kept alive for back-compat with
+  users who installed via the scoped name before we acquired
+  the unscoped one. Same bytes, same version.
 
-No `NPM_TOKEN` needed once this is configured. node 24 in the workflow gives us npm 11.x, which supports OIDC.
+Each name has its own OIDC trusted-publisher entry on npmjs.com.
+Set up BOTH so each publish step succeeds:
+
+1. https://www.npmjs.com/package/dew → **Settings** → **Trusted publishers**
+2. https://www.npmjs.com/package/@solcreek/dew → **Settings** → **Trusted publishers**
+
+For each, add:
+- Repository: `solcreek/dew`
+- Workflow filename: `release.yml`
+- Environment: leave blank
+
+No `NPM_TOKEN` needed once both are configured. node 24 in the
+workflow gives us npm 11.x, which supports OIDC.
+
+If only one of the two trusted-publisher entries is configured,
+the primary publish still succeeds; the mirror step surfaces a
+warning (not a failure) so the release isn't blocked. The mirror
+catches up on the next release once OIDC is set up.
 
 ### 4. Configure tag protection on `solcreek/dew`
 

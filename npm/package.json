@@ -1,5 +1,5 @@
 {
-  "name": "@solcreek/dew",
+  "name": "dew",
   "version": "0.7.0",
   "description": "Sandboxed Linux compute, agent-native and human-friendly.",
   "license": "MIT",
