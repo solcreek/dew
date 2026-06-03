@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.23] - 2026-06-03
+
+### Added
+
+- **Windows ARM64 binary** — `dew-windows-arm64.exe` ships alongside
+  the existing x86_64 wrapper. Runs natively on Windows-on-ARM
+  laptops and inside emulated Windows-ARM VMs, where the x86_64
+  binary can't be exercised end-to-end (Microsoft's x64 emulator
+  needs hardware virtualization that emulated guests don't have).
+- **`dew exec --timeout`** — override the guest agent's 30 s default
+  for long-running commands (`dew exec --timeout 10m sh -c '...'`).
+  Without this, image pulls and other slow guest work were silently
+  cut off at 30 s with an empty-stderr failure.
+
+### Changed
+
+- **Node / Python / standard profiles default to 4 vCPU + 2 GB RAM**
+  (was 1 vCPU + 1 GB). Single-vCPU was the bottleneck on real-world
+  install workloads (npm install reify, bundler transforms); the
+  bump brings TanStack-class workloads close to host parity. The
+  minimal profile is unchanged at 1 vCPU + 512 MB so ephemeral
+  `dew run` commands stay light.
+- **`dew up` redetects the dev-server's actual port** and adds a
+  runtime forward when frameworks override the manifest default
+  (e.g. Vite picking a different port). Provisional forward also
+  shifts off occupied host ports automatically.
+- **Runtime port forwards bind both IPv4 and IPv6** (127.0.0.1 +
+  ::1) so `localhost:PORT` resolves regardless of which family the
+  client picks.
+- **Hint messages name the current command form** — `dew vm status`
+  and other places that prompt the user to start the VM now say
+  `dew vm start --profile standard` rather than the legacy
+  `dew start`, so copy-paste doesn't trigger the deprecation
+  warning.
+
 ## [0.7.22] - 2026-06-02
 
 The VM-lifecycle commands move under a `dew vm` namespace and
