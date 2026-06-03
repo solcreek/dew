@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.26] - 2026-06-03
+
+### Fixed
+
+- **Windows: distro presence check probes `wsl -d dew -- true`
+  directly** instead of parsing `wsl -l -q` output. v0.7.25's
+  UTF-16LE decoder worked in theory but field reports from
+  Windows-on-ARM showed the parse still missed the distro under
+  some WSL versions where the same command behaves differently
+  through Go's exec.Command than through an interactive shell.
+  Probing exits 0 iff the distro is registered and can start,
+  which is the actual signal we want — no encoding to misjudge.
+
 ## [0.7.25] - 2026-06-03
 
 ### Fixed

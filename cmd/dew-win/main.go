@@ -10,7 +10,6 @@
 package main
 
 import (
-	"encoding/binary"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,9 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
-	"unicode/utf16"
 )
 
 const (
@@ -85,56 +82,27 @@ func wslInstalled() bool {
 
 // distroExists checks if the dew distro is already imported.
 //
-// wsl.exe emits its --list output as UTF-16LE with a BOM, not the
-// UTF-8 most Go code assumes. An earlier implementation tried to
-// recover by stripping individual NUL bytes after `string(out)`
-// conversion, which leaves the BOM bytes (0xFF 0xFE) attached to
-// the first line — `strings.EqualFold("\xff\xfeAlpine", "dew")`
-// is fine but if "dew" happens to be the first line the BOM
-// prevents matching it. Decode UTF-16 explicitly instead.
+// Probes the distro directly with `wsl -d dew -- true` instead of
+// parsing `wsl -l -q` output. v0.7.25 tried to handle wsl.exe's
+// UTF-16LE encoding but field reports from Windows-on-ARM showed
+// the parse still missed the distro under some WSL versions /
+// locales (cmd succeeded interactively but Go's exec.Command
+// captured bytes in a different encoding mode and the BOM-based
+// detector misclassified them). Probing sidesteps every encoding
+// edge case: wsl.exe exits 0 iff the named distro is registered
+// and can start, non-zero otherwise.
+//
+// Side effect: starts the distro if it was stopped. That's fine —
+// every caller of ensureDistro is about to run a command inside
+// it anyway, so we just pay the start cost a few hundred ms
+// earlier. Zero cost on an already-running distro. Stdout/stderr
+// silenced so the welcome banner some wsl versions emit doesn't
+// leak into grove's own output.
 func distroExists() bool {
-	out, err := exec.Command("wsl", "-l", "-q").Output()
-	if err != nil {
-		return false
-	}
-	text := decodeWSLOutput(out)
-	for _, line := range strings.Split(text, "\n") {
-		name := strings.TrimSpace(line)
-		if strings.EqualFold(name, distroName) {
-			return true
-		}
-	}
-	return false
-}
-
-// decodeWSLOutput converts the raw bytes wsl.exe emits into a Go
-// string. Modern wsl.exe (Windows 11 era) emits UTF-16LE with a
-// BOM; older versions and some WSL builds emit plain ASCII/UTF-8.
-// Detect by BOM and decode accordingly so the distro-name match
-// works across both.
-func decodeWSLOutput(raw []byte) string {
-	// UTF-16LE BOM (\xff\xfe) at start ⇒ decode as UTF-16LE.
-	if len(raw) >= 2 && raw[0] == 0xff && raw[1] == 0xfe {
-		body := raw[2:]
-		u16 := make([]uint16, 0, len(body)/2)
-		for i := 0; i+1 < len(body); i += 2 {
-			u16 = append(u16, binary.LittleEndian.Uint16(body[i:i+2]))
-		}
-		return string(utf16.Decode(u16))
-	}
-	// UTF-16BE BOM (\xfe\xff) — vanishingly rare on Windows but
-	// trivial to handle here.
-	if len(raw) >= 2 && raw[0] == 0xfe && raw[1] == 0xff {
-		body := raw[2:]
-		u16 := make([]uint16, 0, len(body)/2)
-		for i := 0; i+1 < len(body); i += 2 {
-			u16 = append(u16, binary.BigEndian.Uint16(body[i:i+2]))
-		}
-		return string(utf16.Decode(u16))
-	}
-	// No BOM — treat as UTF-8 / ASCII (older WSL builds, or non-
-	// wsl callers in tests).
-	return string(raw)
+	cmd := exec.Command("wsl", "-d", distroName, "--", "true")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Run() == nil
 }
 
 // dewDataDir returns the Windows data directory for Dew.
