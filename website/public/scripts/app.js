@@ -43,8 +43,8 @@
 
   /* ---------------------------------------------------------- INSTALL TABS */
   var INSTALL = {
-    mac: '$ curl -fsSL https://github.com/solcreek/dew/releases/latest/download/install.sh | sh',
-    win: '$ irm https://github.com/solcreek/dew/releases/latest/download/install.ps1 | iex',
+    mac: '$ curl -fsSL https://dewvm.dev/install.sh | sh',
+    win: '$ irm https://dewvm.dev/install.ps1 | iex',
     npm: '$ npx dew --help'
   };
   var tabs = document.getElementById('install-tabs');

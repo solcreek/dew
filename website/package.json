@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "prebuild": "node scripts/sync-install-sh.mjs",
+    "prebuild": "node scripts/sync-install-scripts.mjs",
     "build": "astro build",
     "preview": "wrangler dev --local",
     "deploy": "astro build && wrangler deploy",
