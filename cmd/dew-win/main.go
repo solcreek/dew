@@ -24,6 +24,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,6 +32,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -63,6 +65,8 @@ func main() {
 		err = cmdVM(os.Args[2:])
 	case "exec":
 		err = cmdExec(os.Args[2:])
+	case "up":
+		err = cmdUp(os.Args[2:])
 	case "down":
 		// alias for `dew vm stop`
 		err = cmdVM([]string{"stop"})
@@ -82,6 +86,7 @@ func printUsage() {
 
 Usage:
   dew setup              Install/update WSL2 distro
+  dew up [dir]           Detect a Node project + run its dev server in WSL2
   dew vm start           Ensure the WSL2 distro is running
   dew vm stop            Terminate the WSL2 distro (alias: dew down)
   dew vm status          Show whether the WSL2 distro is running
@@ -92,7 +97,9 @@ WSL2 is the VM platform on Windows — Microsoft manages the kernel
 and lifecycle; the wrapper just imports a Linux rootfs as a custom
 distro and runs commands inside it.
 
-Project-aware dew up is macOS-only today.
+dew up currently supports Node-style projects (package.json with
+a dev or start script). The dev server's port (e.g. Vite :5173)
+is reachable on the Windows host via WSL2 localhost forwarding.
 `)
 }
 
@@ -317,4 +324,129 @@ func cmdExec(args []string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// cmdUp detects a Node-style project in dir (or cwd) and runs its
+// dev server inside the WSL2 distro. The project is reached via
+// the auto-mounted /mnt/<drive>/... path; WSL2's mirrored
+// networking (Windows 11 + WSL 2.0+) makes the dev server's port
+// reachable on the Windows host as plain localhost:<port>.
+//
+// Today's scope is intentionally narrow vs macOS dew up — Node
+// projects only, no framework-specific port detection, no
+// streaming health probe, no auto-rebuild handling. The dev
+// server's own output goes straight to the user's terminal so
+// they see the actual URL banner Vite/Next/Astro/etc. prints.
+// Heavier project-aware behavior can land iteratively as Windows
+// users hit specific gaps.
+func cmdUp(args []string) error {
+	dir := "."
+	if len(args) > 0 && !strings.HasPrefix(args[0], "--") {
+		dir = args[0]
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("resolve %q: %w", dir, err)
+	}
+
+	// Node-only fast check. If we ever support Python/Go/etc.
+	// projects on Windows, branch here per project type.
+	pkgPath := filepath.Join(absDir, "package.json")
+	if _, err := os.Stat(pkgPath); err != nil {
+		return fmt.Errorf("no package.json in %s — dew up on Windows currently supports Node-style projects only", absDir)
+	}
+
+	if err := ensureDistro(); err != nil {
+		return err
+	}
+
+	// Translate the Windows path to the WSL2 mount path
+	// (e.g. C:\Users\foo\proj → /mnt/c/Users/foo/proj). Defer to
+	// wslpath inside the distro so we don't have to mirror its
+	// drive-letter / case / UNC rules.
+	wslPath, err := winPathToWSL(absDir)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("dew: project at %s\n", absDir)
+	fmt.Printf("dew: mounted in WSL2 at %s\n", wslPath)
+
+	// Install dependencies if node_modules is missing. Skip when
+	// it exists — preserves the user's last install (the install
+	// itself is idempotent but slow on cold cache).
+	nmTest := exec.Command("wsl", "-d", distroName, "--",
+		"test", "-d", wslPath+"/node_modules")
+	if nmTest.Run() != nil {
+		fmt.Println("dew: installing dependencies (npm install)...")
+		install := exec.Command("wsl", "-d", distroName, "--",
+			"sh", "-c", fmt.Sprintf("cd %s && npm install", shellQuote(wslPath)))
+		install.Stdin = os.Stdin
+		install.Stdout = os.Stdout
+		install.Stderr = os.Stderr
+		if err := install.Run(); err != nil {
+			return fmt.Errorf("npm install: %w", err)
+		}
+	}
+
+	// Pick the script. "dev" wins because every modern frontend
+	// scaffolding (Vite, Next, Astro, SvelteKit, Nuxt) uses it;
+	// "start" is the fallback for older / minimal templates.
+	script := detectDevScript(pkgPath)
+	if script == "" {
+		return fmt.Errorf("package.json has no 'dev' or 'start' script — add one or run npm directly via dew exec")
+	}
+	fmt.Printf("dew: starting (npm run %s)\n", script)
+	fmt.Println("dew: dev server output follows. Ctrl+C to stop.")
+	fmt.Println()
+
+	dev := exec.Command("wsl", "-d", distroName, "--",
+		"sh", "-c", fmt.Sprintf("cd %s && npm run %s", shellQuote(wslPath), script))
+	dev.Stdin = os.Stdin
+	dev.Stdout = os.Stdout
+	dev.Stderr = os.Stderr
+	return dev.Run()
+}
+
+// winPathToWSL converts a Windows absolute path into its WSL2
+// mount path via the distro's `wslpath` utility. Trims the
+// trailing newline wslpath emits.
+func winPathToWSL(winPath string) (string, error) {
+	out, err := exec.Command("wsl", "-d", distroName, "--",
+		"wslpath", "-a", winPath).Output()
+	if err != nil {
+		return "", fmt.Errorf("wslpath %s: %w", winPath, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// detectDevScript reads package.json and returns "dev" if scripts
+// defines one, else "start", else "". Tolerant of malformed JSON
+// — returns "" and lets the caller surface the actionable error.
+func detectDevScript(pkgPath string) string {
+	data, err := os.ReadFile(pkgPath)
+	if err != nil {
+		return ""
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return ""
+	}
+	if _, ok := pkg.Scripts["dev"]; ok {
+		return "dev"
+	}
+	if _, ok := pkg.Scripts["start"]; ok {
+		return "start"
+	}
+	return ""
+}
+
+// shellQuote produces a POSIX-sh-safe single-quoted literal — used
+// when interpolating WSL paths into an inline `sh -c` string. The
+// WSL path is alphanumeric + / + . in practice but a user's project
+// dir could theoretically contain a single-quote in a parent dir
+// name (rare), so escape per POSIX: '...'\''...' .
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

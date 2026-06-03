@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.28] - 2026-06-03
+
+### Added
+
+- **Windows: `dew up` for Node-style projects.** Detects
+  package.json, ensures the WSL2 distro is running, translates
+  the Windows project path to its /mnt/<drive>/... mount via
+  `wslpath`, runs `npm install` if node_modules is missing, then
+  `npm run dev` (or `start`) inside the distro with stdout /
+  stderr streamed straight to the user's terminal. The dev
+  server's port (Vite :5173 etc.) is reachable on the Windows
+  host through WSL2's mirrored networking.
+
+  Scope is intentionally narrow — Node only, no framework-
+  specific port detection, no streaming health probe. Heavier
+  project-aware behavior (port redetection, multi-runtime
+  profiles) can land iteratively as Windows users hit specific
+  gaps. The dev server's own banner gives the user the URL it
+  printed (Vite always logs `Local: http://localhost:5173/`).
+
 ## [0.7.27] - 2026-06-03
 
 ### Fixed
