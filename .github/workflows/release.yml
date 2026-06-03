@@ -412,6 +412,14 @@ jobs:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Copy README into npm package
+        # npm/ has no README of its own; copy the repo root one so
+        # npmjs.com shows it on the package page. Without this the
+        # tarball ships bin/dew + package.json only and the npm page
+        # is blank. Sits before sanity-test so the test sees the
+        # same file layout the publish step does.
+        run: cp README.md npm/README.md
+
       - name: Sanity-test dispatcher
         working-directory: npm
         run: npm test
