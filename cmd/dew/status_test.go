@@ -17,9 +17,21 @@ import (
 // by overriding HOME — SocketDir resolves to $HOME/.local/state/dew.
 // This is the only seam status_test needs; we exercise the file +
 // connection probe directly without spinning up a real daemon.
+//
+// Uses /tmp directly rather than t.TempDir() because macOS sockaddr_un
+// has a 104-byte sun_path limit, and t.TempDir() on macOS returns
+// long paths like /var/folders/.../T/TestName123/001/ — appending
+// .local/state/dew/default.sock pushes the total well past 104 bytes
+// and bind() fails with "invalid argument". /tmp/dew-test-XXX is
+// short enough to stay under the limit on every macOS version.
+// t.Cleanup handles removal since we're not using t.TempDir's hooks.
 func withTempSocketPath(t *testing.T) string {
 	t.Helper()
-	tmp := t.TempDir()
+	tmp, err := os.MkdirTemp("/tmp", "dew-status-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tmp) })
 	t.Setenv("HOME", tmp)
 	return filepath.Join(tmp, ".local", "state", "dew", "default.sock")
 }
