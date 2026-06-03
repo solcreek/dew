@@ -410,9 +410,22 @@ func cmdUp(args []string) error {
 // winPathToWSL converts a Windows absolute path into its WSL2
 // mount path via the distro's `wslpath` utility. Trims the
 // trailing newline wslpath emits.
+//
+// wsl.exe with arguments after `--` joins them into a single
+// command line and dispatches via /bin/sh -c inside the distro
+// — even though Go's exec.Command passes them as separate argv
+// to wsl.exe itself, there's a hidden shell layer on the Linux
+// side. That shell strips unquoted backslashes, so "C:\Foo\Bar"
+// arrives at wslpath as "C:FooBar" and wslpath errors out.
+//
+// Normalizing to forward slashes (filepath.ToSlash) sidesteps it:
+// Windows APIs accept both \ and /, Linux paths use /, and the
+// shell passes / through untouched. wslpath handles both spellings
+// of the input.
 func winPathToWSL(winPath string) (string, error) {
+	normalized := filepath.ToSlash(winPath)
 	out, err := exec.Command("wsl", "-d", distroName, "--",
-		"wslpath", "-a", winPath).Output()
+		"wslpath", "-a", normalized).Output()
 	if err != nil {
 		return "", fmt.Errorf("wslpath %s: %w", winPath, err)
 	}

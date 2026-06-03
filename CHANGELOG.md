@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.29] - 2026-06-03
+
+### Fixed
+
+- **Windows: `dew up` no longer eats backslashes in the project
+  path.** v0.7.28 invoked `wslpath -a C:\Users\foo\proj` and
+  wslpath errored out because the path arrived as `C:Usersfooproj`
+  with the backslashes stripped. The agent's bug report pinned
+  the cause: `wsl.exe -- COMMAND ARGS` dispatches via /bin/sh -c
+  inside the distro even when the host calls exec.Command with
+  separate argv elements, and that shell strips unquoted
+  backslashes. Normalize the Windows path to forward slashes
+  with filepath.ToSlash before handing it off — Windows APIs
+  accept both spellings, Linux paths use /, and the shell passes
+  / through untouched.
+
 ## [0.7.28] - 2026-06-03
 
 ### Added
