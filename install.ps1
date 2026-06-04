@@ -8,7 +8,7 @@ $dest = "$env:LOCALAPPDATA\dew"
 
 # Pick the binary that matches the host CPU. Windows on ARM runs the
 # wrong-arch binary fine via x86_64 emulation, but every dew operation
-# shells out to wsl.exe — emulation around that hot path is wasted
+# shells out to wsl.exe; emulation around that hot path is wasted
 # overhead and on ARM-only Windows SKUs it just silently misbehaves.
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
     "ARM64" { "arm64" }
