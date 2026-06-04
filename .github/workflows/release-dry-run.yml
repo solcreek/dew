@@ -36,10 +36,16 @@ jobs:
           go-version: '1.25'
 
       - name: goreleaser check (config syntax + template lint)
+        # Pro distribution required: .goreleaser.yaml uses `prebuilt:`
+        # for the signed/notarized darwin binaries. Same config the
+        # tag pipeline uses, so dry-run validates the real shape.
         uses: goreleaser/goreleaser-action@v6
         with:
+          distribution: goreleaser-pro
           version: "~> v2"
           args: check
+        env:
+          GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
 
       - name: goreleaser build (linux only, snapshot)
         # Real darwin build needs prebuilt binaries from the build-macos
@@ -47,8 +53,11 @@ jobs:
         # that break the goreleaser flow on the runner used in release.
         uses: goreleaser/goreleaser-action@v6
         with:
+          distribution: goreleaser-pro
           version: "~> v2"
           args: build --snapshot --clean --id dew-linux --single-target
+        env:
+          GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
 
   npm-dispatcher:
     runs-on: ubuntu-latest
