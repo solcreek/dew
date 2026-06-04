@@ -92,18 +92,18 @@ jobs:
           if ($errors.Count -gt 0) { $errors; exit 1 }
           Write-Host "install.ps1 parse: OK"
 
-          # Lint: PSScriptAnalyzer ships on ubuntu pwsh image.
-          if (Get-Command Invoke-ScriptAnalyzer -ErrorAction SilentlyContinue) {
-            $results = Invoke-ScriptAnalyzer -Path install.ps1 -Severity Error,Warning
-            if ($results) { $results | Format-Table; exit 1 }
-            Write-Host "PSScriptAnalyzer: OK"
-          } else {
-            Write-Host "PSScriptAnalyzer not installed — installing"
+          # PSScriptAnalyzer lint. Exclude PSAvoidUsingWriteHost —
+          # the installer's whole purpose is to print progress to the
+          # user's terminal; Write-Host is the right primitive for
+          # that and every well-known PowerShell installer uses it.
+          if (-not (Get-Command Invoke-ScriptAnalyzer -ErrorAction SilentlyContinue)) {
             Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser
-            $results = Invoke-ScriptAnalyzer -Path install.ps1 -Severity Error,Warning
-            if ($results) { $results | Format-Table; exit 1 }
-            Write-Host "PSScriptAnalyzer: OK"
           }
+          $results = Invoke-ScriptAnalyzer -Path install.ps1 `
+            -Severity Error,Warning `
+            -ExcludeRule PSAvoidUsingWriteHost
+          if ($results) { $results | Format-Table; exit 1 }
+          Write-Host "PSScriptAnalyzer: OK"
 
   # Guards the install-script sync mechanism: website's prebuild
   # copies /install.sh + /install.ps1 → website/public/ (gitignored).
