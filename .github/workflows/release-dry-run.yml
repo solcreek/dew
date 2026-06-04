@@ -14,6 +14,7 @@ on:
       - 'go.sum'
       - 'cmd/dew/**'
       - 'install.sh'
+      - 'install.ps1'
       - 'npm/**'
       - 'website/scripts/**'
       - 'website/package.json'
@@ -72,12 +73,44 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y shellcheck >/dev/null
           shellcheck install.sh
 
-  # Guards the install.sh sync mechanism: website's prebuild copies
-  # /install.sh → website/public/install.sh (gitignored). If the sync
-  # script is broken or removed, this build fails. Also asserts the
-  # built artifact matches the source byte-for-byte — catches any
-  # tampering with the copy in the public/ dir.
-  website-install-sh-sync:
+  # PowerShell parse + lint on Linux pwsh. Catches syntax errors
+  # and the common landmines (Invoke-Expression on untrusted input,
+  # hardcoded paths) before a release ships a broken installer.
+  install-ps1-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Parse + PSScriptAnalyzer install.ps1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Parse: fails on any syntax error.
+          $tokens = $null; $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            'install.ps1', [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { $errors; exit 1 }
+          Write-Host "install.ps1 parse: OK"
+
+          # Lint: PSScriptAnalyzer ships on ubuntu pwsh image.
+          if (Get-Command Invoke-ScriptAnalyzer -ErrorAction SilentlyContinue) {
+            $results = Invoke-ScriptAnalyzer -Path install.ps1 -Severity Error,Warning
+            if ($results) { $results | Format-Table; exit 1 }
+            Write-Host "PSScriptAnalyzer: OK"
+          } else {
+            Write-Host "PSScriptAnalyzer not installed — installing"
+            Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser
+            $results = Invoke-ScriptAnalyzer -Path install.ps1 -Severity Error,Warning
+            if ($results) { $results | Format-Table; exit 1 }
+            Write-Host "PSScriptAnalyzer: OK"
+          }
+
+  # Guards the install-script sync mechanism: website's prebuild
+  # copies /install.sh + /install.ps1 → website/public/ (gitignored).
+  # If the sync script is broken or removed, this build fails. Also
+  # asserts each built artifact matches the source byte-for-byte —
+  # catches any tampering with the copy in the public/ dir.
+  website-install-scripts-sync:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -98,7 +131,9 @@ jobs:
         working-directory: website
         run: pnpm run build
 
-      - name: Verify dist/install.sh matches source
+      - name: Verify dist install scripts match source
         run: |
-          diff -q install.sh website/dist/install.sh
-          echo "install.sh sync: OK"
+          for name in install.sh install.ps1; do
+            diff -q "$name" "website/dist/$name"
+            echo "$name sync: OK"
+          done
