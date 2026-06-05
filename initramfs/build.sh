@@ -689,7 +689,7 @@ if grep -q 'dew.rosetta=1' /proc/cmdline 2>/dev/null; then
             > /proc/sys/fs/binfmt_misc/register 2>/dev/null; then
             echo "rosetta: binfmt_misc registered (amd64 -> Rosetta)"
         else
-            echo "rosetta: binfmt register failed (kernel lacks CONFIG_BINFMT_MISC?)"
+            echo "rosetta: binfmt register failed (binfmt_misc missing/unmounted, interpreter unreadable, or already registered)"
         fi
     else
         echo "rosetta: virtiofs mount failed"
