@@ -14,6 +14,12 @@ import (
 	"github.com/solcreek/dew/internal/vm"
 )
 
+// rosettaTag is the virtiofs mount tag the guest's init-stage2 looks for
+// to find Apple's Rosetta translator binary. Shared between the reserved-tag
+// guard here and the arm64 Rosetta share builder, and mirrored by the guest
+// init script (initramfs/build.sh).
+const rosettaTag = "rosetta"
+
 type DarwinVM struct {
 	cfg     vm.Config
 	machine *vz.VirtualMachine
@@ -172,11 +178,11 @@ func (d *DarwinVM) configureVsock(config *vz.VirtualMachineConfiguration) error 
 }
 
 func (d *DarwinVM) configureSharedDirs(config *vz.VirtualMachineConfiguration) error {
-	if len(d.cfg.SharedDirs) == 0 {
-		return nil
-	}
 	var fsDirs []vz.DirectorySharingDeviceConfiguration
 	for _, sd := range d.cfg.SharedDirs {
+		if d.cfg.EnableRosetta && sd.Tag == rosettaTag {
+			return fmt.Errorf("shared dir tag %q is reserved for the Rosetta share when --rosetta is set", sd.Tag)
+		}
 		sharedDir, err := vz.NewSharedDirectory(sd.HostPath, sd.ReadOnly)
 		if err != nil {
 			return fmt.Errorf("shared dir %q: %w", sd.Tag, err)
@@ -191,6 +197,16 @@ func (d *DarwinVM) configureSharedDirs(config *vz.VirtualMachineConfiguration) e
 		}
 		fsConfig.SetDirectoryShare(share)
 		fsDirs = append(fsDirs, fsConfig)
+	}
+	if d.cfg.EnableRosetta {
+		rosettaDev, err := rosettaShareDevice()
+		if err != nil {
+			return fmt.Errorf("rosetta: %w", err)
+		}
+		fsDirs = append(fsDirs, rosettaDev)
+	}
+	if len(fsDirs) == 0 {
+		return nil
 	}
 	config.SetDirectorySharingDevicesVirtualMachineConfiguration(fsDirs)
 	return nil

@@ -94,6 +94,27 @@ Apple VZ format: ARM64 = uncompressed Image (4K pages). x86_64 = bzImage.
 
 See `product-planning/dew-kernel-strategy-2026-05.md` for full benchmark data.
 
+### x86_64 emulation (Rosetta)
+
+On Apple Silicon, `--rosetta` lets the guest run amd64 binaries/containers.
+Host side (`internal/vm/darwin`, arm64 only): `Config.EnableRosetta` attaches a
+`LinuxRosettaDirectoryShare` (virtiofs tag `rosetta`) and the CLI adds
+`dew.rosetta=1` to the kernel cmdline. Guest side (`init-stage2`): mounts the
+`rosetta` share and registers the x86_64 ELF magic with `binfmt_misc` using the
+`F` (fix-binary) flag so translation works inside container namespaces.
+
+Two kernel modules are required and easy to miss in the initramfs allowlist:
+`binfmt_misc` (CONFIG_BINFMT_MISC=m, not built-in) and the VirtIO RNG. Mind the
+dash/underscore split: the **allowlist must use the on-disk filename**
+`virtio-rng` (dash) because the prune step matches module basenames from
+`modules.dep` (a `virtio_rng` entry would be pruned out and the entropy fix
+silently lost; it also pulls `rng-core` transitively). The **boot-time loader**
+modprobes `virtio-rng` (the allowlisted dash name) then falls back to
+`virtio_rng` — kmod normalises the two, but leading with the dash name also
+keeps the modprobe/allowlist drift guard (TestInitramfsBuildScript_Modprobe-
+MatchesAllowlist) green. Without the RNG the guest starves /dev/random and
+getrandom() callers block at "crypto/rand: blocked".
+
 ## Conventions
 
 - Commit messages: English, objective facts, no competitor brand names, no Co-Authored-By lines

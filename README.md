@@ -149,6 +149,22 @@ dew                         dew (deploy receiver)
 | python | Python projects |
 | standard | Containers, services |
 
+### Running x86_64 (amd64) containers on Apple Silicon
+
+Add `--rosetta` to mount Apple's Rosetta translator into the guest and register
+`binfmt_misc`, so amd64 binaries and containers run transparently under
+translation:
+
+```bash
+dew run --profile standard --network --rosetta -- \
+  nerdctl run --rm --platform linux/amd64 alpine uname -m   # -> x86_64
+```
+
+Apple Silicon only (Intel Macs have no Rosetta-for-Linux). Performance depends
+on the workload's hot path: roughly 70-80% of native for ordinary compiled
+code, less for interpreter-heavy or crypto/SIMD-heavy code. For peak
+performance prefer a native `linux/arm64` image.
+
 ## Security
 
 - Hardware-VM isolation. Network off until you flip `--network`. Input validated against path traversal, control characters, and injection.

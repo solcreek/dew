@@ -58,6 +58,16 @@ func TestAppendGuestParams(t *testing.T) {
 			cfg:     vm.Config{Network: true, NetworkPolicy: "open"},
 			notSubs: []string{"dew.netpolicy", "dew.allow"},
 		},
+		{
+			name:     "rosetta enabled adds cmdline param",
+			cfg:      vm.Config{EnableRosetta: true},
+			wantSubs: []string{"dew.rosetta=1"},
+		},
+		{
+			name:    "rosetta disabled omits cmdline param",
+			cfg:     vm.Config{EnableRosetta: false},
+			notSubs: []string{"dew.rosetta"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
