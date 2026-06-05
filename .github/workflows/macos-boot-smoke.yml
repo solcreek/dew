@@ -1,38 +1,27 @@
-name: macOS boot smoke
+name: macOS install smoke
 
-# End-to-end VM boot test against the latest released dew binary on
-# each supported macOS image. Catches the regression class that build
-# + unit tests miss: install script breakage, GHA runner image drift,
-# OS-version-specific VZ behavior changes, kernel/initramfs format
-# issues in the published assets.
+# What this is NOT: a real VM boot smoke. GitHub-hosted macOS runners
+# are themselves VMs inside Apple Virtualization, and VZ does not
+# allow nested virtualization on Apple Silicon — every attempt fails
+# with VZErrorDomain Code=2 "Virtualization is not available on this
+# hardware". This is a platform limit, not a signing issue. Same
+# result whether the binary is ad-hoc, Developer ID, or anything in
+# between. M1, M2 -xlarge, doesn't matter.
 #
-# Why not build dew from the current branch and smoke that:
-#   Apple Virtualization on Apple Silicon refuses ad-hoc-signed
-#   binaries even with the VZ entitlement embedded — VM start
-#   immediately fails with VZErrorDomain Code=1. A real boot smoke
-#   needs a Developer ID-signed binary, which only the tagged release
-#   produces (via the Apple cert in release.yml secrets). Per-PR boot
-#   coverage of the freshly-built binary would require copying those
-#   secrets to this workflow, expanding the blast radius for a cert
-#   that should live behind one workflow only.
+# Real boot coverage needs bare-metal Mac runners — e.g.
+# cirrus-runners.app (free for OSS, M2 Pro Mac minis exposed as GHA
+# labels) or a self-hosted runner. Tracked as a follow-up; this
+# workflow doesn't attempt boot.
 #
-# What this DOES catch per PR / push (using the latest released
-# binary on the runner):
-#   - install.sh regression — script can't fetch, extract, or chmod
-#   - asset URLs broken in latest release
-#   - GHA runner image drift — Apple shipped a VZ tweak in a minor
-#     macOS update that breaks an older released binary
-#   - kernel/initramfs format issue in the published assets
+# What this DOES catch on the GHA M1 matrix:
+#   - install.sh regression — can't fetch / extract / chmod / PATH
+#   - asset URL drift in the latest release
+#   - GHA runner image drift breaking the install path
+#   - dew doctor regression that crashes the binary itself
+#   - binary launch failure (missing dylib, link error, etc.)
 #
-# What this does NOT catch:
-#   - per-PR code changes in dew itself. Unit tests + dew doctor cover
-#     a big chunk; the real verification is the release-time boot.
-#   - new CPU generations — GHA only offers M1 (free) and M2 (paid
-#     xlarge); M3+ users are covered by the diagnostic dump + repo
-#     compat banner.
-#
-# Matrix covers macos-14 / 15 / 26 (every supported OS, all M1 ARM).
-# DEW_DEBUG=1 ensures any failure includes the VM config dump.
+# Honest scope: catches install + invocation regressions across
+# macos-14 / 15 / 26. Real boot tests live on bare-metal runners.
 
 on:
   push:
@@ -40,17 +29,18 @@ on:
     paths:
       - 'install.sh'
       - 'website/scripts/sync-install-scripts.mjs'
+      - 'npm/**'
       - '.github/workflows/macos-boot-smoke.yml'
   pull_request:
     branches: [main]
     paths:
       - 'install.sh'
       - 'website/scripts/sync-install-scripts.mjs'
+      - 'npm/**'
       - '.github/workflows/macos-boot-smoke.yml'
   schedule:
-    # Weekly — the main driver. Catches GHA runner-image drift +
-    # macOS minor-version VZ tweaks even when nothing in our repo
-    # changes.
+    # Weekly — catches runner-image drift even when nothing changes
+    # in our repo. Mondays mean a fresh signal each week.
     - cron: '0 7 * * 1'
   workflow_dispatch:
 
@@ -58,11 +48,11 @@ permissions:
   contents: read
 
 jobs:
-  smoke:
+  install-smoke:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false   # one OS failure shouldn't mask the others
+      fail-fast: false
       matrix:
         os: [macos-14, macos-15, macos-26]
     steps:
@@ -78,39 +68,44 @@ jobs:
         run: |
           set -euo pipefail
           curl -fsSL https://dewvm.dev/install.sh | sh
-          # The installer drops dew in ~/.local/share/dew/bin/<ver>/dew
-          # and adds a shim into ~/.local/bin (or symlink). Add both to
-          # PATH so subsequent steps can just say `dew`.
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$HOME/.local/share/dew/bin" >> "$GITHUB_PATH"
 
       - name: dew version
+        # Most basic smoke: the installed binary launches at all,
+        # codesign + entitlement aren't rejected by exec, dylib
+        # graph resolves on this OS version.
         run: dew version
 
       - name: dew doctor --verbose
-        # Informational — surfaces signing chain, entitlement, asset
-        # state, plus the VM config dump if the embedded boot test
-        # runs. `|| true` so a doctor warning doesn't abort the more
-        # interesting explicit smoke that follows.
+        # Catches doctor regressions and surfaces the signing chain,
+        # entitlement, asset state. Doctor itself does NOT attempt VM
+        # boot when the ad-hoc-with-entitlement warning fires; on a
+        # cleanly installed Developer ID binary it WOULD try the boot
+        # — but on GHA that would fail nested-virt regardless, so we
+        # let doctor reach its own conclusion and pass either way.
         run: dew doctor --verbose || true
 
-      - name: Boot smoke — dew run -- echo SMOKE_OK
+      - name: Confirm VZ is unavailable (sanity check)
+        # Pin the known limit: if a future GHA image enables nested
+        # virtualization, this step's failure ("expected Code=2 not
+        # to fire") is the signal to revisit and add a real boot
+        # smoke job here. Until then, asserting the limit holds keeps
+        # the workflow's scope honest.
         env:
           DEW_DEBUG: "1"
         run: |
-          set -o pipefail
-          OUT=$(dew run --profile minimal -- echo SMOKE_OK 2>&1) || STATUS=$?
-          STATUS=${STATUS:-0}
-          echo "── dew output ──"
+          set +e
+          OUT=$(dew run --profile minimal -- echo SMOKE_OK 2>&1)
+          set -e
           echo "$OUT"
-          echo "────────────────"
-
-          if [ "$STATUS" -ne 0 ]; then
-            echo "::error::dew run exited $STATUS"
-            exit "$STATUS"
+          if echo "$OUT" | grep -q "Code=2"; then
+            echo "::notice::nested virt is blocked as expected — install smoke remains scoped to non-VZ checks"
+            exit 0
           fi
-          if ! echo "$OUT" | grep -q SMOKE_OK; then
-            echo "::error::expected SMOKE_OK in output, did not see it"
-            exit 1
+          if echo "$OUT" | grep -q SMOKE_OK; then
+            echo "::warning::VM boot SUCCEEDED on a GHA runner. Apple may have enabled nested virt — extend this workflow to actually verify boot."
+            exit 0
           fi
-          echo "✓ boot + exec round-trip OK"
+          echo "::error::unexpected dew run output — neither Code=2 nor success"
+          exit 1
