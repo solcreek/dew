@@ -8,10 +8,6 @@ import (
 	"github.com/Code-Hex/vz/v3"
 )
 
-// rosettaTag is the virtiofs mount tag the guest's init-stage2 looks for
-// to find Apple's Rosetta translator binary.
-const rosettaTag = "rosetta"
-
 // rosettaShareDevice builds a virtiofs directory-sharing device backed by
 // Apple's Rosetta-for-Linux translator. The guest mounts it and registers
 // the x86_64 ELF magic with binfmt_misc, after which any amd64 binary runs
