@@ -97,7 +97,7 @@ func TestRunDoctorChecksSmokeRuns(t *testing.T) {
 	// Smoke test: should produce a report without panicking on the host.
 	// We don't assert specific check counts because they depend on the
 	// environment (codesign, assets, etc.).
-	r := runDoctorChecks()
+	r := runDoctorChecks(false)
 	if len(r.Checks) == 0 {
 		t.Error("expected at least one check")
 	}

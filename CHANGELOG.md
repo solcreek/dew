@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `DEW_DEBUG=1` env var dumps the VM config (CPU, memory, kernel path
+  + size + format magic, cmdline, devices, host model, macOS version)
+  to stderr before `machine.Start()`. Apple's `VZErrorDomain Code=1`
+  rarely surfaces the underlying cause; the dump lets bug reports
+  show whether the config or the platform is at fault. Kernel format
+  heuristic flags gzip/zstd/ELF/PE wrappers, which Apple VZ rejects
+  for ARM64.
+- `dew doctor --verbose` runs the boot test with `DEW_DEBUG=1`
+  enabled and surfaces the captured dump alongside the check result.
+  When a check fails, the report now suggests re-running with this
+  flag so the user can attach the full diagnostic to a bug report.
+- `dew doctor` runs `codesign --verify --strict` against the binary.
+  Entitlement presence is necessary but not sufficient — npm / tar
+  extraction can leave the entitlement readable while invalidating
+  the signed CodeDirectory hashes; VZ then refuses to boot with the
+  same opaque `Code=1`.
+
+### Changed
+
+- VM start failure messages include the Mac model and macOS version
+  so bug reports surface hardware specifics without the user needing
+  to remember `sysctl hw.model`.
+
 ## [0.7.30] - 2026-06-03
 
 ### Changed

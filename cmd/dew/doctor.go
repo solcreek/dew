@@ -42,15 +42,18 @@ type DoctorReport struct {
 }
 
 func cmdDoctor(args []string) error {
-	// Parse --json from args or global flag.
 	jsonMode := flagJSON
+	verbose := false
 	for _, a := range args {
-		if a == "--json" {
+		switch a {
+		case "--json":
 			jsonMode = true
+		case "--verbose", "-v":
+			verbose = true
 		}
 	}
 
-	report := runDoctorChecks()
+	report := runDoctorChecks(verbose)
 
 	if jsonMode {
 		enc := json.NewEncoder(os.Stdout)
@@ -66,7 +69,7 @@ func cmdDoctor(args []string) error {
 	return nil
 }
 
-func runDoctorChecks() DoctorReport {
+func runDoctorChecks(verbose bool) DoctorReport {
 	var checks []DoctorCheck
 
 	// macOS version
@@ -134,6 +137,26 @@ func runDoctorChecks() DoctorReport {
 		})
 	}
 
+	// Signature integrity. Entitlement presence is necessary but not
+	// sufficient — npm/tar extraction can leave the entitlement
+	// readable while invalidating the signed CodeDirectory hashes. VZ
+	// then refuses to boot with the same opaque Code=1 the user sees
+	// when the entitlement is genuinely missing. `codesign --verify
+	// --strict` catches both classes of corruption.
+	if vOut, vErr := exec.Command("codesign", "--verify", "--strict", self).CombinedOutput(); vErr != nil {
+		checks = append(checks, DoctorCheck{
+			Name:    "Codesign signature integrity",
+			Status:  CheckFail,
+			Code:    "codesign_invalid",
+			Message: strings.TrimSpace(string(vOut)),
+			Hint:    "Re-install dew (npm install -g dew) — signature was likely damaged during extraction",
+		})
+	} else {
+		checks = append(checks, DoctorCheck{
+			Name: "Codesign signature integrity", Status: CheckPass,
+		})
+	}
+
 	// Kernel + initramfs assets
 	home, _ := os.UserHomeDir()
 	assets := []string{
@@ -185,16 +208,27 @@ func runDoctorChecks() DoctorReport {
 
 	if !priorFail && hasEntitlement && !priorAdhoc {
 		bootCmd := exec.Command(self, "run", "--profile", "minimal", "--", "echo", "doctor-ok")
+		// --verbose: surface the full VM config dump (kernel format,
+		// memory, devices, host model) and any error chain by enabling
+		// the debug-print path in the spawned binary.
+		if verbose {
+			bootCmd.Env = append(os.Environ(), "DEW_DEBUG=1")
+		}
 		bootOut, bootErr := bootCmd.CombinedOutput()
 		bootOk := bootErr == nil && strings.Contains(string(bootOut), "doctor-ok")
 		if bootOk {
-			checks = append(checks, DoctorCheck{Name: "VM boot test", Status: CheckPass})
+			c := DoctorCheck{Name: "VM boot test", Status: CheckPass}
+			if verbose {
+				c.Message = strings.TrimSpace(string(bootOut))
+			}
+			checks = append(checks, c)
 		} else {
 			checks = append(checks, DoctorCheck{
 				Name:    "VM boot test",
 				Status:  CheckFail,
 				Code:    "boot_failed",
 				Message: strings.TrimSpace(string(bootOut)),
+				Hint:    "Re-run with `dew doctor --verbose` for the full VM config dump, then attach the output to a bug report",
 			})
 		}
 	}
@@ -229,6 +263,12 @@ func printDoctorReportHuman(r DoctorReport) {
 				fmt.Printf("  ✓ %s: %s\n", c.Name, c.Value)
 			} else {
 				fmt.Printf("  ✓ %s\n", c.Name)
+			}
+			// --verbose may attach a captured boot dump to a passing
+			// check; surface it indented so the user sees it without
+			// having to re-run with DEW_DEBUG=1 themselves.
+			if c.Message != "" {
+				printIndented(c.Message)
 			}
 		case CheckWarn:
 			fmt.Printf("  ⚠ %s\n", c.Name)

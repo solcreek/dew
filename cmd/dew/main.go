@@ -533,7 +533,9 @@ Advanced:
   dew run [--] <cmd>             Execute in ephemeral VM
   dew exec <cmd>                 Execute in running VM
   dew assets ...                 Manage VM images
-  dew doctor                     Diagnose environment issues
+  dew doctor [--verbose]         Diagnose environment issues
+                                 (--verbose dumps the VM config
+                                  during the boot test)
   dew update                     Update to latest version
   dew version                    Print version
 
