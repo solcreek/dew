@@ -109,10 +109,11 @@ dash/underscore split: the **allowlist must use the on-disk filename**
 `virtio-rng` (dash) because the prune step matches module basenames from
 `modules.dep` (a `virtio_rng` entry would be pruned out and the entropy fix
 silently lost; it also pulls `rng-core` transitively). The **boot-time loader**
-modprobes `virtio_rng` then falls back to `virtio-rng` — kmod normalises the
-two, but the fallback covers modprobe implementations that don't. Without the
-RNG the guest starves /dev/random and getrandom() callers block at
-"crypto/rand: blocked".
+modprobes `virtio-rng` (the allowlisted dash name) then falls back to
+`virtio_rng` — kmod normalises the two, but leading with the dash name also
+keeps the modprobe/allowlist drift guard (TestInitramfsBuildScript_Modprobe-
+MatchesAllowlist) green. Without the RNG the guest starves /dev/random and
+getrandom() callers block at "crypto/rand: blocked".
 
 ## Conventions
 
