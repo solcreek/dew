@@ -51,3 +51,9 @@ experiments/
 # something to display on the package page. Source of truth is the
 # repo root README; the copy is a build artifact, never committed.
 npm/README.md
+
+# Release pipeline writes this from assets-shas.txt (build-linux
+# artifact) right before goreleaser invokes go build. Dev builds run
+# without it; the map declared in assets_shas.go stays empty and SHA
+# verification skips.
+cmd/dew/assets_shas_generated.go
