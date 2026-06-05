@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+
+	"github.com/solcreek/dew/internal/vm/darwin"
 )
 
 // CheckStatus is one of "pass", "warn", "fail".
@@ -159,10 +161,9 @@ func runDoctorChecks(verbose bool) DoctorReport {
 
 	// Kernel + initramfs assets
 	home, _ := os.UserHomeDir()
-	assets := []string{
-		home + "/.local/share/dew/vmlinuz",
-		home + "/.local/share/dew/initramfs.cpio.gz",
-	}
+	kernelPath := home + "/.local/share/dew/vmlinuz"
+	initrdPath := home + "/.local/share/dew/initramfs.cpio.gz"
+	assets := []string{kernelPath, initrdPath}
 	for _, p := range assets {
 		name := "Asset: " + p
 		if _, err := os.Stat(p); err == nil {
@@ -175,6 +176,32 @@ func runDoctorChecks(verbose bool) DoctorReport {
 				Message: "Asset not downloaded",
 				Hint:    "Run: dew assets pull",
 			})
+		}
+	}
+
+	// Kernel format sanity check. The 2026-06-04 M4 Max report was a
+	// stale 9MB EFI-stub-only kernel left over from an older install
+	// — Apple VZ rejected it with the opaque Code=1, the user spent
+	// days debugging. Detect the broken case at doctor time by
+	// reading the kernel's ARM64 boot header magic at offset 0x38.
+	// Skipped if the kernel file is missing (already covered above).
+	if runtime.GOARCH == "arm64" {
+		if _, err := os.Stat(kernelPath); err == nil {
+			h := darwin.ReadBinaryHeader(kernelPath)
+			hint := darwin.KernelFormatHint(h)
+			if strings.Contains(hint, "raw ARM64 Linux Image") {
+				checks = append(checks, DoctorCheck{
+					Name: "Kernel format", Status: CheckPass, Value: "raw ARM64 Linux Image",
+				})
+			} else {
+				checks = append(checks, DoctorCheck{
+					Name:    "Kernel format",
+					Status:  CheckFail,
+					Code:    "kernel_stale",
+					Message: hint,
+					Hint:    "Run: dew assets pull --force",
+				})
+			}
 		}
 	}
 

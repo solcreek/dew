@@ -42,7 +42,7 @@ func TestKernelFormatHint(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := kernelFormatHint(binaryHeader{First4: tc.first4, ARM64Magic: tc.atMagic})
+			got := KernelFormatHint(BinaryHeader{First4: tc.first4, ARM64Magic: tc.atMagic})
 			if !strings.Contains(got, tc.wantSub) {
 				t.Errorf("hint = %q, want substring %q", got, tc.wantSub)
 			}
@@ -54,7 +54,7 @@ func TestDumpConfigSummary_CoversAllFields(t *testing.T) {
 	tmp := t.TempDir()
 	kernelPath := filepath.Join(tmp, "vmlinuz")
 	// Bad kernel: gzip prefix, no ARM64 magic at offset 0x38. Padding
-	// to 0x40 so readBinaryHeader can read the offset-0x38 region
+	// to 0x40 so ReadBinaryHeader can read the offset-0x38 region
 	// (otherwise ARM64Magic stays zero, which is the same outcome).
 	kernelBytes := make([]byte, 0x40)
 	copy(kernelBytes, []byte{0x1f, 0x8b, 0x08, 0x00, 0xff, 0xff})
@@ -118,14 +118,14 @@ func TestReadBinaryHeader_ARM64Magic(t *testing.T) {
 	if err := os.WriteFile(path, buf, 0644); err != nil {
 		t.Fatal(err)
 	}
-	h := readBinaryHeader(path)
+	h := ReadBinaryHeader(path)
 	if h.First4 != [4]byte{'M', 'Z', 0x40, 0xfa} {
 		t.Errorf("First4 = %v", h.First4)
 	}
 	if h.ARM64Magic != [4]byte{'A', 'R', 'M', 0x64} {
 		t.Errorf("ARM64Magic = %v, want ARM\\x64", h.ARM64Magic)
 	}
-	got := kernelFormatHint(h)
+	got := KernelFormatHint(h)
 	if !strings.Contains(got, "raw ARM64 Linux Image") {
 		t.Errorf("hint = %q, want raw ARM64 classification", got)
 	}
@@ -133,7 +133,7 @@ func TestReadBinaryHeader_ARM64Magic(t *testing.T) {
 
 func TestReadBinaryHeader_MissingFile(t *testing.T) {
 	// Best-effort: missing file returns zero header, never panics.
-	h := readBinaryHeader("/nonexistent/path/vmlinuz")
+	h := ReadBinaryHeader("/nonexistent/path/vmlinuz")
 	if h.Size != 0 || h.First4 != [4]byte{} {
 		t.Errorf("missing file should yield zero header, got %+v", h)
 	}

@@ -32,12 +32,12 @@ func dumpConfigSummary(w io.Writer, cfg vm.Config) {
 	fmt.Fprintf(w, "  memory:   %d MB (%d bytes)\n", cfg.MemoryMB, cfg.MemoryMB*1024*1024)
 	fmt.Fprintf(w, "  cmdline:  %s\n", cfg.CmdLine)
 
-	kHdr := readBinaryHeader(cfg.Kernel)
+	kHdr := ReadBinaryHeader(cfg.Kernel)
 	fmt.Fprintf(w, "  kernel:   %s\n            size=%d bytes  first4=%02x %02x %02x %02x  arm64-magic@0x38=%02x %02x %02x %02x  %s\n",
 		cfg.Kernel, kHdr.Size,
 		kHdr.First4[0], kHdr.First4[1], kHdr.First4[2], kHdr.First4[3],
 		kHdr.ARM64Magic[0], kHdr.ARM64Magic[1], kHdr.ARM64Magic[2], kHdr.ARM64Magic[3],
-		kernelFormatHint(kHdr))
+		KernelFormatHint(kHdr))
 
 	if cfg.Initrd != "" {
 		if st, err := os.Stat(cfg.Initrd); err == nil {
@@ -78,7 +78,7 @@ func dumpConfigSummary(w io.Writer, cfg vm.Config) {
 	fmt.Fprintln(w, "────────────────────")
 }
 
-// kernelFormatHint classifies the kernel file by both the first 4
+// KernelFormatHint classifies the kernel file by both the first 4
 // bytes and the magic at offset 0x38. Apple VZ on ARM64 requires a
 // raw uncompressed Linux Image; that format is canonically identified
 // by the `ARM\x64` (0x64644d52 LE → "ARMd") magic at offset 0x38.
@@ -94,7 +94,7 @@ func dumpConfigSummary(w io.Writer, cfg vm.Config) {
 // kernel left over from an earlier dew install — same MZ prefix but
 // no ARM64 boot header at 0x38, so Apple VZ correctly rejects it.
 // This heuristic now distinguishes the two.
-func kernelFormatHint(h binaryHeader) string {
+func KernelFormatHint(h BinaryHeader) string {
 	// Authoritative ARM64 Linux Image check — present regardless of
 	// any wrapping at offset 0.
 	if h.ARM64Magic == [4]byte{'A', 'R', 'M', 0x64} {
@@ -117,14 +117,14 @@ func kernelFormatHint(h binaryHeader) string {
 	}
 }
 
-type binaryHeader struct {
+type BinaryHeader struct {
 	Size       int64
 	First4     [4]byte
 	ARM64Magic [4]byte // bytes at offset 0x38; "ARM\x64" on a valid ARM64 Linux Image
 }
 
-func readBinaryHeader(path string) binaryHeader {
-	var h binaryHeader
+func ReadBinaryHeader(path string) BinaryHeader {
+	var h BinaryHeader
 	st, err := os.Stat(path)
 	if err != nil {
 		return h

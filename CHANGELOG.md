@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `dew assets pull --force` re-downloads kernel + initramfs even when
+  cached files exist. The hint that doctor and the debug dump emit
+  ("run dew assets pull --force") now lands somewhere real.
+- `dew doctor` reads the cached kernel's ARM64 boot header magic on
+  arm64 hosts and reports format as a first-class check. The 2026-06
+  M4 Max report — multi-day debug of a 9MB stale EFI-stub-only
+  kernel left by an earlier install — would now surface as a single
+  failing check with the actionable remediation in the same line.
+
 ### Fixed
 
 - `install.sh` no longer aborts on systems that ship `shasum` but not

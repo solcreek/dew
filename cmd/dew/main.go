@@ -140,7 +140,7 @@ func resolveAssets(cfg *vm.Config) error {
 		needDownload = true
 	}
 	if needDownload {
-		if err := downloadAssets(dataDir, profile, cfg.Kernel, cfg.Initrd); err != nil {
+		if err := downloadAssets(dataDir, profile, cfg.Kernel, cfg.Initrd, false); err != nil {
 			return err
 		}
 	}
@@ -159,7 +159,14 @@ const releaseBaseURL = "https://github.com/solcreek/dew/releases/latest/download
 // local httptest server. Empty in production.
 var releaseBaseURLOverride string
 
-func downloadAssets(dataDir, profile, kernelPath, initrdPath string) error {
+// downloadAssets fetches kernel + initramfs for the given profile.
+// When force is true, existing files at the destination paths are
+// re-downloaded; otherwise existence at the destination is treated
+// as a hit and the file is left alone. The `dew assets pull --force`
+// flag is the user-facing way to invalidate; the auto-download path
+// in resolveAssets is always non-force so a normal `dew up` doesn't
+// re-pull on every invocation.
+func downloadAssets(dataDir, profile, kernelPath, initrdPath string, force bool) error {
 	os.MkdirAll(dataDir, 0755)
 
 	base := releaseBaseURL
@@ -209,8 +216,14 @@ func downloadAssets(dataDir, profile, kernelPath, initrdPath string) error {
 	var wg sync.WaitGroup
 	for i, f := range files {
 		if _, err := os.Stat(f.dest); err == nil {
-			results[i] = result{name: f.name, written: -1}
-			continue
+			if !force {
+				results[i] = result{name: f.name, written: -1}
+				continue
+			}
+			// Remove the existing file so fetchAsset's tmp+rename
+			// dance starts from a clean slate. Missing-file error
+			// is fine (the rename target will be re-created).
+			_ = os.Remove(f.dest)
 		}
 		fmt.Fprintf(os.Stderr, "  downloading %s...\n", f.name)
 		wg.Add(1)
@@ -286,10 +299,14 @@ func cmdAssets(args []string) error {
 	if profile == "" {
 		profile = "minimal"
 	}
-	// Parse --profile from remaining args
+	// Parse --profile + --force from remaining args.
+	force := false
 	for i, a := range args {
 		if a == "--profile" && i+1 < len(args) {
 			profile = args[i+1]
+		}
+		if a == "--force" {
+			force = true
 		}
 	}
 
@@ -297,8 +314,12 @@ func cmdAssets(args []string) error {
 	case "pull":
 		kernelPath := filepath.Join(dataDir, "vmlinuz")
 		initrdPath := filepath.Join(dataDir, "initramfs-"+profile+".cpio.gz")
-		fmt.Fprintf(os.Stderr, "  profile: %s\n  target:  %s\n\n", profile, dataDir)
-		return downloadAssets(dataDir, profile, kernelPath, initrdPath)
+		if force {
+			fmt.Fprintf(os.Stderr, "  profile: %s\n  target:  %s\n  mode:    force re-download\n\n", profile, dataDir)
+		} else {
+			fmt.Fprintf(os.Stderr, "  profile: %s\n  target:  %s\n\n", profile, dataDir)
+		}
+		return downloadAssets(dataDir, profile, kernelPath, initrdPath, force)
 
 	case "list":
 		entries, err := os.ReadDir(dataDir)
