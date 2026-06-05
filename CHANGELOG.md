@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Content-addressed asset cache. Kernel + initramfs files now live at
+  `~/.local/share/dew/<asset>.<sha8>` instead of a shared un-suffixed
+  filename. Multiple dew binaries (different versions → different
+  SHAs) coexist without fighting; downgrade + re-upgrade is free
+  (both versions' bytes stay on disk).
+- Release builds embed the SHA256 of every asset into the binary at
+  build time. Downloads verify against the embedded SHA before
+  installing at the destination path; a CDN drift or mid-transit
+  corruption fails loudly here rather than letting Apple VZ reject
+  the bytes later with `Code=1`. Dev / local builds (no embedded
+  manifest) skip verification — the user is expected to know what
+  they built.
+
+### Changed
+
+- The 2026-06-04 M4 Max bug class — stale asset from a previous
+  install reused silently on upgrade — is now structurally impossible
+  on release builds. Legacy files at the pre-0.7.33 un-suffixed path
+  are left in place untouched (no destructive cleanup); a new content-
+  addressed file gets downloaded alongside. Users can reclaim the
+  disk on their own schedule.
+
 ## [0.7.32] - 2026-06-05
 
 ### Added
