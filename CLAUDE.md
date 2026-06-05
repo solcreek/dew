@@ -104,9 +104,15 @@ Host side (`internal/vm/darwin`, arm64 only): `Config.EnableRosetta` attaches a
 `F` (fix-binary) flag so translation works inside container namespaces.
 
 Two kernel modules are required and easy to miss in the initramfs allowlist:
-`binfmt_misc` (CONFIG_BINFMT_MISC=m, not built-in) and `virtio-rng` (dash, not
-`virtio_rng`; pulls `rng-core` via modules.dep). Without virtio-rng the guest
-starves /dev/random and getrandom() callers block at "crypto/rand: blocked".
+`binfmt_misc` (CONFIG_BINFMT_MISC=m, not built-in) and the VirtIO RNG. Mind the
+dash/underscore split: the **allowlist must use the on-disk filename**
+`virtio-rng` (dash) because the prune step matches module basenames from
+`modules.dep` (a `virtio_rng` entry would be pruned out and the entropy fix
+silently lost; it also pulls `rng-core` transitively). The **boot-time loader**
+modprobes `virtio_rng` then falls back to `virtio-rng` — kmod normalises the
+two, but the fallback covers modprobe implementations that don't. Without the
+RNG the guest starves /dev/random and getrandom() callers block at
+"crypto/rand: blocked".
 
 ## Conventions
 

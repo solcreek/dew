@@ -504,7 +504,7 @@ modprobe virtio_blk 2>/dev/null || true
 # idle VM starves /dev/random, and getrandom()-based callers (containerd,
 # nerdctl TLS) block for minutes at "crypto/rand: blocked ... waiting to read
 # random data from the kernel". Load it early, before switch_root.
-modprobe virtio_rng 2>/dev/null || true
+modprobe virtio_rng 2>/dev/null || modprobe virtio-rng 2>/dev/null || true
 modprobe vsock 2>/dev/null || true
 modprobe vmw_vsock_virtio_transport 2>/dev/null || true
 
