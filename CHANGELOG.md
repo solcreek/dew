@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `dew server create --ssh-key <value>` provisions the new server with
+  the supplied public key seeded into `/root/.ssh/authorized_keys`,
+  then locks root password auth (`passwd -l root` +
+  `PasswordAuthentication no`) in the same boot. Value form is
+  auto-detected so agents and humans both have a natural path:
+    - inline literal: `--ssh-key 'ssh-ed25519 AAAA... user@host'`
+    - stdin: `--ssh-key -`
+    - file path: `--ssh-key ~/.ssh/id_ed25519.pub`
+  Env equivalents: `DEW_SSH_KEY` (literal) and `DEW_SSH_KEY_FILE`
+  (path). With no flag and no env, falls back to auto-discovering
+  `~/.ssh/id_ed25519.pub` then `~/.ssh/id_rsa.pub` — secure default
+  for the most common interactive case. `--no-ssh-key` opts out
+  explicitly for the rare "I want the provider's emailed password"
+  flow.
+- `dew deploy` SSE stream now includes the server-side stderr on
+  extract failures. Previously the client saw only opaque
+  `exit status 2` and the actual tar / hook output (the part that
+  tells you the cause) only reached the server's journal. The
+  symlink-linkname or out-of-space line now appears indented under
+  the failure in the client output, no SSH needed.
+
+### Changed
+
+- `dew build` with `type=static` ships ONLY the build output dir
+  (`dist`, `build`, `out`, `.next/standalone`, `public` — first match
+  wins) instead of the entire project tree. Tarballs shrink
+  dramatically, source no longer leaks to the server, and repo-root
+  files (lockfiles, `vercel.json`, symlinks like
+  `CLAUDE.md → AGENTS.md`) that have no place in a static deploy
+  are excluded by construction.
+- `dew build --dry-run` now actually skips the user build command
+  and tarball write. It runs detection only, prints what would be
+  built and shipped, and exits clean — lets framework detection be
+  verified without paying the build cost.
+
 ## [0.7.34] - 2026-06-05
 
 ### Fixed
