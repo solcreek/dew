@@ -174,6 +174,9 @@ func (d *DarwinVM) configureVsock(config *vz.VirtualMachineConfiguration) error 
 func (d *DarwinVM) configureSharedDirs(config *vz.VirtualMachineConfiguration) error {
 	var fsDirs []vz.DirectorySharingDeviceConfiguration
 	for _, sd := range d.cfg.SharedDirs {
+		if d.cfg.EnableRosetta && sd.Tag == "rosetta" {
+			return fmt.Errorf("shared dir tag %q is reserved for the Rosetta share when --rosetta is set", sd.Tag)
+		}
 		sharedDir, err := vz.NewSharedDirectory(sd.HostPath, sd.ReadOnly)
 		if err != nil {
 			return fmt.Errorf("shared dir %q: %w", sd.Tag, err)

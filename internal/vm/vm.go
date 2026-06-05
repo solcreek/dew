@@ -78,8 +78,9 @@ type Config struct {
 
 	// EnableRosetta attaches Apple's Rosetta translator as a virtiofs
 	// device (tag "rosetta") so the guest can register binfmt_misc and
-	// execute x86_64 ELF binaries on Apple Silicon. Ignored on Intel
-	// Macs (no Rosetta-for-Linux there).
+	// execute x86_64 ELF binaries on Apple Silicon. On Intel Macs (no
+	// Rosetta-for-Linux) enabling this fails VM start with a clear error
+	// rather than silently doing nothing.
 	EnableRosetta bool
 
 	// Console overrides the serial console file handles.
