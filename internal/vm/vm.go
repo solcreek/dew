@@ -76,6 +76,12 @@ type Config struct {
 	SharedDirs []SharedDir
 	Forwards   []PortForward
 
+	// EnableRosetta attaches Apple's Rosetta translator as a virtiofs
+	// device (tag "rosetta") so the guest can register binfmt_misc and
+	// execute x86_64 ELF binaries on Apple Silicon. Ignored on Intel
+	// Macs (no Rosetta-for-Linux there).
+	EnableRosetta bool
+
 	// Console overrides the serial console file handles.
 	// If nil, os.Stdin/os.Stdout are used (interactive mode).
 	Console *ConsoleFiles

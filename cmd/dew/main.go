@@ -594,6 +594,14 @@ Network:
                 Repeatable. Resolves HOST on the host side and permits
                 the guest to reach those IPs. Only meaningful with
                 --network-policy=restricted.
+
+Compatibility:
+  --rosetta     Apple Silicon only. Mounts Apple's Rosetta translator into
+                the guest and registers binfmt_misc, so x86_64/amd64 binaries
+                run under translation. Pair with --profile standard to run
+                amd64 containers: dew run --profile standard --network --rosetta
+                -- nerdctl run --platform linux/amd64 <image>. Expect ~0.7-0.8x
+                native speed on compiled code; far slower on crypto/SIMD work.
 `)
 }
 
@@ -678,6 +686,8 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 			cfg.MemoryMB = n
 		case "--network":
 			cfg.Network = true
+		case "--rosetta":
+			cfg.EnableRosetta = true
 		case "--network-policy":
 			i++
 			if i >= len(args) {
@@ -802,6 +812,9 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 func appendGuestParams(cfg *vm.Config) {
 	for _, sd := range cfg.SharedDirs {
 		cfg.CmdLine += fmt.Sprintf(" dew.share=%s:/%s", sd.Tag, sd.Tag)
+	}
+	if cfg.EnableRosetta {
+		cfg.CmdLine += " dew.rosetta=1"
 	}
 	if cfg.Network && cfg.NetworkPolicy == "restricted" {
 		cfg.CmdLine += " dew.netpolicy=restricted"

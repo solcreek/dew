@@ -152,7 +152,7 @@ cp -a "$APK_EXTRACT/lib/modules/${KERNEL_VER}" "$WORK_DIR/lib/modules/"
 KMODS_BASE="af_packet virtio_net overlay mbcache jbd2 ext4 virtio_blk \
             vsock vmw_vsock_virtio_transport fuse virtiofs \
             nf_tables nft_compat ip_tables iptable_filter \
-            crc32c_generic virtio-rng"
+            crc32c_generic virtio-rng binfmt_misc"
 # Container networking (CNI bridge + masquerade) — standard profile only.
 KMODS_STANDARD="bridge br_netfilter veth iptable_nat nf_nat \
                 xt_MASQUERADE xt_addrtype"
@@ -668,6 +668,33 @@ for share in $(cat /proc/cmdline | tr ' ' '\n' | grep '^dew.share='); do
         mount -t virtiofs "$tag_name" "$mount_point" || echo "virtiofs mount failed: $tag_name → $mount_point"
     fi
 done
+
+# Rosetta x86_64 translation (Apple Silicon): mount the translator the host
+# exposed as virtiofs tag "rosetta", then register the x86_64 ELF magic with
+# binfmt_misc so the kernel hands amd64 binaries to Rosetta automatically.
+# The F (fix-binary) flag makes the kernel open the interpreter at register
+# time and reuse that fd, so the translation works inside container/chroot
+# namespaces that can't see /mnt/rosetta — this is what makes amd64 containers
+# run transparently. Must happen before containerd starts.
+if grep -q 'dew.rosetta=1' /proc/cmdline 2>/dev/null; then
+    mkdir -p /mnt/rosetta
+    if mount -t virtiofs rosetta /mnt/rosetta 2>/dev/null; then
+        chmod 0755 /mnt/rosetta/rosetta 2>/dev/null || true
+        modprobe binfmt_misc 2>/dev/null || true
+        mountpoint -q /proc/sys/fs/binfmt_misc 2>/dev/null || \
+            mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null || true
+        # printf (not echo) so the literal \xNN escapes reach the kernel's
+        # binfmt parser instead of being expanded by the shell.
+        if printf '%s' ':rosetta:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00:\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/mnt/rosetta/rosetta:OCF' \
+            > /proc/sys/fs/binfmt_misc/register 2>/dev/null; then
+            echo "rosetta: binfmt_misc registered (amd64 -> Rosetta)"
+        else
+            echo "rosetta: binfmt register failed (kernel lacks CONFIG_BINFMT_MISC?)"
+        fi
+    else
+        echo "rosetta: virtiofs mount failed"
+    fi
+fi
 
 # kernel cmdline params
 DEW_CPU_QUOTA=""

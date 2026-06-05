@@ -172,9 +172,6 @@ func (d *DarwinVM) configureVsock(config *vz.VirtualMachineConfiguration) error 
 }
 
 func (d *DarwinVM) configureSharedDirs(config *vz.VirtualMachineConfiguration) error {
-	if len(d.cfg.SharedDirs) == 0 {
-		return nil
-	}
 	var fsDirs []vz.DirectorySharingDeviceConfiguration
 	for _, sd := range d.cfg.SharedDirs {
 		sharedDir, err := vz.NewSharedDirectory(sd.HostPath, sd.ReadOnly)
@@ -191,6 +188,16 @@ func (d *DarwinVM) configureSharedDirs(config *vz.VirtualMachineConfiguration) e
 		}
 		fsConfig.SetDirectoryShare(share)
 		fsDirs = append(fsDirs, fsConfig)
+	}
+	if d.cfg.EnableRosetta {
+		rosettaDev, err := rosettaShareDevice()
+		if err != nil {
+			return fmt.Errorf("rosetta: %w", err)
+		}
+		fsDirs = append(fsDirs, rosettaDev)
+	}
+	if len(fsDirs) == 0 {
+		return nil
 	}
 	config.SetDirectorySharingDevicesVirtualMachineConfiguration(fsDirs)
 	return nil
