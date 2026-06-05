@@ -152,7 +152,7 @@ cp -a "$APK_EXTRACT/lib/modules/${KERNEL_VER}" "$WORK_DIR/lib/modules/"
 KMODS_BASE="af_packet virtio_net overlay mbcache jbd2 ext4 virtio_blk \
             vsock vmw_vsock_virtio_transport fuse virtiofs \
             nf_tables nft_compat ip_tables iptable_filter \
-            crc32c_generic"
+            crc32c_generic virtio-rng"
 # Container networking (CNI bridge + masquerade) — standard profile only.
 KMODS_STANDARD="bridge br_netfilter veth iptable_nat nf_nat \
                 xt_MASQUERADE xt_addrtype"
@@ -500,6 +500,11 @@ modprobe mbcache 2>/dev/null || true
 modprobe jbd2 2>/dev/null || true
 modprobe ext4 2>/dev/null || true
 modprobe virtio_blk 2>/dev/null || true
+# virtio-rng feeds the host's hardware entropy into the guest. Without it an
+# idle VM starves /dev/random, and getrandom()-based callers (containerd,
+# nerdctl TLS) block for minutes at "crypto/rand: blocked ... waiting to read
+# random data from the kernel". Load it early, before switch_root.
+modprobe virtio_rng 2>/dev/null || true
 modprobe vsock 2>/dev/null || true
 modprobe vmw_vsock_virtio_transport 2>/dev/null || true
 
