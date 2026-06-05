@@ -175,7 +175,8 @@ func runAction(
 }
 
 func cmdServerCreate(args []string) error {
-	var provider, region, plan, name, image string
+	var provider, region, plan, name, image, sshKeyFlag string
+	noSSHKey := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--provider":
@@ -203,6 +204,13 @@ func cmdServerCreate(args []string) error {
 			if i < len(args) {
 				image = args[i]
 			}
+		case "--ssh-key":
+			i++
+			if i < len(args) {
+				sshKeyFlag = args[i]
+			}
+		case "--no-ssh-key":
+			noSSHKey = true
 		}
 	}
 
@@ -245,7 +253,18 @@ func cmdServerCreate(args []string) error {
 		return fmt.Errorf("generate deploy token: %w", err)
 	}
 
-	cloudInit := generateCloudInit(dewToken)
+	sshPubKey, sshSource, err := resolveSSHKey(sshKeyFlag, noSSHKey)
+	if err != nil {
+		return err
+	}
+	if sshPubKey != "" {
+		fmt.Fprintf(os.Stderr, "  ssh key:  %s\n", sshSource)
+	} else if noSSHKey {
+		fmt.Fprintf(os.Stderr, "  ssh key:  none (--no-ssh-key)\n")
+	} else {
+		fmt.Fprintf(os.Stderr, "  ssh key:  none (no flag, no env, no key in ~/.ssh)\n")
+	}
+	cloudInit := generateCloudInit(dewToken, sshPubKey)
 
 	sp := progress.New()
 	sp.Step("Creating VPS")
@@ -528,11 +547,32 @@ func hashToken(token string) string {
 	return hex.EncodeToString(h[:])
 }
 
-func generateCloudInit(token string) string {
+func generateCloudInit(token, sshPubKey string) string {
 	tokenHash := hashToken(token)
+	// When a key is supplied, lock root password auth in the same
+	// boot. Otherwise the provider's default (password-emailed +
+	// SSH-passwd-enabled) stays in place — the user explicitly chose
+	// the console-based path. Either is a deliberate choice;
+	// half-applying (key installed + password still on) is the
+	// security regression we close.
+	sshSection := ""
+	if sshPubKey != "" {
+		sshSection = fmt.Sprintf(`
+# SSH key + root password lockdown (--ssh-key supplied at create time)
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+cat > /root/.ssh/authorized_keys <<'PUBKEY'
+%s
+PUBKEY
+chmod 600 /root/.ssh/authorized_keys
+passwd -l root
+sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+systemctl reload ssh || systemctl reload sshd || true
+`, sshPubKey)
+	}
 	return fmt.Sprintf(`#!/bin/bash
 set -e
-
+%s
 # Install dew
 curl -fsSL https://dewvm.dev/install.sh -o /tmp/install-dew.sh
 bash /tmp/install-dew.sh
@@ -581,7 +621,7 @@ SVC
 
 systemctl daemon-reload
 systemctl enable --now dew
-`, tokenHash)
+`, sshSection, tokenHash)
 }
 
 // ─── Credential storage ────────────────────────────────────────────

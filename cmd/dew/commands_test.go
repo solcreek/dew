@@ -319,7 +319,7 @@ func TestGenerateDewToken(t *testing.T) {
 // ── Cloud-init security ──
 
 func TestCloudInit_NoPlaintextToken(t *testing.T) {
-	ci := generateCloudInit("crk_admin_secret123")
+	ci := generateCloudInit("crk_admin_secret123", "")
 	if contains(ci, "crk_admin_secret123") {
 		t.Error("cloud-init must NOT contain plaintext token")
 	}
