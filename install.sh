@@ -42,7 +42,14 @@ need() {
 need curl
 need tar
 need uname
-need sha256sum 2>/dev/null || need shasum
+# sha256sum OR `shasum -a 256` is enough. macOS ships shasum by
+# default; sha256sum lands via Homebrew coreutils. The previous
+# `need sha256sum || need shasum` pattern looked like a fallback
+# but `need` calls exit on the first miss — the `||` never fires.
+if ! command -v sha256sum >/dev/null 2>&1 \
+   && ! command -v shasum    >/dev/null 2>&1; then
+    err "sha256sum or shasum is required but neither is installed"
+fi
 
 # --- detect OS / arch -------------------------------------------------
 

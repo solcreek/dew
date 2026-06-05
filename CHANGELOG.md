@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `install.sh` no longer aborts on systems that ship `shasum` but not
+  `sha256sum` (default macOS install). The previous fallback pattern
+  exited on the first miss before the `||` could fire.
+
 ## [0.7.31] - 2026-06-04
 
 Diagnostic improvements for the opaque `VZErrorDomain Code=1` class
