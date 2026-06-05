@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.31] - 2026-06-04
+
+Diagnostic improvements for the opaque `VZErrorDomain Code=1` class
+of VM boot failures, plus the Windows installer arch fix.
+
 ### Added
 
 - `DEW_DEBUG=1` env var dumps the VM config (CPU, memory, kernel path
@@ -25,12 +30,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   extraction can leave the entitlement readable while invalidating
   the signed CodeDirectory hashes; VZ then refuses to boot with the
   same opaque `Code=1`.
+- `dew server create` pre-checks plan + region orderability against
+  the provider's availability catalog and fails fast with a clear
+  message before hitting a cryptic provider 422.
 
 ### Changed
 
 - VM start failure messages include the Mac model and macOS version
   so bug reports surface hardware specifics without the user needing
   to remember `sysctl hw.model`.
+
+### Fixed
+
+- Windows installer picks the correct binary for the host CPU
+  (`PROCESSOR_ARCHITECTURE` → `arm64` / `x86_64`) instead of always
+  downloading x86_64. ARM hosts no longer run the dispatcher through
+  emulation. Installer also prints an upgrade hint footer.
+- Website install URLs unified under `dewvm.dev/install.{sh,ps1}`
+  for every platform.
 
 ## [0.7.30] - 2026-06-03
 
