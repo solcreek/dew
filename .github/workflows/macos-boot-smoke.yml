@@ -73,15 +73,7 @@ jobs:
         # install.sh fix and the next site deploy.
         run: |
           set -euo pipefail
-          # Trace mode while we debug a macos-14-only failure.
-          curl -fsSL -o /tmp/install.sh \
-            https://raw.githubusercontent.com/solcreek/dew/main/install.sh
-          echo "--- install.sh head ---"
-          head -5 /tmp/install.sh
-          echo "--- install.sh sha256 verification line area ---"
-          sed -n '42,55p' /tmp/install.sh
-          echo "--- running with sh -x ---"
-          sh -x /tmp/install.sh
+          curl -fsSL https://raw.githubusercontent.com/solcreek/dew/main/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$HOME/.local/share/dew/bin" >> "$GITHUB_PATH"
 
