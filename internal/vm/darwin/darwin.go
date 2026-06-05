@@ -218,10 +218,24 @@ func (d *DarwinVM) Start(ctx context.Context) error {
 	}
 	d.machine = machine
 
+	// Diagnostic dump: lets bug reports show exactly what we sent to
+	// Apple Virtualization, since VZErrorDomain Code=1 rarely surfaces
+	// the actual cause. Opt-in via DEW_DEBUG=1 so normal users aren't
+	// noised; `dew doctor --verbose` sets it automatically.
+	if os.Getenv("DEW_DEBUG") != "" {
+		dumpConfigSummary(os.Stderr, d.cfg)
+	}
+
 	if err := machine.Start(); err != nil {
 		d.state = vm.StateError
-		// Don't prefix with "dew:" — caller will add it
-		return fmt.Errorf("VM start failed: %w", err)
+		// Don't prefix with "dew:" — caller will add it.
+		// On boot failure also append the host model so bug reports
+		// surface hardware/OS specifics without needing the user to
+		// remember sysctl. Cheap; only runs on the cold-error path.
+		host := readHostInfo()
+		return fmt.Errorf("VM start failed on %s macOS %s: %w",
+			strNonEmpty(host.Model, "<unknown>"),
+			strNonEmpty(host.OSVersion, "<unknown>"), err)
 	}
 
 	d.state = vm.StateRunning
