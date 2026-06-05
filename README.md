@@ -80,6 +80,18 @@ dew deploy 5.161.53.168               # deploy with SSE progress
 
 The server runs `dew serve` (7.1MB Linux binary) — containerd for isolation, self-signed TLS, health checks.
 
+`dew server create` auto-discovers an SSH public key from
+`~/.ssh/id_ed25519.pub` (or `id_rsa.pub`) and locks root password
+auth in the same boot. Override with `--ssh-key`, the `DEW_SSH_KEY`
+env, or `--no-ssh-key` to keep the provider's emailed password.
+
+> **DigitalOcean Web Console caveat:** if you ever need to paste a
+> long command (an SSH key, a recovery script) into DO's browser
+> console, note that it does **not** support bracketed paste — long
+> lines wrap and corrupt mid-paste. Prefer `--ssh-key` at create
+> time so SSH works from the first boot and the console isn't
+> needed.
+
 ## Agent integration
 
 Every command supports `--json` for machine-readable output and `--dry-run` for validation without execution.
