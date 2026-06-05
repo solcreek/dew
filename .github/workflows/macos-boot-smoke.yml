@@ -1,0 +1,119 @@
+name: macOS boot smoke
+
+# End-to-end VM boot test on each supported macOS image. Catches the
+# class of regressions where the build/unit tests pass but the real
+# Apple Virtualization path fails — wrong kernel format shipped,
+# entitlement chain damaged by signing changes, vsock-based exec
+# broken by a refactor, GHA runner image drift, etc.
+#
+# Runner inventory (2026-06): macos-14 / macos-15 / macos-26 are all
+# M1 (free for public repos). M2 is only on -xlarge larger runners
+# (paid). M3/M4/M5 are NOT available on GitHub-hosted runners — those
+# tiers need self-hosted or third-party (cirrus-runners.app etc.).
+# This workflow covers the M1 column across the OS axis; new-CPU
+# coverage is tracked separately via the diagnostic dump + repo
+# compat banner that users self-report against.
+#
+# DEW_DEBUG=1 is on for every run so any failure log includes the
+# full VM config dump — same format as `dew doctor --verbose` — for
+# faster triage.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'kernel/**'
+      - 'initramfs/**'
+      - 'Makefile'
+      - '.github/workflows/macos-boot-smoke.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'kernel/**'
+      - 'initramfs/**'
+      - 'Makefile'
+      - '.github/workflows/macos-boot-smoke.yml'
+  schedule:
+    # Weekly — catches macOS runner-image drift (Apple shipping a VZ
+    # validation tweak, OS minor update breaking us, etc.) even when
+    # nothing in our code changed.
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false   # one OS failure shouldn't mask the others
+      matrix:
+        os: [macos-14, macos-15, macos-26]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+
+      - name: Host info
+        run: |
+          echo "Mac model:   $(sysctl -n hw.model)"
+          echo "CPU brand:   $(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo n/a)"
+          echo "macOS:       $(sw_vers -productVersion) (build $(sw_vers -buildVersion))"
+          echo "Kernel:      $(uname -srm)"
+          echo "Memory:      $(sysctl -n hw.memsize) bytes"
+
+      - name: Build + ad-hoc sign with VZ entitlement
+        run: make sign
+
+      - name: Cross-compile guest agent
+        run: make agent
+
+      - name: Fetch latest release kernel + minimal initramfs
+        # Pinning to `latest` rather than rebuilding assets in CI: the
+        # kernel uses a Kata pre-built (no rebuild) and minimal initramfs
+        # is built via Alpine apk in `initramfs/build.sh`. Rebuilding
+        # both per run would 4× this job's wall clock for marginal
+        # confidence. Assets rarely change; PRs that touch them
+        # should land via the release pipeline which exercises the
+        # build chain end-to-end.
+        run: |
+          mkdir -p ~/.local/share/dew
+          REPO=solcreek/dew
+          curl -fsSL --retry 3 -o ~/.local/share/dew/vmlinuz \
+            "https://github.com/$REPO/releases/latest/download/vmlinuz-aarch64"
+          curl -fsSL --retry 3 -o ~/.local/share/dew/initramfs.cpio.gz \
+            "https://github.com/$REPO/releases/latest/download/initramfs-minimal-aarch64.cpio.gz"
+          ls -lh ~/.local/share/dew/
+
+      - name: dew doctor (informational — surfaces signing + asset state)
+        run: ./dew doctor --verbose || true
+
+      - name: Boot smoke — dew run -- echo SMOKE_OK
+        env:
+          DEW_DEBUG: "1"
+        run: |
+          set -o pipefail
+          # Capture both streams; DEW_DEBUG dump goes to stderr.
+          # `script -q /dev/null` would give us a PTY, but `dew run`
+          # works fine without one for non-interactive commands.
+          OUT=$(./dew run --profile minimal -- echo SMOKE_OK 2>&1)
+          STATUS=$?
+          echo "$OUT"
+
+          if [ $STATUS -ne 0 ]; then
+            echo "::error::dew run exited $STATUS"
+            exit $STATUS
+          fi
+          if ! echo "$OUT" | grep -q SMOKE_OK; then
+            echo "::error::expected SMOKE_OK in output, did not see it"
+            exit 1
+          fi
+          echo "✓ boot + exec round-trip OK"
