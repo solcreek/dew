@@ -47,8 +47,8 @@ case "$HOST_ARCH" in
 esac
 
 ROOTFS_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/${ALPINE_ARCH}/alpine-minirootfs-${ALPINE_MINOR}-${ALPINE_ARCH}.tar.gz"
-KERNEL_APK_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${ALPINE_ARCH}/linux-virt-6.12.91-r0.apk"
-KERNEL_VER="6.12.91-0-virt"
+KERNEL_APK_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${ALPINE_ARCH}/linux-virt-6.12.92-r0.apk"
+KERNEL_VER="6.12.92-0-virt"
 
 # Container runtime versions
 CONTAINERD_VERSION="2.1.1"
