@@ -55,6 +55,16 @@ func cmdDeploy(args []string) error {
 		return dewerr.New(dewerr.CodeUsage, "usage: dew deploy <target> [--tarball <path>] [--image <name>] [--app <name>] [--dry-run]")
 	}
 
+	// If the target matches a registered server name, swap it for that
+	// server's IP before auth + endpoint resolution. Without this swap,
+	// `dew deploy slides` failed loudly with "no deploy token for
+	// slides" even though the user had auth saved against the actual
+	// IP — the auth store is keyed by IP, not by name. Same convention
+	// as `dew server <cmd> <name|ip>` already uses.
+	if ip, ok := resolveServerNameToIP(target); ok {
+		target = ip
+	}
+
 	if err := validate.Target(target); err != nil {
 		return err
 	}
@@ -84,7 +94,13 @@ func cmdDeploy(args []string) error {
 	}
 
 	if tarballPath == "" {
+		// .dew/build.tar.gz is the canonical pointer dew build maintains
+		// — finding it means the last build is reachable from any cwd
+		// inside the project, not just the one matching the dir basename.
+		// Cwd-basename remains as a fallback for users who scripted
+		// `dew deploy` against the legacy convention.
 		candidates := []string{
+			".dew/build.tar.gz",
 			filepath.Base(mustAbs(".")) + ".tar.gz",
 		}
 		for _, c := range candidates {
@@ -94,7 +110,9 @@ func cmdDeploy(args []string) error {
 			}
 		}
 		if tarballPath == "" {
-			return dewerr.New(dewerr.CodeNotFound, "no tarball found. Run: dew build")
+			return dewerr.Newf(dewerr.CodeNotFound,
+				"no tarball found. Tried: %s. Run: dew build (or pass --tarball <path>)",
+				strings.Join(candidates, ", "))
 		}
 	}
 
@@ -281,6 +299,26 @@ func streamDeployEvents(sp *progress.Spinner, body io.Reader, appName, endpoint 
 		}
 	}
 	return scanner.Err()
+}
+
+// resolveServerNameToIP walks the local server registry and returns
+// the IP for a matching name. Returns (ip, true) on a name hit,
+// ("", false) otherwise — including when target IS an IP already, so
+// the caller can treat IP-input as a no-op pass-through. Errors
+// reading the registry are swallowed: a missing or unreadable
+// registry just means "no name lookup possible", not "deploy fails";
+// the caller's existing IP-path keeps working.
+func resolveServerNameToIP(target string) (string, bool) {
+	servers, err := loadServers()
+	if err != nil {
+		return "", false
+	}
+	for _, s := range servers {
+		if s.Name == target {
+			return s.IP, true
+		}
+	}
+	return "", false
 }
 
 func loadDeployToken(target string) (string, error) {

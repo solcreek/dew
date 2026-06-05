@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -174,7 +175,7 @@ func runAction(
 }
 
 func cmdServerCreate(args []string) error {
-	var provider, region, plan, name string
+	var provider, region, plan, name, image string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--provider":
@@ -196,6 +197,11 @@ func cmdServerCreate(args []string) error {
 			i++
 			if i < len(args) {
 				name = args[i]
+			}
+		case "--image":
+			i++
+			if i < len(args) {
+				image = args[i]
 			}
 		}
 	}
@@ -251,11 +257,18 @@ func cmdServerCreate(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	// Image: --image flag wins; otherwise fall back to the
+	// per-provider default the capstan spec declares. The previous
+	// hardcoded "debian-12" worked only on Hetzner — DigitalOcean,
+	// Linode, and Vultr all rejected it with a 422 at Create time.
+	if image == "" {
+		image = spec.DefaultImage
+	}
 	srv, err := p.Create(ctx, capstan.CreateOpts{
 		Name:     name,
 		Plan:     plan,
 		Region:   region,
-		Image:    "debian-12",
+		Image:    image,
 		UserData: cloudInit,
 	})
 	if err != nil {
@@ -281,11 +294,25 @@ func cmdServerCreate(args []string) error {
 	}
 
 	sp.Step("Waiting for dew serve")
-	healthURL := fmt.Sprintf("http://%s:9080/v1/system/health", ip)
+	// dew serve listens HTTPS with a self-signed cert generated at
+	// boot — the previous http:// probe always timed out, printed a
+	// spurious "cloud-init may still be running" warning, and burned
+	// ~3 minutes per create even when the server was ready in 30s.
+	// Match the actual transport; skip cert verification since the
+	// cert is generated on the box and we don't have its fingerprint
+	// at this point in the create flow (saved later via
+	// saveCredentials below).
+	healthURL := fmt.Sprintf("https://%s:9080/v1/system/health", ip)
+	probeClient := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
 	ready := false
 	for i := 0; i < 60; i++ {
 		time.Sleep(3 * time.Second)
-		resp, err := http.Get(healthURL)
+		resp, err := probeClient.Get(healthURL)
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == 200 {
@@ -297,7 +324,7 @@ func cmdServerCreate(args []string) error {
 	if !ready {
 		sp.Timeout(ip)
 		fmt.Fprintf(os.Stderr, "  cloud-init may still be running.\n")
-		fmt.Fprintf(os.Stderr, "  check: curl %s\n\n", healthURL)
+		fmt.Fprintf(os.Stderr, "  check: curl -k %s\n\n", healthURL)
 	}
 
 	if err := saveCredentials(ip, dewToken); err != nil {

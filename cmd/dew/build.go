@@ -117,6 +117,20 @@ func cmdBuild(args []string) error {
 	}
 	manifest.Checksum = checksum
 
+	// Also publish a canonical .dew/build.tar.gz pointer (hard link
+	// if same filesystem, copy fallback) so a follow-up `dew deploy`
+	// from any cwd inside the project finds the artifact without
+	// guessing at filename conventions. Field report: a retry after
+	// a server-side extract failure landed in `no tarball found`
+	// because auto-detect was cwd-basename only, and the build wrote
+	// to a different name. Survives across retries — we never remove
+	// it on failure.
+	if err := publishCanonicalTarball(abs, outPath); err != nil {
+		// Soft-fail: the primary outPath worked, the user can still
+		// pass --tarball <outPath> on deploy.
+		fmt.Fprintf(os.Stderr, "  warning: could not publish .dew/build.tar.gz: %v\n", err)
+	}
+
 	sp.Done(outPath)
 	fmt.Fprintf(os.Stderr, "  %s (%s, sha256:%s)\n\n", outPath, humanSize(size), checksum[:12])
 
@@ -127,6 +141,37 @@ func cmdBuild(args []string) error {
 	}
 
 	return nil
+}
+
+// publishCanonicalTarball maintains <projectDir>/.dew/build.tar.gz as
+// a pointer at the most recent build's output. Hard-linked when on
+// the same filesystem (free, atomic-ish), copied otherwise. Replaces
+// any prior pointer; survives deploy failures so a retry from any
+// cwd inside the project resolves to the same bytes.
+func publishCanonicalTarball(projectDir, outPath string) error {
+	dewDir := filepath.Join(projectDir, ".dew")
+	if err := os.MkdirAll(dewDir, 0755); err != nil {
+		return err
+	}
+	canonical := filepath.Join(dewDir, "build.tar.gz")
+	_ = os.Remove(canonical)
+	if err := os.Link(outPath, canonical); err == nil {
+		return nil
+	}
+	// Fall back to copy when Link fails (cross-device, hardlink-
+	// hostile filesystem, etc.).
+	src, err := os.Open(outPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	dst, err := os.Create(canonical)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+	_, err = io.Copy(dst, src)
+	return err
 }
 
 func createTarball(projectDir, outPath string, manifest *buildManifest, proj *detect.Project) (int64, string, error) {
@@ -162,7 +207,23 @@ func createTarball(projectDir, outPath string, manifest *buildManifest, proj *de
 			return nil
 		}
 
-		header, err := tar.FileInfoHeader(info, "")
+		// Symlink targets must be supplied to tar.FileInfoHeader as
+		// the linkname argument — the previous "" produced a header
+		// with empty Linkname, which BSD tar on macOS silently
+		// downgraded to a 0-byte regular file at extract time while
+		// GNU tar on Linux fatally rejected with
+		//   "Cannot create symlink to '': No such file or directory".
+		// Field report: CLAUDE.md symlinked to AGENTS.md in a project
+		// root broke every Linux deploy with an opaque "exit status 2"
+		// surfaced only via journalctl on the server.
+		linkTarget := ""
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err = os.Readlink(path)
+			if err != nil {
+				return fmt.Errorf("readlink %s: %w", path, err)
+			}
+		}
+		header, err := tar.FileInfoHeader(info, linkTarget)
 		if err != nil {
 			return err
 		}
