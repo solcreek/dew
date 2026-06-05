@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/solcreek/capstan"
@@ -223,6 +224,14 @@ func cmdServerCreate(args []string) error {
 	}
 	if plan == "" {
 		plan = defaultPlan(providerName)
+	}
+
+	// Pre-check orderability offline so we fail fast with a clear message instead
+	// of a cryptic provider 422 at Create time. IsAvailable is permissive when the
+	// spec has no availability data for the plan, so this only blocks known-bad pairs.
+	if !spec.IsAvailable(plan, region) {
+		return fmt.Errorf("%s plan %q is not orderable in %q; available in: %s",
+			provider, plan, region, strings.Join(spec.AvailableLocationsFor(plan), ", "))
 	}
 
 	dewToken, err := generateDewToken()
