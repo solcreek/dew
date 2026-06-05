@@ -3,6 +3,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +15,11 @@ import (
 	"testing"
 	"time"
 )
+
+func sha256Hex(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
+}
 
 // downloadAssets must fetch vmlinuz and initramfs concurrently — sequential
 // downloads add a ~3-5s tail to the very first dew run. We assert
@@ -145,6 +152,150 @@ func TestDownloadAssets_SkipsExistingByDefault(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(kernel); string(data) != "stale" {
 		t.Errorf("kernel was overwritten: %q", data)
+	}
+}
+
+// When ExpectedAssetSHA has the entry and the served bytes match,
+// the download installs cleanly at the destination path. This is the
+// happy path on every release-build dew install.
+func TestDownloadAssets_VerifiesAndInstallsOnMatchingSHA(t *testing.T) {
+	payload := []byte(strings.Repeat("k", 4096))
+	want := sha256Hex(payload)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	prev := releaseBaseURLOverride
+	releaseBaseURLOverride = srv.URL
+	defer func() { releaseBaseURLOverride = prev }()
+
+	prevSHA := ExpectedAssetSHA
+	defer func() { ExpectedAssetSHA = prevSHA }()
+	ExpectedAssetSHA = map[string]string{
+		kernelAssetName():              want,
+		initrdAssetName("minimal"):     want,
+	}
+
+	dataDir := t.TempDir()
+	kernel := assetCachePath(dataDir, kernelAssetName())
+	initrd := assetCachePath(dataDir, initrdAssetName("minimal"))
+
+	if err := downloadAssets(dataDir, "minimal", kernel, initrd, false); err != nil {
+		t.Fatalf("downloadAssets: %v", err)
+	}
+	for _, p := range []string{kernel, initrd} {
+		got, err := os.ReadFile(p)
+		if err != nil {
+			t.Errorf("missing %s: %v", p, err)
+			continue
+		}
+		if sha256Hex(got) != want {
+			t.Errorf("on-disk SHA mismatch for %s", p)
+		}
+	}
+}
+
+// SHA mismatch surfaces as an error and leaves NO file at the
+// destination — the .partial gets removed, no rename happens. This is
+// the new safety net that would have caught the 2026-06 M4 Max bug
+// before Apple VZ rejected the bytes with Code=1.
+func TestDownloadAssets_RejectsAndCleansUpOnSHAMismatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("wrong bytes"))
+	}))
+	defer srv.Close()
+
+	prev := releaseBaseURLOverride
+	releaseBaseURLOverride = srv.URL
+	defer func() { releaseBaseURLOverride = prev }()
+
+	prevSHA := ExpectedAssetSHA
+	defer func() { ExpectedAssetSHA = prevSHA }()
+	ExpectedAssetSHA = map[string]string{
+		kernelAssetName():          "0000000000000000000000000000000000000000000000000000000000000000",
+		initrdAssetName("minimal"): "0000000000000000000000000000000000000000000000000000000000000000",
+	}
+
+	dataDir := t.TempDir()
+	kernel := assetCachePath(dataDir, kernelAssetName())
+	initrd := assetCachePath(dataDir, initrdAssetName("minimal"))
+
+	err := downloadAssets(dataDir, "minimal", kernel, initrd, false)
+	if err == nil {
+		t.Fatal("expected SHA mismatch error, got nil")
+	}
+	if !strings.Contains(err.Error(), "SHA mismatch") {
+		t.Errorf("error doesn't mention SHA mismatch: %v", err)
+	}
+	for _, p := range []string{kernel, initrd, kernel + ".partial", initrd + ".partial"} {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("leftover file after mismatch: %s", p)
+		}
+	}
+}
+
+// The actual regression scenario: a stale file from a previous dew
+// version lives at the LEGACY un-suffixed path. The new dew binary
+// (with ExpectedAssetSHA populated) resolves cfg.Kernel to the
+// CONTENT-ADDRESSED path, sees that file is missing, and downloads
+// fresh bytes. The legacy file is untouched — left for the user to
+// reclaim disk on their own schedule. No SHA check is run against
+// the legacy file because the new binary doesn't look at that path.
+func TestResolveAssets_StaleLegacyPathIsBypassedOnUpgrade(t *testing.T) {
+	payload := []byte(strings.Repeat("g", 8192))
+	want := sha256Hex(payload)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	prev := releaseBaseURLOverride
+	releaseBaseURLOverride = srv.URL
+	defer func() { releaseBaseURLOverride = prev }()
+
+	prevSHA := ExpectedAssetSHA
+	defer func() { ExpectedAssetSHA = prevSHA }()
+	ExpectedAssetSHA = map[string]string{
+		kernelAssetName():          want,
+		initrdAssetName("minimal"): want,
+	}
+
+	dataDir := t.TempDir()
+
+	// Pre-plant the 9MB-stale-EFI-stub-kernel at the LEGACY path
+	// (~/.local/share/dew/vmlinuz). This is what an older dew install
+	// would have left behind.
+	legacyKernel := filepath.Join(dataDir, "vmlinuz")
+	if err := os.WriteFile(legacyKernel, []byte("stale-bytes-from-0.7.30"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The new dew binary picks paths via assetCachePath; with
+	// ExpectedAssetSHA set the path is content-addressed.
+	kernel := assetCachePath(dataDir, kernelAssetName())
+	initrd := assetCachePath(dataDir, initrdAssetName("minimal"))
+	if err := downloadAssets(dataDir, "minimal", kernel, initrd, false); err != nil {
+		t.Fatalf("downloadAssets: %v", err)
+	}
+
+	// New content-addressed kernel has correct bytes.
+	got, _ := os.ReadFile(kernel)
+	if sha256Hex(got) != want {
+		t.Errorf("new kernel SHA mismatch")
+	}
+	// Legacy file untouched — exists, contains old bytes.
+	legacyBytes, err := os.ReadFile(legacyKernel)
+	if err != nil {
+		t.Fatalf("legacy file disappeared: %v", err)
+	}
+	if string(legacyBytes) != "stale-bytes-from-0.7.30" {
+		t.Errorf("legacy file got overwritten: %q", legacyBytes)
 	}
 }
 

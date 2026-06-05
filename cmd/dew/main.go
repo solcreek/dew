@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/base64"
 	"encoding/json"
@@ -116,7 +117,7 @@ func resolveAssets(cfg *vm.Config) error {
 	applyProfileDefaults(cfg, profile, dataDir)
 
 	if cfg.Kernel == "" {
-		cfg.Kernel = filepath.Join(dataDir, "vmlinuz")
+		cfg.Kernel = assetCachePath(dataDir, kernelAssetName())
 	}
 	if cfg.Initrd == "" {
 		// Pin to the profile-specific initramfs. If it's missing, the
@@ -129,7 +130,7 @@ func resolveAssets(cfg *vm.Config) error {
 		// found`, no containerd, no e2fsprogs. The fallback masked a real
 		// missing-asset condition; force download instead so the user gets
 		// a working setup or a clear download error.
-		cfg.Initrd = filepath.Join(dataDir, "initramfs-"+profile+".cpio.gz")
+		cfg.Initrd = assetCachePath(dataDir, initrdAssetName(profile))
 	}
 	// Auto-download assets on first use
 	needDownload := false
@@ -166,6 +167,15 @@ var releaseBaseURLOverride string
 // flag is the user-facing way to invalidate; the auto-download path
 // in resolveAssets is always non-force so a normal `dew up` doesn't
 // re-pull on every invocation.
+//
+// Release builds (binary built by release.yml with ExpectedAssetSHA
+// populated) verify each downloaded file against the embedded SHA
+// before installing it at the destination path. A mismatch — CDN
+// drift, partial download not caught by .partial, mid-transit
+// corruption — fails loudly here rather than letting Apple VZ reject
+// the bytes later with the opaque Code=1 the 2026-06 M4 Max reporter
+// spent days debugging. Dev / local builds (empty manifest) skip
+// verification — the user is expected to know what they built.
 func downloadAssets(dataDir, profile, kernelPath, initrdPath string, force bool) error {
 	os.MkdirAll(dataDir, 0755)
 
@@ -174,36 +184,26 @@ func downloadAssets(dataDir, profile, kernelPath, initrdPath string, force bool)
 		base = releaseBaseURLOverride
 	}
 
-	arch := "x86_64"
-	if goArch := os.Getenv("GOARCH"); goArch == "arm64" {
-		arch = "aarch64"
-	}
-	// Detect arm64 from runtime
-	if filepath.Base(os.Args[0]) != "" {
-		// runtime detection via uname
-		cmd := exec.Command("uname", "-m")
-		if out, err := cmd.Output(); err == nil {
-			a := strings.TrimSpace(string(out))
-			if a == "arm64" || a == "aarch64" {
-				arch = "aarch64"
-			}
-		}
-	}
+	kAsset := kernelAssetName()
+	iAsset := initrdAssetName(profile)
 
 	files := []struct {
 		url  string
 		dest string
 		name string
+		sha  string // expected SHA256; "" in dev builds → no verify
 	}{
 		{
-			fmt.Sprintf("%s/vmlinuz-%s", base, arch),
+			fmt.Sprintf("%s/%s", base, kAsset),
 			kernelPath,
 			"kernel",
+			ExpectedAssetSHA[kAsset],
 		},
 		{
-			fmt.Sprintf("%s/initramfs-%s-%s.cpio.gz", base, profile, arch),
+			fmt.Sprintf("%s/%s", base, iAsset),
 			initrdPath,
 			fmt.Sprintf("initramfs (%s)", profile),
+			ExpectedAssetSHA[iAsset],
 		},
 	}
 
@@ -231,9 +231,10 @@ func downloadAssets(dataDir, profile, kernelPath, initrdPath string, force bool)
 			url  string
 			dest string
 			name string
+			sha  string
 		}) {
 			defer wg.Done()
-			results[idx] = fetchAsset(file.url, file.dest, file.name, profile)
+			results[idx] = fetchAsset(file.url, file.dest, file.name, profile, file.sha)
 		}(i, f)
 	}
 	wg.Wait()
@@ -249,7 +250,7 @@ func downloadAssets(dataDir, profile, kernelPath, initrdPath string, force bool)
 	return nil
 }
 
-func fetchAsset(url, dest, name, profile string) (r struct {
+func fetchAsset(url, dest, name, profile, expectedSHA string) (r struct {
 	name    string
 	written int64
 	err     error
@@ -272,12 +273,26 @@ func fetchAsset(url, dest, name, profile string) (r struct {
 		r.err = fmt.Errorf("create %s: %w", tmp, err)
 		return
 	}
-	written, err := io.Copy(out, resp.Body)
+	// Stream the body through a sha256 hasher while writing to disk.
+	// Costs nothing extra vs the io.Copy that was already happening,
+	// and the digest is ready before we rename — so a mismatch deletes
+	// the .partial file rather than installing it under dest.
+	hasher := sha256.New()
+	written, err := io.Copy(io.MultiWriter(out, hasher), resp.Body)
 	out.Close()
 	if err != nil {
 		os.Remove(tmp)
 		r.err = fmt.Errorf("download %s: %w", name, err)
 		return
+	}
+	if expectedSHA != "" {
+		got := hex.EncodeToString(hasher.Sum(nil))
+		if got != expectedSHA {
+			os.Remove(tmp)
+			r.err = fmt.Errorf("verify %s: SHA mismatch\n  expected: %s\n  got:      %s\n  the asset on the release CDN doesn't match the bytes this dew binary was built against",
+				name, expectedSHA, got)
+			return
+		}
 	}
 	if err := os.Rename(tmp, dest); err != nil {
 		os.Remove(tmp)
@@ -312,8 +327,8 @@ func cmdAssets(args []string) error {
 
 	switch sub {
 	case "pull":
-		kernelPath := filepath.Join(dataDir, "vmlinuz")
-		initrdPath := filepath.Join(dataDir, "initramfs-"+profile+".cpio.gz")
+		kernelPath := assetCachePath(dataDir, kernelAssetName())
+		initrdPath := assetCachePath(dataDir, initrdAssetName(profile))
 		if force {
 			fmt.Fprintf(os.Stderr, "  profile: %s\n  target:  %s\n  mode:    force re-download\n\n", profile, dataDir)
 		} else {

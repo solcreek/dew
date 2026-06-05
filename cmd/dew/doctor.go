@@ -159,10 +159,15 @@ func runDoctorChecks(verbose bool) DoctorReport {
 		})
 	}
 
-	// Kernel + initramfs assets
-	home, _ := os.UserHomeDir()
-	kernelPath := home + "/.local/share/dew/vmlinuz"
-	initrdPath := home + "/.local/share/dew/initramfs.cpio.gz"
+	// Kernel + initramfs assets. Path is content-addressed when the
+	// binary was built by the release pipeline (ExpectedAssetSHA
+	// populated); falls back to the legacy un-suffixed name for
+	// dev/local builds. Doctor reports against the minimal profile;
+	// other profiles get their own paths and would need an explicit
+	// flag to inspect, which doctor doesn't expose today.
+	dataDir := dewDataDir()
+	kernelPath := assetCachePath(dataDir, kernelAssetName())
+	initrdPath := assetCachePath(dataDir, initrdAssetName("minimal"))
 	assets := []string{kernelPath, initrdPath}
 	for _, p := range assets {
 		name := "Asset: " + p
@@ -206,6 +211,7 @@ func runDoctorChecks(verbose bool) DoctorReport {
 	}
 
 	// Running VM (informational)
+	home, _ := os.UserHomeDir()
 	sock := home + "/.local/state/dew/default.sock"
 	if _, err := os.Stat(sock); err == nil {
 		checks = append(checks, DoctorCheck{
