@@ -270,6 +270,7 @@ func streamDeployEvents(sp *progress.Spinner, body io.Reader, appName, endpoint 
 			Phase  string `json:"phase"`
 			Status string `json:"status"`
 			Error  string `json:"error"`
+			Stderr string `json:"stderr"`
 			URL    string `json:"url"`
 			OK     bool   `json:"ok"`
 		}
@@ -282,7 +283,19 @@ func streamDeployEvents(sp *progress.Spinner, body io.Reader, appName, endpoint 
 			sp.Step(event.Phase)
 		case "fail":
 			sp.Fail(event.Error)
-			return dewerr.Newf(dewerr.CodeGeneric, "deploy failed at %s: %s", event.Phase, event.Error)
+			// The server-side stderr — typically tar's output for
+			// extract failures — is what tells you WHY exit-status-2
+			// happened. Without it, the user had to SSH in and
+			// journalctl. Surface it indented under the error line.
+			msg := fmt.Sprintf("deploy failed at %s: %s", event.Phase, event.Error)
+			if event.Stderr != "" {
+				fmt.Fprintf(os.Stderr, "  ── %s stderr ──\n", event.Phase)
+				for _, l := range strings.Split(event.Stderr, "\n") {
+					fmt.Fprintf(os.Stderr, "  %s\n", l)
+				}
+				fmt.Fprintln(os.Stderr, "  ────────────────")
+			}
+			return dewerr.Newf(dewerr.CodeGeneric, "%s", msg)
 		}
 
 		if event.OK {

@@ -3,6 +3,7 @@
 package serve
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -273,9 +274,26 @@ func handleTarballDeploy(w http.ResponseWriter, r *http.Request, appName string,
 	appDir := filepath.Join(dataDir, "apps", appName)
 	os.MkdirAll(appDir, 0755)
 	cmd := exec.Command("sh", "-c", fmt.Sprintf("tar xzf %s -C %s", tarPath, appDir))
-	cmd.Stderr = os.Stderr
+	// Capture tar stderr in addition to teeing it to the server's
+	// own stderr (so the journal still has it). Without this, an
+	// extract failure surfaced to the client as the opaque
+	// "exit status 2" and the actual line ("Cannot create symlink
+	// to ''", "No space left on device", …) was only readable via
+	// SSH + journalctl. The captured bytes are inlined into the
+	// SSE fail event so the client sees the cause without a round-
+	// trip to the server.
+	var stderr bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	if err := cmd.Run(); err != nil {
-		sendEvent("extract", "fail", fmt.Sprintf(",\"error\":%q", err.Error()))
+		tail := stderr.String()
+		// Cap to avoid blowing past SSE event size limits — tar
+		// failures are usually one or two lines. Leave room for
+		// the rest of the JSON envelope.
+		if len(tail) > 4000 {
+			tail = "...(truncated)...\n" + tail[len(tail)-4000:]
+		}
+		sendEvent("extract", "fail", fmt.Sprintf(",\"error\":%q,\"stderr\":%q",
+			err.Error(), strings.TrimSpace(tail)))
 		return
 	}
 	sendEvent("extract", "done", fmt.Sprintf(",\"path\":%q", appDir))
