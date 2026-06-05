@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `install.sh` no longer aborts on systems that ship `shasum` but not
   `sha256sum` (default macOS install). The previous fallback pattern
   exited on the first miss before the `||` could fire.
+- `DEW_DEBUG=1` kernel format hint no longer false-flags every valid
+  ARM64 Linux kernel as "EFI/PE bad". Real ARM64 kernels start with
+  an MZ EFI stub that doubles as a valid ARM64 branch — the
+  authoritative check is the `ARM\x64` magic at offset 0x38, which
+  the heuristic now reads and reports. The genuinely broken case
+  (stale EFI-stub-only kernel from an earlier install, no ARM64 boot
+  header) is now classified as "EFI/PE without ARM64 boot header" and
+  comes with the actionable hint `run dew assets pull --force`.
 
 ## [0.7.31] - 2026-06-04
 

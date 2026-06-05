@@ -33,10 +33,11 @@ func dumpConfigSummary(w io.Writer, cfg vm.Config) {
 	fmt.Fprintf(w, "  cmdline:  %s\n", cfg.CmdLine)
 
 	kHdr := readBinaryHeader(cfg.Kernel)
-	fmt.Fprintf(w, "  kernel:   %s\n            size=%d bytes  first4=%02x %02x %02x %02x  %s\n",
+	fmt.Fprintf(w, "  kernel:   %s\n            size=%d bytes  first4=%02x %02x %02x %02x  arm64-magic@0x38=%02x %02x %02x %02x  %s\n",
 		cfg.Kernel, kHdr.Size,
 		kHdr.First4[0], kHdr.First4[1], kHdr.First4[2], kHdr.First4[3],
-		kernelFormatHint(kHdr.First4))
+		kHdr.ARM64Magic[0], kHdr.ARM64Magic[1], kHdr.ARM64Magic[2], kHdr.ARM64Magic[3],
+		kernelFormatHint(kHdr))
 
 	if cfg.Initrd != "" {
 		if st, err := os.Stat(cfg.Initrd); err == nil {
@@ -77,30 +78,49 @@ func dumpConfigSummary(w io.Writer, cfg vm.Config) {
 	fmt.Fprintln(w, "────────────────────")
 }
 
-// kernelFormatHint inspects the first four bytes of the kernel file
-// and flags formats Apple Virtualization rejects. Apple VZ on ARM64
-// requires a raw uncompressed Image (Linux ARM64 boot header magic
-// "ARM\x64" is at offset 56, not detectable from first4 alone — so
-// the heuristic only calls out known-bad cases, never asserts "good").
-func kernelFormatHint(first4 [4]byte) string {
+// kernelFormatHint classifies the kernel file by both the first 4
+// bytes and the magic at offset 0x38. Apple VZ on ARM64 requires a
+// raw uncompressed Linux Image; that format is canonically identified
+// by the `ARM\x64` (0x64644d52 LE → "ARMd") magic at offset 0x38.
+//
+// The first 4 bytes of a valid ARM64 Linux Image are ALSO "MZ@..." —
+// the kernel deliberately ships an EFI stub at offset 0 that doubles
+// as a valid ARM64 branch instruction, so the same bytes boot either
+// way. Earlier versions of this heuristic flagged any "MZ" as
+// "EFI/PE bad", which falsely accused every modern ARM64 Linux
+// kernel. The offset-0x38 magic is the authoritative check.
+//
+// Field reports surfaced the actual broken case: a 9MB EFI-stub-only
+// kernel left over from an earlier dew install — same MZ prefix but
+// no ARM64 boot header at 0x38, so Apple VZ correctly rejects it.
+// This heuristic now distinguishes the two.
+func kernelFormatHint(h binaryHeader) string {
+	// Authoritative ARM64 Linux Image check — present regardless of
+	// any wrapping at offset 0.
+	if h.ARM64Magic == [4]byte{'A', 'R', 'M', 0x64} {
+		return "format=raw ARM64 Linux Image (boot header magic present at offset 0x38)"
+	}
+	// No ARM64 boot header. Classify by first 4 bytes — the formats
+	// listed here are all things Apple VZ refuses to load.
 	switch {
-	case first4 == [4]byte{0x1f, 0x8b, 0x08, 0x00},
-		first4 == [4]byte{0x1f, 0x8b, 0x08, 0x08}:
-		return "format=gzip — Apple VZ requires raw Image; this will fail with Code=1"
-	case first4 == [4]byte{0x28, 0xb5, 0x2f, 0xfd}:
-		return "format=zstd — Apple VZ requires raw Image; this will fail with Code=1"
-	case first4[0] == 'M' && first4[1] == 'Z':
-		return "format=EFI/PE — Apple VZ wants the raw Image, not the EFI wrapper"
-	case first4 == [4]byte{0x7f, 'E', 'L', 'F'}:
+	case h.First4 == [4]byte{0x1f, 0x8b, 0x08, 0x00},
+		h.First4 == [4]byte{0x1f, 0x8b, 0x08, 0x08}:
+		return "format=gzip without ARM64 header — Apple VZ requires raw Image; will fail with Code=1"
+	case h.First4 == [4]byte{0x28, 0xb5, 0x2f, 0xfd}:
+		return "format=zstd without ARM64 header — Apple VZ requires raw Image; will fail with Code=1"
+	case h.First4[0] == 'M' && h.First4[1] == 'Z':
+		return "format=EFI/PE without ARM64 boot header at offset 0x38 — likely a stale or non-Linux kernel; run `dew assets pull --force`"
+	case h.First4 == [4]byte{0x7f, 'E', 'L', 'F'}:
 		return "format=ELF — Apple VZ wants the raw Image, not the ELF vmlinux"
 	default:
-		return "format=unknown (assumed raw ARM64 Image)"
+		return "format=unknown (no ARM64 boot header at offset 0x38)"
 	}
 }
 
 type binaryHeader struct {
-	Size   int64
-	First4 [4]byte
+	Size       int64
+	First4     [4]byte
+	ARM64Magic [4]byte // bytes at offset 0x38; "ARM\x64" on a valid ARM64 Linux Image
 }
 
 func readBinaryHeader(path string) binaryHeader {
@@ -115,7 +135,16 @@ func readBinaryHeader(path string) binaryHeader {
 		return h
 	}
 	defer f.Close()
-	_, _ = f.Read(h.First4[:])
+	// Read enough to cover the ARM64 boot header magic at offset 0x38.
+	// 64 bytes is the full ARM64 Linux Image header.
+	var buf [64]byte
+	n, _ := f.Read(buf[:])
+	if n >= 4 {
+		copy(h.First4[:], buf[0:4])
+	}
+	if n >= 0x3c {
+		copy(h.ARM64Magic[:], buf[0x38:0x3c])
+	}
 	return h
 }
 
