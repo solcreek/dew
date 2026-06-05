@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Four [agentskills.io](https://agentskills.io)-compatible skill files
+  shipped under `skills/`. Coding agents (Claude Code, Cursor, Codex,
+  Copilot, Gemini CLI, ~70 others) can install dew's invariants with
+  `npx skills add solcreek/dew`. Skills cover the flows that
+  historically generated the most field-report confusion: provisioning
+  a server, building + deploying, diagnosing a failure, and upgrading.
+  Each description includes an explicit "Do NOT use for" clause to
+  prevent activation overreach — an agent that loaded all four
+  won't reach for `dew-deploy` when the user is on Cloudflare Workers.
+
+### Fixed
+
+- Background update check is now silent on local dev builds (binary
+  built without `-ldflags '-X main.version=…'`). The previous code
+  printed `Update available: vX.Y.Z (current: vdev)` on every
+  invocation — confusing because a dev binary often contains commits
+  *ahead* of the released version. Release-built binaries are
+  unaffected.
+
 ## [0.7.35] - 2026-06-05
 
 ### Added
