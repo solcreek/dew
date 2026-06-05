@@ -110,6 +110,21 @@ dew run --json -- npm test
 
 Input hardening: rejects path traversal, query injection, control characters. `--events` for NDJSON lifecycle streaming.
 
+### AI agent skills
+
+dew ships [agentskills.io](https://agentskills.io)-compatible skill files
+that teach coding agents (Claude Code, Cursor, Codex, Copilot, Gemini CLI,
+70+ others) how to use the CLI correctly — including when *not* to reach
+for it.
+
+```bash
+npx skills add solcreek/dew
+```
+
+Installs four skills: `dew-server-create`, `dew-deploy`, `dew-diagnose`,
+`dew-upgrade`. Source lives in [`skills/`](./skills/) and versions with
+each release.
+
 ## Architecture
 
 ```
