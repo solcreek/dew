@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.33] - 2026-06-05
+
 ### Added
 
 - Content-addressed asset cache. Kernel + initramfs files now live at
