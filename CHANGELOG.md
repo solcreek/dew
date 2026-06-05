@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `dew server create` no longer hardcodes `Image: "debian-12"`, which
+  worked only on Hetzner. The default now comes from each provider's
+  capstan spec (`spec.DefaultImage`) — DigitalOcean, Linode, and
+  Vultr stop failing at Create time with the cryptic 422
+  "specified an invalid image". The new `--image <slug>` flag
+  overrides per call for any provider.
+- `dew build` writes valid symlink entries into the deploy tarball.
+  The previous code passed an empty `linkname` to
+  `tar.FileInfoHeader`, which BSD tar on macOS silently downgraded to
+  a 0-byte file (masking the bug locally) while GNU tar on every
+  Linux deploy target fatally rejected with
+  `Cannot create symlink to '': No such file or directory`. Field
+  report: a `CLAUDE.md -> AGENTS.md` symlink in a project root broke
+  every Linux deploy with an opaque `exit status 2` only readable via
+  journalctl on the server.
+- `dew deploy <server-name>` now resolves the name to its IP via the
+  local server registry before auth lookup. Previously the name path
+  failed loudly with `no deploy token for <name>` even when the user
+  had auth saved against the actual IP, forcing every deploy through
+  the IP form by hand.
+- `dew server create` health probe targets `https://` instead of
+  `http://`. dew serve listens HTTPS with a self-signed cert at boot;
+  the previous probe always timed out, printed a spurious
+  "cloud-init may still be running" warning, and burned ~3 minutes
+  per create even when the server was ready in 30 seconds.
+
+### Added
+
+- `dew build` publishes a canonical `.dew/build.tar.gz` pointer at
+  the project root in addition to the legacy `<appname>.tar.gz` path.
+  `dew deploy` auto-detect now reaches the canonical pointer first,
+  so a retry from any cwd inside the project resolves to the same
+  bytes — addresses the "no tarball found" retry friction reported
+  after extract failures.
+- `dew deploy` error message when auto-detect fails now lists which
+  paths were tried and points at `--tarball <path>` as the explicit
+  escape hatch.
+
 ## [0.7.33] - 2026-06-05
 
 ### Added
