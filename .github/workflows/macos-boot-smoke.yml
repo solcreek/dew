@@ -67,7 +67,11 @@ jobs:
       - name: Install dew via official installer
         run: |
           set -euo pipefail
-          curl -fsSL https://dewvm.dev/install.sh | sh
+          # sh -x traces every command so a failure surfaces which
+          # install.sh step exited non-zero rather than landing as
+          # an opaque "exit 1".
+          curl -fsSL https://dewvm.dev/install.sh -o /tmp/install.sh
+          sh -x /tmp/install.sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$HOME/.local/share/dew/bin" >> "$GITHUB_PATH"
 
