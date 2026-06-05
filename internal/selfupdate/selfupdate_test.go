@@ -2,11 +2,14 @@ package selfupdate
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestCompareSemver(t *testing.T) {
@@ -162,4 +165,73 @@ func TestUpdateCache(t *testing.T) {
 	if latest2 != "v0.6.0" {
 		t.Errorf("cached got %q, want v0.6.0", latest2)
 	}
+}
+
+// captureStderr redirects os.Stderr through a pipe while fn runs and
+// returns whatever was written. Used to assert "the noisy thing
+// didn't print" cases.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+
+	fn()
+
+	_ = w.Close()
+	out, _ := io.ReadAll(r)
+	return string(out)
+}
+
+// updateCache is the on-disk shape selfupdate writes; we mirror it here
+// so the test seeds a plausible cache for cachedLatest() to read. Pin
+// FetchedAt to "now" so the cache isn't considered stale.
+type testCache struct {
+	Latest    string    `json:"latest"`
+	FetchedAt time.Time `json:"fetched_at"`
+}
+
+// Regression for 2026-06: when the binary was built without ldflags
+// stamping (any `make sign` / bare `go build`), version stays "dev" and
+// CompareSemver("0.7.x", "dev") returns > 0. The pre-fix CheckBackground
+// then printed "Update available: vX.Y.Z (current: vdev)" on every
+// invocation — even when the local dev binary was ahead of the released
+// version. The user knows what they built; we shouldn't nag.
+func TestCheckBackground_SilentOnDevBuild(t *testing.T) {
+	// Point configDir() at a tempdir AND seed a "newer" cached latest
+	// that would otherwise trigger the print.
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	cfgDir := filepath.Join(tmpHome, ".config", "dew")
+	if err := os.MkdirAll(cfgDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cache := testCache{Latest: "v99.0.0", FetchedAt: time.Now()}
+	data, _ := json.Marshal(cache)
+	if err := os.WriteFile(filepath.Join(cfgDir, cacheFile), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, v := range []string{"dev", ""} {
+		t.Run("version="+v, func(t *testing.T) {
+			out := captureStderr(t, func() { CheckBackground(v) })
+			if out != "" {
+				t.Errorf("expected silent on version=%q, got stderr:\n%s", v, out)
+			}
+		})
+	}
+
+	// Sanity check the opposite direction: with a real semver that's
+	// older than the cached latest, the notice MUST print. Catches a
+	// fix that accidentally over-shorts the early-return.
+	t.Run("real version still nags when behind", func(t *testing.T) {
+		out := captureStderr(t, func() { CheckBackground("0.7.30") })
+		if !strings.Contains(out, "Update available") {
+			t.Errorf("expected 'Update available' notice when current < cached latest, got:\n%s", out)
+		}
+	})
 }

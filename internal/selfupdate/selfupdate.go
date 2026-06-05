@@ -81,7 +81,18 @@ func parseSemver(v string) [3]int {
 
 // CheckBackground runs a non-blocking update check. Prints a notice
 // to stderr if a newer version is available.
+//
+// Skipped on local / unstamped builds: when ldflags didn't inject a
+// real version, `currentVersion` stays at "dev" (the package-level
+// default in cmd/dew). CompareSemver treats "dev" as effectively
+// zero, so the check would otherwise print "Update available" against
+// every release tag — even against versions that are OLDER than what
+// the local dev binary actually contains. The user is running their
+// own build; they know what they have.
 func CheckBackground(currentVersion string) {
+	if currentVersion == "" || currentVersion == "dev" {
+		return
+	}
 	latest, err := cachedLatest()
 	if err != nil || latest == "" {
 		return
