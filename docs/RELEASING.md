@@ -160,10 +160,24 @@ on each tag — TBD.
 ## Tagging a release
 
 ```bash
-# Ensure CHANGELOG.md has a section for the new version (above Unreleased)
-git tag -s v0.7.0 -m "v0.7.0 — distribution architecture overhaul"
-git push origin v0.7.0
+scripts/release.sh 0.7.32
 ```
+
+The script renames `[Unreleased]` → `[0.7.32] - <today>` in CHANGELOG,
+commits, tags `v0.7.32`, pushes both — the tag push triggers
+`release.yml`. CHANGELOG entries are still authored per-PR during
+normal development; the script only relocates them.
+
+Preconditions the script enforces (no partial state on failure):
+clean working tree, on `main`, in sync with `origin/main`, tag
+doesn't already exist, `[Unreleased]` section has content.
+
+Tags are unsigned — Apple Developer ID codesign + cosign-keyless
+(via GitHub OIDC) on the published binaries are the meaningful
+trust layer for end users. Tag signing would only protect against
+"attacker with repo push perm tags a malicious release", but an
+attacker with push perm could also push a malicious commit before
+tagging. See PR #N for the analysis.
 
 The release workflow runs ~10 minutes:
 1. `build-macos` (~3 min) — signs + notarizes darwin binaries
