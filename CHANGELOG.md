@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.36] - 2026-06-05
+
 ### Added
 
 - Four [agentskills.io](https://agentskills.io)-compatible skill files
