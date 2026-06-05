@@ -41,7 +41,7 @@ func TestCreateTarball_SymlinkLinknamePreserved(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "build.tar.gz")
 	manifest := &buildManifest{App: "test", Type: "static"}
 	proj := &detect.Project{}
-	if _, _, err := createTarball(src, out, manifest, proj); err != nil {
+	if _, _, err := createTarball(src, "", out, manifest, proj); err != nil {
 		t.Fatalf("createTarball: %v", err)
 	}
 
@@ -80,6 +80,80 @@ func TestCreateTarball_SymlinkLinknamePreserved(t *testing.T) {
 	}
 	if !sawSymlink {
 		t.Fatal("expected app/CLAUDE.md in tarball, never saw it")
+	}
+}
+
+// type=static must ship ONLY the build output dir, not the project
+// source tree. Pre-2026-06-05, createTarball walked projectDir
+// unconditionally — every static deploy shipped the entire repo
+// (package.json, tsconfig.json, src/, vercel.json...) alongside dist/.
+// That also pulled in repo-root symlinks (CLAUDE.md → AGENTS.md) that
+// have no business in a static bundle and triggered the GNU-tar
+// symlink bug.
+func TestCreateTarball_StaticShipsOnlyOutputDir(t *testing.T) {
+	src := t.TempDir()
+	// Source files we DON'T want in the tarball.
+	for _, f := range []string{"package.json", "src/index.ts", "vercel.json", "CLAUDE.md"} {
+		full := filepath.Join(src, f)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("source"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Build output we DO want.
+	dist := filepath.Join(src, "dist")
+	if err := os.MkdirAll(dist, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"index.html", "assets/app.js"} {
+		full := filepath.Join(dist, f)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("built"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out := filepath.Join(t.TempDir(), "static.tar.gz")
+	if _, _, err := createTarball(src, "dist", out, &buildManifest{App: "site", Type: "static"}, &detect.Project{}); err != nil {
+		t.Fatalf("createTarball: %v", err)
+	}
+
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz, _ := gzip.NewReader(f)
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+
+	seen := map[string]bool{}
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar.Next: %v", err)
+		}
+		seen[h.Name] = true
+	}
+
+	// Wanted: dist contents, rooted at app/.
+	for _, want := range []string{"app/index.html", "app/assets/app.js"} {
+		if !seen[want] {
+			t.Errorf("missing %q in tarball", want)
+		}
+	}
+	// Not wanted: source tree.
+	for _, leak := range []string{"app/package.json", "app/src/index.ts", "app/vercel.json", "app/CLAUDE.md"} {
+		if seen[leak] {
+			t.Errorf("source leaked into static tarball: %q", leak)
+		}
 	}
 }
 

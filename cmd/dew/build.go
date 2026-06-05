@@ -71,6 +71,42 @@ func cmdBuild(args []string) error {
 	appName := filepath.Base(abs)
 	gitVersion := detectGitVersion(abs)
 
+	// --dry-run: stop after detection. No user build cmd, no tarball
+	// write, no FS side-effects. Lets framework detection be verified
+	// without paying the build cost — surfaced as a complaint after
+	// users ran `dew build --dry-run` and watched vite still execute.
+	staticDirGuess := detectStaticSite(abs, proj)
+	if flagDryRun {
+		appType := "server"
+		if staticDirGuess != "" {
+			appType = "static"
+		}
+		manifest := buildManifest{
+			App:     appName,
+			Version: gitVersion,
+			Runtime: proj.Runtime,
+			Type:    appType,
+			Entry:   proj.Entry,
+			Port:    proj.Port,
+			BuiltAt: time.Now().UTC().Format(time.RFC3339),
+			BuiltBy: "dew/" + version,
+		}
+		sp.Done(fmt.Sprintf("Detected: %s (%s)", proj.Runtime, appType))
+		if proj.BuildCmd != "" {
+			fmt.Fprintf(os.Stderr, "  would run:  %s\n", proj.BuildCmd)
+		}
+		if staticDirGuess != "" {
+			fmt.Fprintf(os.Stderr, "  would ship: %s/ (only)\n", staticDirGuess)
+		} else {
+			fmt.Fprintf(os.Stderr, "  would ship: full project tree\n")
+		}
+		if flagJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.Encode(manifest)
+		}
+		return nil
+	}
+
 	if proj.BuildCmd != "" {
 		sp.Step(fmt.Sprintf("Building (%s)", proj.BuildCmd))
 		cmd := exec.Command("sh", "-c", proj.BuildCmd)
@@ -83,15 +119,15 @@ func cmdBuild(args []string) error {
 		}
 	}
 
-	isStatic := detectStaticSite(abs, proj)
-	if isStatic {
+	staticDir := detectStaticSite(abs, proj)
+	if staticDir != "" {
 		proj.Port = 0
 	}
 
 	sp.Step("Packaging tarball")
 
 	appType := "server"
-	if isStatic {
+	if staticDir != "" {
 		appType = "static"
 	}
 
@@ -110,7 +146,7 @@ func cmdBuild(args []string) error {
 		outPath = appName + ".tar.gz"
 	}
 
-	size, checksum, err := createTarball(abs, outPath, &manifest, proj)
+	size, checksum, err := createTarball(abs, staticDir, outPath, &manifest, proj)
 	if err != nil {
 		sp.Fail(err.Error())
 		return err
@@ -174,7 +210,12 @@ func publishCanonicalTarball(projectDir, outPath string) error {
 	return err
 }
 
-func createTarball(projectDir, outPath string, manifest *buildManifest, proj *detect.Project) (int64, string, error) {
+// createTarball writes the deploy tarball. When staticDir is
+// non-empty the walk root is <projectDir>/<staticDir> instead of
+// projectDir — keeps the tarball tight for static deploys and
+// sidesteps the source-tree symlinks (CLAUDE.md → AGENTS.md class)
+// that don't belong in a static bundle anyway.
+func createTarball(projectDir, staticDir, outPath string, manifest *buildManifest, proj *detect.Project) (int64, string, error) {
 	f, err := os.Create(outPath)
 	if err != nil {
 		return 0, "", err
@@ -188,14 +229,18 @@ func createTarball(projectDir, outPath string, manifest *buildManifest, proj *de
 	tw := tar.NewWriter(gw)
 	defer tw.Close()
 
-	skip := buildSkipSet(projectDir)
+	walkRoot := projectDir
+	if staticDir != "" {
+		walkRoot = filepath.Join(projectDir, staticDir)
+	}
+	skip := buildSkipSet(walkRoot)
 
-	err = filepath.Walk(projectDir, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(walkRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		rel, err := filepath.Rel(projectDir, path)
+		rel, err := filepath.Rel(walkRoot, path)
 		if err != nil {
 			return err
 		}
@@ -345,16 +390,23 @@ func shouldSkip(rel string, info os.FileInfo, skip map[string]bool) bool {
 	return false
 }
 
-func detectStaticSite(dir string, proj *detect.Project) bool {
+// detectStaticSite returns the project-relative directory holding the
+// pre-built static output, or "" if this isn't a static deploy. A
+// non-empty result tells the packager to ship ONLY that subtree
+// (instead of the whole project tree) — keeps the tarball small,
+// avoids shipping source to the server, and skips repo-root files
+// (CLAUDE.md symlinks, .git, lockfiles) that don't belong in a
+// static deploy.
+func detectStaticSite(dir string, proj *detect.Project) string {
 	if proj.Entry != "" {
-		return false
+		return ""
 	}
-	for _, d := range []string{"dist", "build", ".next/standalone"} {
+	for _, d := range []string{"dist", "build", ".next/standalone", "out", "public"} {
 		if info, err := os.Stat(filepath.Join(dir, d)); err == nil && info.IsDir() {
-			return true
+			return d
 		}
 	}
-	return false
+	return ""
 }
 
 func detectGitVersion(dir string) string {
