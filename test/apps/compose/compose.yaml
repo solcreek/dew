@@ -1,0 +1,43 @@
+# Compose PoC fixture for Dew (standard profile + nerdctl compose).
+#
+# Deliberately exercises the four compatibility risk points, each isolated
+# to its own service so a failure in one does not mask the others:
+#
+#   db       — image pull + named volume     (risk #4)
+#   gateway  — image only, published port     (risk #2 ports / CNI portmap)
+#   netcheck — service-to-service DNS to db   (risk #3 depends_on + network)
+#   builder  — build: context                 (risk #1 BuildKit)
+#
+# Run via ./run.sh, which checks each risk point independently.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_PASSWORD=dew
+      - POSTGRES_DB=dew
+    volumes:
+      - dbdata:/var/lib/postgresql/data   # risk #4: named volume persistence
+
+  gateway:
+    image: nginx:alpine
+    ports:
+      - "8080:80"                         # risk #2: host port publish via CNI portmap
+    depends_on:
+      - db
+
+  netcheck:
+    image: alpine:3.20
+    command: ["sleep", "infinity"]        # risk #3: probe `db` over the compose network
+    depends_on:
+      - db
+
+  builder:
+    build: ./builder                      # risk #1: needs BuildKit (expected to fail today)
+    ports:
+      - "8081:80"
+    depends_on:
+      - db
+
+volumes:
+  dbdata:

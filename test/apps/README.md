@@ -34,6 +34,7 @@ Heavy apps, multiple services, complex orchestration.
 
 | App | Type | Deploy Mode | Deps | Notes |
 |---|---|---|---|---|
+| compose-poc | multi-service | `nerdctl compose` | postgres | Probes docker-compose support — see `compose/README.md` |
 | Outline | server (Node+React) | image `outlinewiki/outline` | postgres, redis, S3 | Multi-service compose |
 | Immich | server (Node+ML) | image `ghcr.io/immich-app/immich-server` | postgres, redis, pgvector | Heavy, photo management |
 | Authentik | server (Python+Django) | image `ghcr.io/goauthentik/server` | postgres | Auth platform |
