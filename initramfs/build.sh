@@ -763,15 +763,25 @@ if [ -x /usr/local/bin/containerd ]; then
     modprobe xt_nat 2>/dev/null || true
     modprobe xt_REDIRECT 2>/dev/null || true
     modprobe xt_multiport 2>/dev/null || true
-    # iptables needed for CNI bridge networking. The build-time bake (untar of
-    # the apk + head -1 CDN version scrape) leaves the iptables/libxtables pair
+    # iptables for CNI bridge networking. The build-time bake (untar of the apk
+    # + head -1 CDN version scrape) can leave the iptables/libxtables pair
     # unable to load the nft MARK target — CNI portmap's `-j MARK --set-xmark`
     # for every published port then fails with "unknown option --set-xmark".
-    # A proper apk add --upgrade reconciles the versions and restores the
-    # target. Network-gated (|| true), so restricted-policy boots skip it.
-    apk add -q --no-cache --upgrade iptables 2>/dev/null \
-        || command -v iptables >/dev/null 2>&1 \
-        || apk add -q --no-cache iptables 2>/dev/null || true
+    # Probe the MARK target on a throwaway chain and only run the (networked)
+    # `apk add --upgrade` repair when it's actually broken — the repaired
+    # binary persists on the ext4 disk, so after the first boot this is a quick
+    # local probe with no network call or apk latency. Restricted-policy boots
+    # skip the repair (apk is gated) and tolerate it via `|| true`.
+    if command -v iptables >/dev/null 2>&1; then
+        iptables -t nat -N DEW_MARKPROBE 2>/dev/null
+        if ! iptables -t nat -A DEW_MARKPROBE -j MARK --set-xmark 0x1/0x1 2>/dev/null; then
+            apk add -q --no-cache --upgrade iptables 2>/dev/null || true
+        fi
+        iptables -t nat -F DEW_MARKPROBE 2>/dev/null
+        iptables -t nat -X DEW_MARKPROBE 2>/dev/null
+    else
+        apk add -q --no-cache iptables 2>/dev/null || true
+    fi
     # TMPDIR for nerdctl/containerd scratch mounts
     export TMPDIR=/tmp/containerd-tmp
     mkdir -p /tmp/containerd-tmp
