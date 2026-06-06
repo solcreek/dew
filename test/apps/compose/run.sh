@@ -8,9 +8,10 @@ set -uo pipefail
 # independently so one failure does not mask the others.
 #
 # Prereqs:
-#   - built host binary:   make sign         (produces ./dew)
-#   - standard initramfs:  bash initramfs/build.sh standard
-#   - kernel:              initramfs/vmlinuz
+#   - built host binary:   make sign   (produces ./dew)
+# The kernel + standard initramfs are auto-resolved by `dew vm start
+# --profile standard` (downloaded from GitHub Releases on first use); a local
+# `bash initramfs/build.sh standard` is only needed to test initramfs changes.
 #
 # Usage:
 #   bash test/apps/compose/run.sh
@@ -178,14 +179,23 @@ de sh -c "cd /compose && BUILDKIT_HOST=$BK_SOCK nerdctl compose -f /compose/comp
 
 echo
 echo "── risk-point check (build-tier) ──"
-# R1: build: context via S2 ephemeral buildkit
+# R1: build: context via S2 ephemeral buildkit. PASS requires BOTH a freshly
+# built image AND the built service actually serving — gate on the HTTP probe
+# (retried, since it has just started), not merely on an image existing, so a
+# stale image from a prior run can't produce a false pass.
+sleep 2
+CODE2=000
 if deq sh -c 'nerdctl images | grep -q builder'; then
-  sleep 2
-  CODE2=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost:8081/ 2>/dev/null || echo 000)
-  result "build: (S2 buildkit)" ok "image built, host:8081 → HTTP $CODE2"
-else
-  result "build: (S2 buildkit)" fail "no built image — inspect buildkitd container logs"
+  for _ in $(seq 1 10); do
+    CODE2=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost:8081/ 2>/dev/null || echo 000)
+    case "$CODE2" in 2*|3*) break;; esac
+    sleep 2
+  done
 fi
+case "$CODE2" in
+  2*|3*) result "build: (S2 buildkit)" ok   "image built, host:8081 → HTTP $CODE2";;
+  *)     result "build: (S2 buildkit)" fail "image present=$(deq sh -c 'nerdctl images | grep -q builder' && echo yes || echo no), host:8081 → HTTP $CODE2";;
+esac
 
 echo; echo "── results ──"; echo "  PASS: $PASS  FAIL: $FAIL"
 echo
