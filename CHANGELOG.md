@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.37] - 2026-06-06
+
 ### Fixed
 
 - **macOS 26 disk attachment**: `dew run --profile node|standard`
