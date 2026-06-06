@@ -153,7 +153,19 @@ func (d *DarwinVM) configureDisk(config *vz.VirtualMachineConfiguration) error {
 			return fmt.Errorf("create disk: %w", err)
 		}
 	}
-	attachment, err := vz.NewDiskImageStorageDeviceAttachment(d.cfg.DiskPath, false)
+	// Cached + Fsync instead of the default (Automatic + Full). The default
+	// Full synchronization maps to F_FULLFSYNC on macOS/APFS, which forces
+	// every guest flush all the way to physical media — containerd unpacking
+	// image layers fsyncs constantly, so image pulls crawl (~350 KB/s even on
+	// a 17 MB/s link). Fsync uses a regular fsync() (data safe against a guest
+	// crash; only an abrupt host power-loss risks the last writes) and Cached
+	// lets the host page cache absorb the writes. This is the standard dev-VM
+	// trade-off (Lima/Colima do the same).
+	attachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(
+		d.cfg.DiskPath, false,
+		vz.DiskImageCachingModeCached,
+		vz.DiskImageSynchronizationModeFsync,
+	)
 	if err != nil {
 		return fmt.Errorf("disk attach: %w", err)
 	}
