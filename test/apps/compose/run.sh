@@ -57,11 +57,12 @@ echo "── booting standard VM ──"
 # the build context needs; no :ro suffix (that suffix is mis-parsed today).
 #
 # XT_MODS (optional): a host dir of decompressed .ko files to insmod after
-# boot. Used to PROVE the xt_comment fix without rebuilding the initramfs —
-# CNI's firewall plugin emits iptables `-m comment` rules, and the standard
-# profile's module allowlist (initramfs/build.sh KMODS_STANDARD) omits
-# xt_comment, so multi-container bridge networking hangs. Drop the module in
-# and the hang disappears.
+# boot, to prove the CNI fix against a RELEASED/older initramfs without
+# rebuilding it. Those images' KMODS_STANDARD omitted the netfilter modules
+# CNI needs (xt_comment, the nft nat-chain set, and the portmap xt modules),
+# so multi-container bridge networking hung. This branch's initramfs already
+# bundles them, so XT_MODS is only needed when testing against an unfixed
+# image; provide the full module set, not just xt_comment.
 XT_SHARE=()
 [ -n "${XT_MODS:-}" ] && XT_SHARE=(--share "xtmods:$XT_MODS")
 "$DEW_BIN" vm start --profile standard \
@@ -81,10 +82,16 @@ deq sh -c 'command -v nerdctl && nerdctl info' \
 
 # optional: inject xt_comment (+ friends) to prove the multi-container fix
 if [ -n "${XT_MODS:-}" ]; then
-  echo "── injecting xt_comment modules (XT_MODS) ──"
+  echo "── injecting netfilter modules (XT_MODS) ──"
   de sh -c '
-    for m in /xtmods/xt_comment.ko /xtmods/xt_mark.ko /xtmods/xt_conntrack.ko; do
-      [ -f "$m" ] && insmod "$m" 2>&1 && echo "    insmod $(basename "$m")"
+    # Load every .ko provided, in two passes so modules whose deps load later
+    # (e.g. nft_chain_nat/nft_nat, the portmap xt_tcpudp/xt_nat set) still come
+    # up. Whatever the dir contains is loaded — not just xt_comment.
+    for pass in 1 2; do
+      for m in /xtmods/*.ko; do
+        [ -f "$m" ] || continue
+        insmod "$m" 2>/dev/null && echo "    insmod $(basename "$m")"
+      done
     done
     # test on filter/INPUT (always exists); nat/POSTROUTING may be absent on a
     # clean ruleset and would give a false negative unrelated to xt_comment.
