@@ -154,8 +154,17 @@ KMODS_BASE="af_packet virtio_net overlay mbcache jbd2 ext4 virtio_blk \
             nf_tables nft_compat ip_tables iptable_filter \
             crc32c_generic virtio-rng binfmt_misc"
 # Container networking (CNI bridge + masquerade) — standard profile only.
+# The iptables binary is the nft backend (xtables-nft-multi). Multi-container
+# CNI bridge networking needs nft nat-chain support (nft_chain_nat/nft_nat) to
+# create the nat POSTROUTING base chain, plus xt_comment because the CNI
+# bridge/firewall/portmap plugins emit `-m comment` rules. Without these the
+# CNI ADD does not just fail — it hangs for minutes retrying (see
+# test/apps/compose for the repro). xt_conntrack/xt_mark are used by the
+# firewall + portmap plugins. nf_tables/nft_compat are already in KMODS_BASE.
 KMODS_STANDARD="bridge br_netfilter veth iptable_nat nf_nat \
-                xt_MASQUERADE xt_addrtype"
+                xt_MASQUERADE xt_addrtype \
+                nft_chain_nat nft_nat xt_comment xt_conntrack xt_mark \
+                xt_tcpudp xt_nat xt_REDIRECT xt_multiport"
 KMODS_KEEP="$KMODS_BASE"
 if [ "$PROFILE" = "standard" ]; then
     KMODS_KEEP="$KMODS_KEEP $KMODS_STANDARD"
@@ -737,8 +746,32 @@ if [ -x /usr/local/bin/containerd ]; then
     modprobe nf_nat 2>/dev/null || true
     modprobe xt_MASQUERADE 2>/dev/null || true
     modprobe xt_addrtype 2>/dev/null || true
-    # iptables needed for CNI bridge networking
-    command -v iptables >/dev/null 2>&1 || apk add -q --no-cache iptables 2>/dev/null || true
+    # nft backend nat support + matches used by the CNI bridge/firewall/portmap
+    # plugins. Without nft_chain_nat the nat POSTROUTING base chain cannot be
+    # created (iptables-nft "CHAIN_ADD failed"); without xt_comment the CNI ADD
+    # hangs for minutes on `-m comment` rules. See test/apps/compose.
+    modprobe nft_chain_nat 2>/dev/null || true
+    modprobe nft_nat 2>/dev/null || true
+    modprobe xt_comment 2>/dev/null || true
+    modprobe xt_conntrack 2>/dev/null || true
+    modprobe xt_mark 2>/dev/null || true
+    # CNI portmap (published ports) DNAT path: xt_tcpudp backs `-p tcp --dport`,
+    # xt_nat backs the `-j DNAT` target; xt_REDIRECT/xt_multiport are used by
+    # the portmap/firewall plugins. Without these the DNAT rule fails with
+    # "Extension tcp/DNAT revision 0 not supported, missing kernel module".
+    modprobe xt_tcpudp 2>/dev/null || true
+    modprobe xt_nat 2>/dev/null || true
+    modprobe xt_REDIRECT 2>/dev/null || true
+    modprobe xt_multiport 2>/dev/null || true
+    # iptables needed for CNI bridge networking. The build-time bake (untar of
+    # the apk + head -1 CDN version scrape) leaves the iptables/libxtables pair
+    # unable to load the nft MARK target — CNI portmap's `-j MARK --set-xmark`
+    # for every published port then fails with "unknown option --set-xmark".
+    # A proper apk add --upgrade reconciles the versions and restores the
+    # target. Network-gated (|| true), so restricted-policy boots skip it.
+    apk add -q --no-cache --upgrade iptables 2>/dev/null \
+        || command -v iptables >/dev/null 2>&1 \
+        || apk add -q --no-cache iptables 2>/dev/null || true
     # TMPDIR for nerdctl/containerd scratch mounts
     export TMPDIR=/tmp/containerd-tmp
     mkdir -p /tmp/containerd-tmp
