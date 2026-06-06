@@ -33,11 +33,21 @@ func dumpConfigSummary(w io.Writer, cfg vm.Config) {
 	fmt.Fprintf(w, "  cmdline:  %s\n", cfg.CmdLine)
 
 	kHdr := ReadBinaryHeader(cfg.Kernel)
+	// KernelFormatHint's "ARM64 magic at offset 0x38" check is
+	// authoritative for ARM64 Linux Image — but on x86_64 hosts the
+	// kernel is bzImage with no ARM64 magic by design. Reporting
+	// "EFI/PE without ARM64 boot header" on x86_64 is a false positive
+	// (the kernel boots fine; doctor.go correctly gates on GOARCH).
+	// Mirror the gate here so the diagnostic dump matches.
+	formatHint := KernelFormatHint(kHdr)
+	if runtime.GOARCH != "arm64" {
+		formatHint = "format=x86_64 build (boot-header check is ARM64-only)"
+	}
 	fmt.Fprintf(w, "  kernel:   %s\n            size=%d bytes  first4=%02x %02x %02x %02x  arm64-magic@0x38=%02x %02x %02x %02x  %s\n",
 		cfg.Kernel, kHdr.Size,
 		kHdr.First4[0], kHdr.First4[1], kHdr.First4[2], kHdr.First4[3],
 		kHdr.ARM64Magic[0], kHdr.ARM64Magic[1], kHdr.ARM64Magic[2], kHdr.ARM64Magic[3],
-		KernelFormatHint(kHdr))
+		formatHint)
 
 	if cfg.Initrd != "" {
 		if st, err := os.Stat(cfg.Initrd); err == nil {

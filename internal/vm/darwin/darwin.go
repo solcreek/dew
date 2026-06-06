@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -127,6 +128,25 @@ func (d *DarwinVM) configureNetwork(config *vz.VirtualMachineConfiguration) erro
 	if !d.cfg.Network {
 		return nil
 	}
+	// macOS 26 deprecated the legacy NAT attachment we're calling here.
+	// VMs still boot, the guest gets a 192.168.64.x address, and the
+	// host gateway is reachable — but ALL outbound traffic times out
+	// (ICMP/DNS/TCP all fail to reach the public internet). Replacement
+	// is VZVmnetNetworkDeviceAttachment (Apple docs: VZVmnet...). The
+	// Code-Hex/vz library has open PRs adding it (#205, #218) but
+	// hasn't shipped. When that lands and we update the dep, we'll
+	// switch the implementation under here. Until then the VM boots
+	// and works for everything not requiring outbound (host shares
+	// via --share, vsock to the host, etc.). Warn on stderr so users
+	// hitting "curl: connection timeout" know it's not their fault.
+	if host := readHostInfo(); strings.HasPrefix(host.OSVersion, "26.") {
+		fmt.Fprintln(os.Stderr,
+			"  ⚠ Apple VZ NAT is broken on macOS 26 — guest outbound network won't reach the internet.")
+		fmt.Fprintln(os.Stderr,
+			"    Tracking upstream Code-Hex/vz#218 (VZVmnetNetworkDeviceAttachment).")
+		fmt.Fprintln(os.Stderr,
+			"    Workarounds: use --share <hostdir> for host files, vsock for host services.")
+	}
 	natAttach, err := vz.NewNATNetworkDeviceAttachment()
 	if err != nil {
 		return fmt.Errorf("nat attach: %w", err)
@@ -153,7 +173,21 @@ func (d *DarwinVM) configureDisk(config *vz.VirtualMachineConfiguration) error {
 			return fmt.Errorf("create disk: %w", err)
 		}
 	}
-	attachment, err := vz.NewDiskImageStorageDeviceAttachment(d.cfg.DiskPath, false)
+	// macOS 26 VZ rejects the basic NewDiskImageStorageDeviceAttachment
+	// constructor with VZErrorDomain Code=2 "storage device attachment is
+	// invalid" — config.Validate() refuses an attachment without
+	// explicit caching + sync metadata. The WithCacheAndSync variant
+	// (macOS 12+) lets us pass both. We pick the conservative defaults:
+	//   - Automatic caching: lets the host decide, matches pre-macOS-26 behavior
+	//   - Full synchronization: every guest flush is an fsync — safest,
+	//     matches what the basic constructor implicitly did before
+	// dew already requires macOS 13+ (checked in doctor), so the macOS 12
+	// availability gate of WithCacheAndSync is always satisfied.
+	attachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(
+		d.cfg.DiskPath, false,
+		vz.DiskImageCachingModeAutomatic,
+		vz.DiskImageSynchronizationModeFull,
+	)
 	if err != nil {
 		return fmt.Errorf("disk attach: %w", err)
 	}
@@ -249,9 +283,25 @@ func (d *DarwinVM) Start(ctx context.Context) error {
 		// surface hardware/OS specifics without needing the user to
 		// remember sysctl. Cheap; only runs on the cold-error path.
 		host := readHostInfo()
-		return fmt.Errorf("VM start failed on %s macOS %s: %w",
+		hint := ""
+		// The "storage device attachment is invalid" error on macOS 26
+		// fires when an existing disk image file was created by older
+		// VZ versions in a format the new VZ rejects. Fresh images
+		// work fine. The user has to delete the offending file to
+		// recover (destructive — loses VM state).
+		if d.cfg.DiskPath != "" &&
+			strings.Contains(err.Error(), "storage device attachment is invalid") {
+			hint = fmt.Sprintf(
+				"\n\n  This usually means the disk image at\n"+
+					"    %s\n"+
+					"  was created by an older macOS/VZ combination and is no longer\n"+
+					"  accepted by the current VZ. To recover, delete it (resets VM state):\n"+
+					"    rm %s",
+				d.cfg.DiskPath, d.cfg.DiskPath)
+		}
+		return fmt.Errorf("VM start failed on %s macOS %s: %w%s",
 			strNonEmpty(host.Model, "<unknown>"),
-			strNonEmpty(host.OSVersion, "<unknown>"), err)
+			strNonEmpty(host.OSVersion, "<unknown>"), err, hint)
 	}
 
 	d.state = vm.StateRunning

@@ -74,8 +74,9 @@ Flags:
   --profile minimal|node|python|standard
   --network              Enable guest networking (off by default).
   --network-policy open|restricted     See dew help for details.
-  --share <hostdir>[:rw|:ro]
+  --share <hostdir>[:rw|:ro]   or   --share <tag>:<hostdir>[:rw|:ro]
                          Mount a host directory into the guest.
+                         Default mode is read-only.
   --json                 Pass guest exit code in JSON; dew exits 0.
   --stream / --events    Stream stdout/stderr live.
 

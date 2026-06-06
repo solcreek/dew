@@ -732,7 +732,7 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 		case "--share":
 			i++
 			if i >= len(args) {
-				return cfg, nil, fmt.Errorf("--share requires tag:hostpath[:ro]")
+				return cfg, nil, fmt.Errorf("--share requires hostpath[:rw|:ro] or tag:hostpath[:rw|:ro]")
 			}
 			sd, err := parseShare(args[i])
 			if err != nil {
@@ -2019,18 +2019,51 @@ func parseForward(s string) (vm.PortForward, error) {
 	return vm.PortForward{HostPort: host, GuestPort: guest}, nil
 }
 
+// parseShare accepts three forms:
+//
+//	hostpath                 tag derived from basename, ro
+//	hostpath:rw|:ro          tag derived from basename, mode explicit
+//	tag:hostpath[:rw|:ro]    tag explicit, mode optional (ro default)
+//
+// The earlier shape was tag:hostpath[:rw] only — the help text
+// described `<hostdir>[:rw|:ro]` (host-first) so users following the
+// docs hit a confusing "stat ro: no such file or directory" error.
+// Now both shapes work; an explicit `:rw` or `:ro` suffix is detected
+// unambiguously and stripped before the tag/hostpath split.
 func parseShare(s string) (vm.SharedDir, error) {
-	parts := strings.SplitN(s, ":", 3)
-	if len(parts) < 2 {
-		return vm.SharedDir{}, fmt.Errorf("--share: expected tag:hostpath[:rw], got %q", s)
+	parts := strings.Split(s, ":")
+	readOnly := true
+	// Trailing :rw or :ro is the mode marker; strip it first.
+	if n := len(parts); n >= 2 {
+		switch parts[n-1] {
+		case "rw":
+			readOnly = false
+			parts = parts[:n-1]
+		case "ro":
+			readOnly = true
+			parts = parts[:n-1]
+		}
 	}
-	sd := vm.SharedDir{
-		Tag:      parts[0],
-		HostPath: parts[1],
-		ReadOnly: true,
+	var tag, hostPath string
+	switch len(parts) {
+	case 1:
+		// hostpath only — derive tag from basename so the mount
+		// point inside the guest is predictable.
+		hostPath = parts[0]
+		tag = filepath.Base(hostPath)
+	case 2:
+		tag = parts[0]
+		hostPath = parts[1]
+	default:
+		return vm.SharedDir{}, fmt.Errorf(
+			"--share: expected hostpath[:rw|:ro] or tag:hostpath[:rw|:ro], got %q", s)
 	}
-	if len(parts) == 3 && parts[2] == "rw" {
-		sd.ReadOnly = false
+	if hostPath == "" {
+		return vm.SharedDir{}, fmt.Errorf("--share: empty hostpath in %q", s)
 	}
-	return sd, nil
+	return vm.SharedDir{
+		Tag:      tag,
+		HostPath: hostPath,
+		ReadOnly: readOnly,
+	}, nil
 }

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **macOS 26 disk attachment**: `dew run --profile node|standard`
+  no longer fails with `VZErrorDomain Code=2 "storage device
+  attachment is invalid"` on fresh disk images. The disk path now
+  uses the cache+sync attachment API explicitly (still macOS 12+).
+  Pre-existing disk images created by older VZ versions are
+  incompatible with macOS 26 VZ — when this case is detected the
+  error message now includes the exact `rm` command to recover
+  (resets VM state for that profile).
+- **macOS 26 NAT outbound regression**: `dew run --network` on
+  macOS 26 prints a warning explaining the guest can reach the
+  host gateway but not the public internet. Apple deprecated the
+  legacy NAT attachment we use; replacement is
+  `VZVmnetNetworkDeviceAttachment` which the upstream `Code-Hex/vz`
+  library hasn't shipped yet (tracking issue #218). VMs still boot;
+  `--share <hostdir>` and vsock work for moving bytes between host
+  and guest in the meantime.
+- **`--share` flag parser** accepts both documented shapes:
+  `--share <hostdir>[:rw|:ro]` (host-first, tag derived from
+  basename) and `--share <tag>:<hostdir>[:rw|:ro]` (tag-first).
+  The help text showed host-first; the parser only accepted
+  tag-first. Following the docs produced a confusing
+  `stat ro: no such file or directory`.
+- **`DEW_DEBUG=1` kernel format hint** no longer false-flags
+  x86_64 kernels as "EFI/PE without ARM64 boot header". The
+  offset-0x38 ARM64 magic check is now gated by host arch in the
+  dump, mirroring the gate already in `dew doctor`.
+
 ## [0.7.36] - 2026-06-05
 
 ### Added

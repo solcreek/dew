@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -91,7 +92,6 @@ func TestDumpConfigSummary_CoversAllFields(t *testing.T) {
 		"memory:   512 MB",
 		"console=hvc0 quiet",
 		kernelPath,
-		"gzip", // kernel format hint fires
 		initrdPath,
 		"network:  true",
 		"vsock:    port 9000",
@@ -102,6 +102,21 @@ func TestDumpConfigSummary_CoversAllFields(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("dump missing %q\n----\n%s", want, out)
 		}
+	}
+
+	// Kernel format hint: arch-gated by design (the offset-0x38 magic
+	// check is meaningful only on arm64). On arm64 hosts we expect the
+	// "gzip" classification (since the test kernel has a gzip prefix);
+	// on amd64 we expect the explicit "x86_64 build" passthrough.
+	var wantKernelHint string
+	if runtime.GOARCH == "arm64" {
+		wantKernelHint = "gzip"
+	} else {
+		wantKernelHint = "x86_64 build"
+	}
+	if !strings.Contains(out, wantKernelHint) {
+		t.Errorf("kernel format hint missing %q for host arch %q\n----\n%s",
+			wantKernelHint, runtime.GOARCH, out)
 	}
 }
 
