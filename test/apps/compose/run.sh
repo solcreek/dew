@@ -37,6 +37,8 @@ result() { # name  ok|fail  detail
 
 de() { "$DEW_BIN" exec "$@"; }                 # exec in the running VM
 deq() { "$DEW_BIN" exec "$@" >/dev/null 2>&1; } # quiet variant
+# HTTP status of a forwarded host port (000 on connect failure).
+http_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:$1/" 2>/dev/null || echo 000; }
 
 cleanup() {
   echo; echo "── teardown ──"
@@ -144,7 +146,7 @@ fi
 
 # R2: published port reachable from the host (CNI portmap + dew --forward)
 sleep 2
-CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost:8080/ 2>/dev/null || echo 000)
+CODE=$(http_code 8080)
 if [ "$CODE" -ge 200 ] && [ "$CODE" -lt 500 ]; then
   result "ports (image svc)" ok "host:8080 → HTTP $CODE"
 else
@@ -194,7 +196,7 @@ sleep 2
 CODE2=000
 if deq sh -c 'nerdctl images | grep -q builder'; then
   for _ in $(seq 1 10); do
-    CODE2=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost:8081/ 2>/dev/null || echo 000)
+    CODE2=$(http_code 8081)
     case "$CODE2" in 2*|3*) break;; esac
     sleep 2
   done
