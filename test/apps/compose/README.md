@@ -19,9 +19,15 @@ cannot create the `nat` `POSTROUTING` base chain, and the CNI bridge plugin's
 `-m comment` rules have no `xt_comment` — so `nerdctl run --net=<bridge>`
 spins instead of failing.
 
-Fix (landed): add the nft module set to `KMODS_STANDARD` in
-`initramfs/build.sh` and modprobe them at boot —
-`nft_chain_nat nft_nat xt_comment xt_conntrack xt_mark`.
+Fix (landed): in `initramfs/build.sh`, add the netfilter modules to
+`KMODS_STANDARD` and modprobe them at boot, and repair iptables so the nft
+`MARK` target loads. The modules are, by layer:
+- bridge / NAT chain: `nft_chain_nat nft_nat xt_comment xt_conntrack xt_mark`
+- portmap DNAT (published ports): `xt_tcpudp xt_nat xt_REDIRECT xt_multiport`
+
+The build-time apk bake also leaves iptables unable to load the `MARK` target
+(`-j MARK --set-xmark` → "unknown option"), so a boot-time `apk add --upgrade
+iptables` runs when a probe detects the target is broken.
 
 This is exactly the "mechanism" gap in the dew/grove boundary: it is why grove
 falls back to `--net=host`, and it blocks BOTH a future `dew compose` (a
