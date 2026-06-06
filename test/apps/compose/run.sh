@@ -16,8 +16,10 @@ set -uo pipefail
 #   bash test/apps/compose/run.sh
 #
 # Env overrides:
-#   DEW_BIN   path to dew binary      (default: repo ./dew)
-#   KERNEL    path to kernel image    (default: initramfs/vmlinuz)
+#   DEW_BIN   path to dew binary           (default: repo ./dew)
+#   XT_MODS   host dir of decompressed .ko files to insmod (xt_comment fix probe)
+#   BK_IMAGE  BuildKit image for the S2 build tier (default: pinned above)
+# The kernel + standard initramfs are auto-resolved by `dew vm start`.
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
@@ -59,11 +61,11 @@ echo "── booting standard VM ──"
 # profile's module allowlist (initramfs/build.sh KMODS_STANDARD) omits
 # xt_comment, so multi-container bridge networking hangs. Drop the module in
 # and the hang disappears.
-XT_SHARE=""
-[ -n "${XT_MODS:-}" ] && XT_SHARE="--share xtmods:$XT_MODS"
+XT_SHARE=()
+[ -n "${XT_MODS:-}" ] && XT_SHARE=(--share "xtmods:$XT_MODS")
 "$DEW_BIN" vm start --profile standard \
   --share "compose:$HERE" \
-  $XT_SHARE \
+  ${XT_SHARE[@]+"${XT_SHARE[@]}"} \
   --forward 8080:8080 \
   --forward 8081:8081 >/tmp/dew-compose-poc-vm.log 2>&1 &
 # wait until the VM boots, downloads assets on first use, and exec is live.
