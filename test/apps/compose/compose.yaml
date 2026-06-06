@@ -33,7 +33,7 @@ services:
       - db
 
   builder:
-    build: ./builder                      # risk #1: needs BuildKit (expected to fail today)
+    build: ./builder                      # risk #1: BuildKit via S2 ephemeral buildkitd (now passes)
     ports:
       - "8081:80"
     depends_on:

@@ -138,7 +138,8 @@ fi
 # buildkitd as a throwaway container — and gets the small `buildctl` client by
 # copying it OUT of that same image into the guest PATH. No extra download, no
 # base bloat: the build toolchain is pay-per-use, materialised from one image.
-BK_IMAGE="${BK_IMAGE:-moby/buildkit:latest}"
+# Pinned for reproducibility; override with BK_IMAGE=... for experimentation.
+BK_IMAGE="${BK_IMAGE:-moby/buildkit:v0.28.1}"
 BK_SOCK="unix:///run/dew-buildkit/buildkitd.sock"
 echo "── S2: materialise BuildKit ($BK_IMAGE) ──"
 de sh -c "
