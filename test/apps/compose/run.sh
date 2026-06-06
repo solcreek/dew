@@ -118,7 +118,17 @@ fi
 
 # R3: service-to-service DNS + TCP over the compose network
 NETCHECK=$(de sh -c "nerdctl ps --format '{{.Names}}' | grep netcheck | head -1" 2>/dev/null | tr -d '\r')
-if [ -n "$NETCHECK" ] && deq sh -c "nerdctl exec $NETCHECK sh -c 'nc -z -w3 db 5432'"; then
+# Retry the probe: postgres runs first-boot initdb for several seconds before
+# it listens on 5432, so a single immediate check false-fails on timing, not
+# networking. (alpine's busybox nc supports -z.)
+dns_ok=
+if [ -n "$NETCHECK" ]; then
+  for _ in $(seq 1 15); do
+    deq sh -c "nerdctl exec $NETCHECK sh -c 'nc -z -w3 db 5432'" && { dns_ok=1; break; }
+    sleep 2
+  done
+fi
+if [ -n "$dns_ok" ]; then
   result "service DNS + net" ok "netcheck → db:5432 reachable"
 else
   result "service DNS + net" fail "could not reach db:5432 from netcheck"

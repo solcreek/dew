@@ -29,12 +29,16 @@ developer's own compose file) AND grove's curated multi-service `Services[]`.
 
 ## Risk points & measured results
 
-| # | Risk | Service | Result |
+Results are with an initramfs built from this branch (the fix landed in
+`initramfs/build.sh`). The "was ⛔" notes record the original pre-fix
+findings that motivated the fix.
+
+| # | Risk | Service | Result (this branch) |
 |---|---|---|---|
 | 4 | named volume persistence | `db` | ✅ works — volume created on the ext4 disk |
-| 3 | `depends_on` + service DNS | `netcheck → db` | ⛔ blocked by CNI bridge networking (containers never start) |
-| 2 | `ports:` host publish | `gateway` | ⛔ blocked by the same root cause |
-| 1 | `build:` from source (S2) | `builder` | ⛔ two issues, see below |
+| 3 | `depends_on` + service DNS | `netcheck → db` | ✅ works (was ⛔ blocked by CNI bridge networking pre-fix) |
+| 2 | `ports:` host publish | `gateway` | ✅ works (was ⛔ blocked by the same root cause) |
+| 1 | `build:` from source (S2) | `builder` | ✅ works via ephemeral buildkitd (was ⛔ pre-fix) |
 
 ### What the probe established, step by step
 
@@ -64,10 +68,10 @@ Two findings, independent of the networking blocker:
   `buildkitd` as a throwaway container and copying the small `buildctl` client
   **out of that same image** into the guest PATH — no extra download, no base
   bloat.
-- End-to-end S2 build could not be confirmed here because the `buildctl`-copy
-  helper container itself runs on the (broken) default bridge network. It
-  should pass once the CNI fix is built into the initramfs (or by pinning the
-  helper to `--net=host`).
+- End-to-end S2 build now passes with this branch's initramfs: once the CNI
+  fix is built in, the `buildctl`-copy helper container runs on a working
+  bridge, the image builds, and `host:8081` serves the built page. (Pre-fix it
+  could not be confirmed because that helper ran on the broken default bridge.)
 
 ## Run
 
