@@ -539,6 +539,12 @@ if [ -b /dev/vda ]; then
                  /mnt/root/run /mnt/root/tmp /mnt/root/data \
                  /mnt/root/dev/pts /mnt/root/dev/shm
         touch /mnt/root/.dew-initialized
+        # Flush the freshly-populated rootfs to the virtual disk NOW.
+        # The host tears the VM down without a guest shutdown, so
+        # anything still in the guest page cache is lost — observed as
+        # zero-length /bin/busybox and ld-musl on the second boot,
+        # which kernel-panics switch_root with "Exec format error".
+        sync
     fi
 
     # Always refresh init-stage2 and markers from initramfs
@@ -546,6 +552,7 @@ if [ -b /dev/vda ]; then
     chmod 755 /mnt/root/init-stage2
     [ -f /.dew-node-profile ] && cp /.dew-node-profile /mnt/root/.dew-node-profile
     [ -f /.dew-python-profile ] && cp /.dew-python-profile /mnt/root/.dew-python-profile
+    sync
 
     # Refresh kernel modules every boot — DEW_REFRESH_KMODULES
     # Modules must match the running kernel. When the initramfs ships an
@@ -786,6 +793,10 @@ node_first_boot_apk() {
         apk update 2>/dev/null || true
         apk upgrade --no-cache musl 2>&1 | tail -1
         apk add --no-cache $NEED 2>&1 | tail -1
+        # Same rationale as the stage-1 populate sync: the host can
+        # kill the VM at any moment; don't leave the freshly-installed
+        # runtime sitting in the guest page cache.
+        sync
     fi
 }
 
@@ -797,6 +808,7 @@ python_first_boot_apk() {
         apk update 2>/dev/null || true
         apk upgrade --no-cache musl 2>&1 | tail -1
         apk add --no-cache $NEED 2>&1 | tail -1
+        sync
     fi
 }
 
