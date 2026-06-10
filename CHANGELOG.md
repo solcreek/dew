@@ -54,6 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Install docs recommend `npm install -g dew` over `npx dew` — npx
   always resolves the npm package and ignores an installed dew on
   PATH, adding dispatcher overhead on every call.
+- Guest kernel bumped to Alpine linux-virt 6.12.92 (x86_64) /
+  6.12.93 (aarch64) — the previously pinned apks were rotated off
+  the Alpine CDN.
 
 ## [0.7.37] - 2026-06-06
 
