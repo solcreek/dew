@@ -187,13 +187,12 @@ func captureStderr(t *testing.T, fn func()) string {
 	return string(out)
 }
 
-// updateCache is the on-disk shape selfupdate writes; we mirror it here
-// so the test seeds a plausible cache for cachedLatest() to read. Pin
-// FetchedAt to "now" so the cache isn't considered stale.
-type testCache struct {
-	Latest    string    `json:"latest"`
-	FetchedAt time.Time `json:"fetched_at"`
-}
+// The test seeds the cache with the REAL updateCache struct, not a
+// hand-mirrored copy. A previous mirror here drifted from the on-disk
+// schema (fetched_at vs last_check), so cachedLatest() treated the
+// seeded cache as stale and fell through to a live GitHub API call —
+// the test then passed or failed with the network (flaky on CI
+// runners, which share rate-limited IPs).
 
 // Regression for 2026-06: when the binary was built without ldflags
 // stamping (any `make sign` / bare `go build`), version stays "dev" and
@@ -210,7 +209,7 @@ func TestCheckBackground_SilentOnDevBuild(t *testing.T) {
 	if err := os.MkdirAll(cfgDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	cache := testCache{Latest: "v99.0.0", FetchedAt: time.Now()}
+	cache := updateCache{Latest: "v99.0.0", LastCheck: time.Now().UTC().Format(time.RFC3339)}
 	data, _ := json.Marshal(cache)
 	if err := os.WriteFile(filepath.Join(cfgDir, cacheFile), data, 0644); err != nil {
 		t.Fatal(err)
