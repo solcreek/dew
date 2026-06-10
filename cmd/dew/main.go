@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/solcreek/dew/internal/daemon"
+	"github.com/solcreek/dew/internal/vmstate"
 	"github.com/solcreek/dew/internal/detect"
 	"github.com/solcreek/dew/internal/nmcache"
 	"github.com/solcreek/dew/internal/progress"
@@ -49,6 +50,63 @@ var flagEvents bool
 var flagWith string
 var flagDryRun bool
 var flagProfile string
+
+// flagTimeout is the overall wall-clock budget for `dew run`
+// (boot + agent wait + exec). Zero means no overall bound; each
+// stage keeps its own default deadline.
+var flagTimeout time.Duration
+
+// cfgProfileName resolves the effective profile for state reporting:
+// flagProfile when set, otherwise the resolveAssets default.
+func cfgProfileName() string {
+	if flagProfile != "" {
+		return flagProfile
+	}
+	return "minimal"
+}
+
+// runBudget tracks the optional --timeout deadline across cmdRun's
+// stages. Each stage asks for a window: its own default, shrunk to
+// whatever is left of the overall budget.
+type runBudget struct{ deadline time.Time }
+
+func newRunBudget(total time.Duration) runBudget {
+	if total <= 0 {
+		return runBudget{}
+	}
+	return runBudget{deadline: time.Now().Add(total)}
+}
+
+// window returns def, capped at the time remaining until the overall
+// deadline. Without a deadline it returns def unchanged.
+func (b runBudget) window(def time.Duration) time.Duration {
+	if b.deadline.IsZero() {
+		return def
+	}
+	if r := time.Until(b.deadline); r < def {
+		return r
+	}
+	return def
+}
+
+func (b runBudget) expired() bool {
+	return !b.deadline.IsZero() && !time.Now().Before(b.deadline)
+}
+
+// guestTimeout is the exec timeout to send to the guest agent: the
+// remaining budget when one is set (the guest kills the command at
+// our deadline, instead of us abandoning a still-running command),
+// zero (agent default) otherwise.
+func (b runBudget) guestTimeout() time.Duration {
+	if b.deadline.IsZero() {
+		return 0
+	}
+	r := time.Until(b.deadline)
+	if r < time.Second {
+		r = time.Second
+	}
+	return r
+}
 
 func dewDataDir() string {
 	home, _ := os.UserHomeDir()
@@ -647,12 +705,23 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 		CmdLine:  "console=hvc0",
 	}
 	var remaining []string
+	flagTimeout = 0 // reset: parseFlags runs once per command, but tests reuse the process
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--":
 			remaining = args[i+1:]
 			return cfg, remaining, nil
+		case "--timeout":
+			i++
+			if i >= len(args) {
+				return cfg, nil, dewerr.New(dewerr.CodeUsage, "--timeout requires a duration (e.g. 90s, 5m)")
+			}
+			d, perr := time.ParseDuration(args[i])
+			if perr != nil || d <= 0 {
+				return cfg, nil, dewerr.Newf(dewerr.CodeUsage, "--timeout: invalid duration %q", args[i])
+			}
+			flagTimeout = d
 		case "--kernel":
 			i++
 			if i >= len(args) {
@@ -886,6 +955,15 @@ func cmdStart(args []string) error {
 	fmt.Fprintf(os.Stderr, "dew: booting VM (cpus=%d, memory=%dMB)\n", cfg.CPUs, cfg.MemoryMB)
 	start := time.Now()
 
+	stateDir := daemon.SocketDir()
+	startProfile := cfgProfileName()
+	startedAt := time.Now().UTC()
+	_ = vmstate.Write(stateDir, vmstate.State{
+		PID: os.Getpid(), Phase: vmstate.PhaseBooting, Mode: "start",
+		Profile: startProfile, StartedAt: startedAt,
+	})
+	defer vmstate.Clear(stateDir, os.Getpid())
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
@@ -931,6 +1009,10 @@ func cmdStart(args []string) error {
 	} else {
 		fmt.Fprintf(os.Stderr, "dew: daemon socket %s\n", dmn.SocketPath)
 	}
+	_ = vmstate.Write(stateDir, vmstate.State{
+		PID: os.Getpid(), Phase: vmstate.PhaseRunning, Mode: "start",
+		Profile: startProfile, StartedAt: startedAt,
+	})
 	for _, f := range cfg.Forwards {
 		if _, err := dmn.AddForward(f.HostPort, f.GuestPort); err != nil {
 			fmt.Fprintf(os.Stderr, "dew: %v\n", err)
@@ -978,13 +1060,30 @@ func cmdRun(args []string) error {
 		return err
 	}
 
+	budget := newRunBudget(flagTimeout)
+	timeoutErr := func(stage string) error {
+		return dewerr.Newf(dewerr.CodeTimeout, "run: timed out after %s during %s (--timeout)", flagTimeout, stage)
+	}
+
+	stateDir := daemon.SocketDir()
+	profile := cfgProfileName()
+	startedAt := time.Now().UTC()
+	_ = vmstate.Write(stateDir, vmstate.State{
+		PID: os.Getpid(), Phase: vmstate.PhaseBooting, Mode: "run",
+		Profile: profile, StartedAt: startedAt,
+	})
+	defer vmstate.Clear(stateDir, os.Getpid())
+
 	fmt.Fprintf(os.Stderr, "dew: booting VM\n")
 	start := time.Now()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), budget.window(60*time.Second))
 	defer cancel()
 
 	if err := d.Start(ctx); err != nil {
+		if budget.expired() {
+			return timeoutErr("boot")
+		}
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "dew: VM running (%s)\n", time.Since(start).Round(time.Millisecond))
@@ -1002,7 +1101,7 @@ func cmdRun(args []string) error {
 	// 60s covers cold first-boot of any profile.
 	fmt.Fprintf(os.Stderr, "dew: waiting for guest agent\n")
 	const vsockReadySec = 60
-	agentDeadline := time.Now().Add(vsockReadySec * time.Second)
+	agentDeadline := time.Now().Add(budget.window(vsockReadySec * time.Second))
 	var tokenSent bool
 	for {
 		remaining := time.Until(agentDeadline)
@@ -1021,6 +1120,12 @@ func cmdRun(args []string) error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	if tokenSent {
+		_ = vmstate.Write(stateDir, vmstate.State{
+			PID: os.Getpid(), Phase: vmstate.PhaseRunning, Mode: "run",
+			Profile: profile, StartedAt: startedAt,
+		})
+	}
 
 	// argv-or-shell decision: 2+ args → exec argv directly (no
 	// outer sh -c wrap). Single arg → shell-wrap so users can still
@@ -1033,12 +1138,15 @@ func cmdRun(args []string) error {
 		conn, err := connectVsock(d, cfg.VsockPort)
 		if err == nil {
 			if flagStream {
-				exitCode, serr := execVsockStreamArgv(conn, token, execCommand, execArgs)
+				exitCode, serr := execVsockStreamArgv(conn, token, execCommand, execArgs, budget.guestTimeout())
 				conn.Close()
 				d.Stop(context.Background())
 				hostReader.Close()
 				hostWriter.Close()
 				if serr != nil {
+					if budget.expired() {
+						return timeoutErr("exec")
+					}
 					return fmt.Errorf("exec: %w", serr)
 				}
 				if exitCode != 0 {
@@ -1046,20 +1154,37 @@ func cmdRun(args []string) error {
 				}
 				return nil
 			}
-			result, err = execVsockConnArgv(conn, token, execCommand, execArgs, 0)
+			result, err = execVsockConnArgv(conn, token, execCommand, execArgs, budget.guestTimeout())
 			conn.Close()
 		}
 	}
 
 	if result == nil {
-		fmt.Fprintf(os.Stderr, "dew: vsock unavailable, using serial\n")
-		if err := sExec.WaitReady(60 * time.Second); err != nil {
+		if budget.expired() {
 			d.Stop(context.Background())
+			return timeoutErr("agent wait")
+		}
+		fmt.Fprintf(os.Stderr, "dew: vsock unavailable, using serial\n")
+		if err := sExec.WaitReady(budget.window(60 * time.Second)); err != nil {
+			d.Stop(context.Background())
+			if budget.expired() {
+				return timeoutErr("agent wait")
+			}
 			return fmt.Errorf("guest not ready: %w — the guest may have failed to boot (kernel/initramfs mismatch?); run 'dew doctor' to check assets", err)
+		}
+		_ = vmstate.Write(stateDir, vmstate.State{
+			PID: os.Getpid(), Phase: vmstate.PhaseRunning, Mode: "run",
+			Profile: profile, StartedAt: startedAt,
+		})
+		if t := budget.guestTimeout(); t > 0 {
+			sExec.Timeout = t
 		}
 		output, exitCode, serr := sExec.Run(cmd)
 		if serr != nil {
 			d.Stop(context.Background())
+			if budget.expired() {
+				return timeoutErr("exec")
+			}
 			return fmt.Errorf("exec: %w", serr)
 		}
 		result = &RunResult{ExitCode: exitCode, Stdout: output}
@@ -1067,6 +1192,9 @@ func cmdRun(args []string) error {
 	}
 	if err != nil {
 		d.Stop(context.Background())
+		if budget.expired() {
+			return timeoutErr("exec")
+		}
 		return fmt.Errorf("exec: %w", err)
 	}
 
@@ -1168,14 +1296,13 @@ func generateToken() string {
 	return hex.EncodeToString(b)
 }
 
-func execVsockStream(conn net.Conn, token string, cmd string) (int, error) {
-	return execVsockStreamArgv(conn, token, "/bin/sh", []string{"-c", cmd})
-}
-
-func execVsockStreamArgv(conn net.Conn, token, command string, args []string) (int, error) {
+func execVsockStreamArgv(conn net.Conn, token, command string, args []string, timeout time.Duration) (int, error) {
 	req := vsockProto.ExecRequest{
 		Type: vsockProto.TypeExec, Token: token, Stream: true,
 		Command: command, Args: args,
+	}
+	if timeout > 0 {
+		req.TimeoutMs = int(timeout / time.Millisecond)
 	}
 	if err := vsockProto.WriteJSON(conn, &req); err != nil {
 		return -1, err
@@ -1371,6 +1498,14 @@ func cmdUp(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
+	stateDir := daemon.SocketDir()
+	upStartedAt := time.Now().UTC()
+	_ = vmstate.Write(stateDir, vmstate.State{
+		PID: os.Getpid(), Phase: vmstate.PhaseBooting, Mode: "up",
+		Profile: cfgProfileName(), StartedAt: upStartedAt,
+	})
+	defer vmstate.Clear(stateDir, os.Getpid())
+
 	if err := d.Start(ctx); err != nil {
 		emit(map[string]interface{}{"type": "boot", "status": "failed", "error": err.Error()})
 		return err
@@ -1404,6 +1539,10 @@ func cmdUp(args []string) error {
 		SocketPath: daemon.SocketPath(""),
 	}
 	dmn.Start()
+	_ = vmstate.Write(stateDir, vmstate.State{
+		PID: os.Getpid(), Phase: vmstate.PhaseRunning, Mode: "up",
+		Profile: cfgProfileName(), StartedAt: upStartedAt,
+	})
 	for _, f := range cfg.Forwards {
 		if _, err := dmn.AddForward(f.HostPort, f.GuestPort); err != nil {
 			fmt.Fprintf(os.Stderr, "dew: %v\n", err)

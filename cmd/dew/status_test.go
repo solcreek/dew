@@ -8,9 +8,13 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/solcreek/dew/internal/vmstate"
 )
 
 // withTempSocketPath redirects daemon.SocketPath("") to a temp dir
@@ -139,6 +143,106 @@ func TestStatus_JSONEnvelopeShape(t *testing.T) {
 	}
 	if env.Data.Socket == "" {
 		t.Errorf("socket path empty")
+	}
+}
+
+// While a dew process is booting a VM (state file with a live PID,
+// no daemon socket yet), status must say so instead of "not running" —
+// this was invisible before and agents polling status couldn't tell
+// "nothing happening" from "boot in progress".
+func TestStatus_ReportsBooting(t *testing.T) {
+	sock := withTempSocketPath(t)
+	stateDir := filepath.Dir(sock)
+	if err := vmstate.Write(stateDir, vmstate.State{
+		PID: os.Getpid(), Phase: vmstate.PhaseBooting, Mode: "run",
+		Profile: "minimal", StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	flagJSON = false
+	out := captureStdout(t, func() {
+		_ = cmdStatus(nil)
+	})
+	if !strings.Contains(out, "booting") {
+		t.Errorf("expected 'booting', got: %q", out)
+	}
+
+	flagJSON = true
+	defer func() { flagJSON = false }()
+	out = captureStdout(t, func() {
+		_ = cmdStatus(nil)
+	})
+	var env struct {
+		Data struct {
+			Running bool   `json:"running"`
+			Phase   string `json:"phase"`
+			PID     int    `json:"pid"`
+			Mode    string `json:"mode"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &env); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, out)
+	}
+	if env.Data.Phase != "booting" || env.Data.Mode != "run" || env.Data.PID != os.Getpid() {
+		t.Errorf("data = %+v, want phase=booting mode=run pid=%d", env.Data, os.Getpid())
+	}
+	if env.Data.Running {
+		t.Error("running=true while still booting (no socket)")
+	}
+}
+
+// An ephemeral `dew run` never opens a daemon socket; once its guest
+// is reachable the state file says running and status must report the
+// VM without claiming daemon exec is available.
+func TestStatus_ReportsEphemeralRun(t *testing.T) {
+	sock := withTempSocketPath(t)
+	stateDir := filepath.Dir(sock)
+	if err := vmstate.Write(stateDir, vmstate.State{
+		PID: os.Getpid(), Phase: vmstate.PhaseRunning, Mode: "run",
+		StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	flagJSON = false
+	out := captureStdout(t, func() {
+		_ = cmdStatus(nil)
+	})
+	if !strings.Contains(out, "running") || !strings.Contains(out, "ephemeral") {
+		t.Errorf("expected ephemeral running report, got: %q", out)
+	}
+}
+
+// A state file from a crashed process (dead PID) is a leftover, not a
+// state: status must ignore it, report not running, and remove it.
+func TestStatus_StaleStateFileIgnoredAndCleaned(t *testing.T) {
+	sock := withTempSocketPath(t)
+	stateDir := filepath.Dir(sock)
+
+	// A PID that is certainly dead: spawn-and-reap.
+	cmd := exec.Command("true")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	deadPID := cmd.Process.Pid
+
+	if err := vmstate.Write(stateDir, vmstate.State{
+		PID: deadPID, Phase: vmstate.PhaseBooting, Mode: "run",
+		StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	flagJSON = false
+	out := captureStdout(t, func() {
+		_ = cmdStatus(nil)
+	})
+	if !strings.Contains(out, "not running") || strings.Contains(out, "booting") {
+		t.Errorf("stale state misreported: %q", out)
+	}
+	if _, ok := vmstate.Read(stateDir); ok {
+		t.Error("stale state file not cleaned up")
 	}
 }
 

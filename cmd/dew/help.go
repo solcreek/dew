@@ -79,9 +79,14 @@ Flags:
                          Default mode is read-only.
   --json                 Pass guest exit code in JSON; dew exits 0.
   --stream / --events    Stream stdout/stderr live.
+  --timeout DUR          Overall wall-clock bound for the whole run
+                         (boot + agent wait + exec), e.g. 90s, 5m.
+                         On expiry the VM is stopped and dew exits
+                         with the timeout code (104).
 
 Examples:
   dew run -- uname -a
+  dew run --timeout 90s -- uname -a
   dew run -- sh -c 'echo A; echo B'
   dew run --network -- curl https://example.com
   dew run --share ./data:rw -- ls /data
