@@ -45,7 +45,10 @@
   var INSTALL = {
     mac: '$ curl -fsSL https://dewvm.dev/install.sh | sh',
     win: '$ irm https://dewvm.dev/install.ps1 | iex',
-    npm: '$ npx dew --help'
+    /* `npm install -g`, not `npx dew`: npx always resolves the npm
+       package and ignores a brew/installed dew already on PATH, so
+       installed users would pay the dispatcher overhead every call. */
+    npm: '$ npm install -g dew'
   };
   var tabs = document.getElementById('install-tabs');
   if (tabs) {

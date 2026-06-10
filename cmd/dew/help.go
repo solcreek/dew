@@ -122,6 +122,22 @@ so dew exec can attach to it. Networking is on by default; pass
 --network-policy=restricted to lock down outbound. Use dew vm stop
 (or its alias dew down) to stop.
 
+Flags for scripted/agent use:
+  --json / --events      Emit one NDJSON ready event on stdout once
+                         the daemon socket accepts connections:
+                         {"type":"ready","socket":...,"pid":...,
+                          "profile":...,"elapsed_ms":...}
+  --timeout DUR          Bound the path to readiness (boot + agent
+                         handshake). On expiry the VM is stopped and
+                         dew exits with the timeout code (104).
+                         After ready, the process stays in the
+                         foreground as usual.
+
+Wait-until-usable loop:
+  dew vm start --profile standard --json --timeout 60s > events.ndjson &
+  until grep -q '"type":"ready"' events.ndjson; do sleep 0.5; done
+(or poll "dew vm status --json" for phase/running.)
+
 Examples:
   dew vm start --profile minimal
   dew vm start --profile standard --forward 8090:8090

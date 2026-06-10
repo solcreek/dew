@@ -56,6 +56,18 @@ var flagProfile string
 // stage keeps its own default deadline.
 var flagTimeout time.Duration
 
+// startReadyEvent is the payload of the `vm start` ready event. The
+// shape is an agent-facing contract (pinned by TestStartReadyEvent) —
+// fields are additive-only.
+func startReadyEvent(socket string, pid int, profile string, elapsedMs int64) map[string]any {
+	return map[string]any{
+		"socket":     socket,
+		"pid":        pid,
+		"profile":    profile,
+		"elapsed_ms": elapsedMs,
+	}
+}
+
 // cfgProfileName resolves the effective profile for state reporting:
 // flagProfile when set, otherwise the resolveAssets default.
 func cfgProfileName() string {
@@ -947,6 +959,13 @@ func cmdStart(args []string) error {
 		cfg.CmdLine += " dew.cmd=" + encoded
 	}
 
+	// Machine-readable mode promises NDJSON-only stdout; the guest
+	// serial console defaults to os.Stdout and would interleave boot
+	// logs with the event stream, so route it to stderr instead.
+	if (flagJSON || flagEvents) && cfg.Console == nil {
+		cfg.Console = &vm.ConsoleFiles{In: os.Stdin, Out: os.Stderr}
+	}
+
 	d, err := darwin.New(cfg)
 	if err != nil {
 		return err
@@ -954,6 +973,11 @@ func cmdStart(args []string) error {
 
 	fmt.Fprintf(os.Stderr, "dew: booting VM (cpus=%d, memory=%dMB)\n", cfg.CPUs, cfg.MemoryMB)
 	start := time.Now()
+
+	// --timeout for start mode bounds the path to readiness (boot +
+	// token handshake). Once ready, the process stays in the
+	// foreground indefinitely — the VM lives and dies with it.
+	budget := newRunBudget(flagTimeout)
 
 	stateDir := daemon.SocketDir()
 	startProfile := cfgProfileName()
@@ -967,7 +991,16 @@ func cmdStart(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	if err := d.Start(ctx); err != nil {
+	bootCtx := ctx
+	if flagTimeout > 0 {
+		var bootCancel context.CancelFunc
+		bootCtx, bootCancel = context.WithTimeout(ctx, budget.window(time.Hour))
+		defer bootCancel()
+	}
+	if err := d.Start(bootCtx); err != nil {
+		if budget.expired() {
+			return dewerr.Newf(dewerr.CodeTimeout, "vm start: timed out after %s during boot (--timeout)", flagTimeout)
+		}
 		return err
 	}
 
@@ -980,7 +1013,7 @@ func cmdStart(args []string) error {
 	// not attempt count — see the cmdRun agent wait for why.
 	fmt.Fprintf(os.Stderr, "dew: waiting for guest agent\n")
 	tokenSent := false
-	tokenDeadline := time.Now().Add(30 * time.Second)
+	tokenDeadline := time.Now().Add(budget.window(30 * time.Second))
 	for {
 		if err := sendToken(d, cfg.VsockPort, token); err == nil {
 			tokenSent = true
@@ -992,6 +1025,13 @@ func cmdStart(args []string) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if !tokenSent {
+		// With an explicit budget, "not ready in time" is a hard
+		// failure the caller asked to be told about — stop the VM and
+		// exit with the timeout code instead of limping along.
+		if flagTimeout > 0 {
+			d.Stop(context.Background())
+			return dewerr.Newf(dewerr.CodeTimeout, "vm start: guest agent not ready within %s (--timeout) — run 'dew doctor' to check assets", flagTimeout)
+		}
 		fmt.Fprintf(os.Stderr, "dew: warning: token handshake failed, daemon may not work (run 'dew doctor' to check assets)\n")
 	}
 
@@ -1008,6 +1048,11 @@ func cmdStart(args []string) error {
 		fmt.Fprintf(os.Stderr, "dew: daemon: %v\n", err)
 	} else {
 		fmt.Fprintf(os.Stderr, "dew: daemon socket %s\n", dmn.SocketPath)
+		// Machine-readable ready marker (--json/--events): one NDJSON
+		// line on stdout once exec is actually available, so agents
+		// can wait on it instead of scraping stderr. Mirrors the
+		// `dew up` ready event pattern (see ready_event_test.go).
+		emitEvent("ready", startReadyEvent(dmn.SocketPath, os.Getpid(), startProfile, time.Since(start).Milliseconds()))
 	}
 	_ = vmstate.Write(stateDir, vmstate.State{
 		PID: os.Getpid(), Phase: vmstate.PhaseRunning, Mode: "start",

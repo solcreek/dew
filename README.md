@@ -35,6 +35,11 @@ npm install -g dew
 irm https://github.com/solcreek/dew/releases/latest/download/install.ps1 | iex
 ```
 
+> One-off try-out without installing: `npx dew run -- uname -a` works too.
+> Once dew is installed (brew, install.sh, or `npm install -g`), call `dew`
+> directly — `npx dew` always resolves the npm package and ignores the
+> binary already on your PATH, adding startup overhead on every call.
+
 Then try:
 
 ```bash

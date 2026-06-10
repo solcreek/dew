@@ -45,6 +45,28 @@ func TestReadyEvent_ShapeIsStable(t *testing.T) {
 	}
 }
 
+// `dew vm start --json/--events` emits its own ready event once the
+// daemon socket accepts connections — the agent contract for "exec is
+// available now". Pin the shape; fields are additive-only.
+func TestStartReadyEvent_ShapeIsStable(t *testing.T) {
+	got := startReadyEvent("/Users/x/.local/state/dew/default.sock", 4242, "standard", 1234)
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("start ready event won't marshal: %v", err)
+	}
+	out := string(b)
+	for _, must := range []string{
+		`"socket":"/Users/x/.local/state/dew/default.sock"`,
+		`"pid":4242`,
+		`"profile":"standard"`,
+		`"elapsed_ms":1234`,
+	} {
+		if !strings.Contains(out, must) {
+			t.Errorf("start ready event missing %s\nfull: %s", must, out)
+		}
+	}
+}
+
 // The timeout event has the same shape as ready (same fields) but
 // type:"timeout" — an agent can switch on type without parsing two
 // different structures.
