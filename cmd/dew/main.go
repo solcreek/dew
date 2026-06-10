@@ -268,6 +268,13 @@ func fetchAsset(url, dest, name, profile, expectedSHA string) (r struct {
 		return
 	}
 	tmp := dest + ".partial"
+	// dest may live in a directory that doesn't exist yet (e.g. a
+	// --kernel path pointing somewhere fresh); create it rather than
+	// failing the download with a confusing "no such file" error.
+	if err := os.MkdirAll(filepath.Dir(tmp), 0755); err != nil {
+		r.err = fmt.Errorf("create %s: %w", filepath.Dir(tmp), err)
+		return
+	}
 	out, err := os.Create(tmp)
 	if err != nil {
 		r.err = fmt.Errorf("create %s: %w", tmp, err)
@@ -891,18 +898,23 @@ func cmdStart(args []string) error {
 	// Remove stale socket from previous run
 	os.Remove(daemon.SocketPath(""))
 
-	// Wait for guest agent and inject auth token (retry until VM is ready)
+	// Wait for guest agent and inject auth token. Wall-clock deadline,
+	// not attempt count — see the cmdRun agent wait for why.
 	fmt.Fprintf(os.Stderr, "dew: waiting for guest agent\n")
 	tokenSent := false
-	for i := 0; i < 300; i++ { // up to 30s
+	tokenDeadline := time.Now().Add(30 * time.Second)
+	for {
 		if err := sendToken(d, cfg.VsockPort, token); err == nil {
 			tokenSent = true
+			break
+		}
+		if time.Now().After(tokenDeadline) {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	if !tokenSent {
-		fmt.Fprintf(os.Stderr, "dew: warning: token handshake failed, daemon may not work\n")
+		fmt.Fprintf(os.Stderr, "dew: warning: token handshake failed, daemon may not work (run 'dew doctor' to check assets)\n")
 	}
 
 	// Start daemon socket AFTER token is set (so clients can exec immediately).
@@ -977,31 +989,38 @@ func cmdRun(args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "dew: VM running (%s)\n", time.Since(start).Round(time.Millisecond))
 
+	// serialexec's reader goroutine starts draining the console from
+	// here on, so the guest never blocks on a full console pipe and
+	// readiness is latched as soon as the boot banner appears.
 	sExec := serialexec.New(hostReader, hostWriter)
 
 	// Wait for guest agent to come up on vsock, then send the auth
-	// token. Poll up to 60s — covers cold first-boot of any profile,
-	// where the guest's dew-agent may take a while to listen after
-	// VM start. Previous 10s+5s window was just enough for warm boot
-	// and failed cold every time.
+	// token. The wait is a wall-clock deadline, not an attempt count:
+	// a single connect attempt can eat seconds (or, against a guest
+	// with no vsock transport, would block forever without the bound
+	// in vsockConnectAttempt), so counting iterations measured nothing.
+	// 60s covers cold first-boot of any profile.
+	fmt.Fprintf(os.Stderr, "dew: waiting for guest agent\n")
 	const vsockReadySec = 60
+	agentDeadline := time.Now().Add(vsockReadySec * time.Second)
 	var tokenSent bool
-	for i := 0; i < vsockReadySec*10; i++ {
-		conn, err := connectVsock(d, cfg.VsockPort)
+	for {
+		remaining := time.Until(agentDeadline)
+		if remaining <= 0 {
+			break
+		}
+		conn, err := vsockConnectAttempt(d, cfg.VsockPort, remaining)
 		if err == nil {
 			req := vsockProto.SetTokenRequest{Type: vsockProto.TypeSetToken, Token: token}
 			vsockProto.WriteJSON(conn, &req)
 			var resp vsockProto.ConnectResponse
-			vsockProto.ReadJSON(conn, &resp)
+			vsockProto.ReadJSONTimeout(conn, &resp, 5*time.Second)
 			conn.Close()
 			tokenSent = resp.OK
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	// Kick the serial path in parallel as a fallback for guests that
-	// somehow don't bring up vsock (rare; older agent builds).
-	go func() { sExec.WaitReady(time.Duration(vsockReadySec) * time.Second) }()
 
 	// argv-or-shell decision: 2+ args → exec argv directly (no
 	// outer sh -c wrap). Single arg → shell-wrap so users can still
@@ -1036,7 +1055,7 @@ func cmdRun(args []string) error {
 		fmt.Fprintf(os.Stderr, "dew: vsock unavailable, using serial\n")
 		if err := sExec.WaitReady(60 * time.Second); err != nil {
 			d.Stop(context.Background())
-			return fmt.Errorf("guest not ready: %w", err)
+			return fmt.Errorf("guest not ready: %w — the guest may have failed to boot (kernel/initramfs mismatch?); run 'dew doctor' to check assets", err)
 		}
 		output, exitCode, serr := sExec.Run(cmd)
 		if serr != nil {
@@ -1359,11 +1378,16 @@ func cmdUp(args []string) error {
 	bootMs := time.Since(start).Milliseconds()
 	emit(map[string]interface{}{"type": "boot", "status": "ready", "elapsed_ms": bootMs})
 
-	// Wait for agent + inject token
+	// Wait for agent + inject token. Wall-clock deadline, not attempt
+	// count — see the cmdRun agent wait for why.
 	tokenSent := false
-	for i := 0; i < 300; i++ {
+	tokenDeadline := time.Now().Add(30 * time.Second)
+	for {
 		if err := sendToken(d, cfg.VsockPort, token); err == nil {
 			tokenSent = true
+			break
+		}
+		if time.Now().After(tokenDeadline) {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -1962,8 +1986,12 @@ func execVsockExec(conn net.Conn, token, command string, args []string, timeout 
 	if err := vsockProto.WriteJSON(conn, &req); err != nil {
 		return nil, err
 	}
+	// The agent enforces the exec timeout guest-side (default 30s) and
+	// always replies, so the host bound below only fires when the agent
+	// or transport died mid-exec: guest budget plus grace, never a
+	// blocking read with no way out.
 	var resp vsockProto.ExecResponse
-	if err := vsockProto.ReadJSON(conn, &resp); err != nil {
+	if err := vsockProto.ReadJSONTimeout(conn, &resp, hostReadBudget(timeout)); err != nil {
 		return nil, err
 	}
 	return &RunResult{
@@ -1971,6 +1999,21 @@ func execVsockExec(conn net.Conn, token, command string, args []string, timeout 
 		Stdout:   resp.Stdout,
 		Stderr:   resp.Stderr,
 	}, nil
+}
+
+// hostReadGrace is how much longer than the guest's exec budget the
+// host waits for the response before declaring the agent dead. A var,
+// not a const, so tests can shrink it.
+var hostReadGrace = 15 * time.Second
+
+// hostReadBudget converts a guest exec timeout into the host-side
+// read deadline for the response: the guest's budget (agent default
+// 30s when unset) plus grace for scheduling and transport.
+func hostReadBudget(guestTimeout time.Duration) time.Duration {
+	if guestTimeout <= 0 {
+		guestTimeout = 30 * time.Second
+	}
+	return guestTimeout + hostReadGrace
 }
 
 func sendToken(v vm.VM, port uint32, token string) error {
@@ -1984,7 +2027,7 @@ func sendToken(v vm.VM, port uint32, token string) error {
 		return fmt.Errorf("send token: %w", err)
 	}
 	var resp vsockProto.ConnectResponse
-	if err := vsockProto.ReadJSON(conn, &resp); err != nil {
+	if err := vsockProto.ReadJSONTimeout(conn, &resp, 5*time.Second); err != nil {
 		return fmt.Errorf("token response: %w", err)
 	}
 	if !resp.OK {
@@ -1994,16 +2037,67 @@ func sendToken(v vm.VM, port uint32, token string) error {
 }
 
 func connectVsock(v vm.VM, port uint32) (net.Conn, error) {
-	var conn net.Conn
-	var err error
-	for i := 0; i < 500; i++ {
-		conn, err = v.VsockConnect(port)
+	return connectVsockDeadline(v, port, 5*time.Second)
+}
+
+// connectVsockDeadline retries vsock connects until the wall-clock
+// deadline. The bound is total elapsed time, NOT attempt count — the
+// previous 500×10ms loop assumed each attempt fails fast, but a vz
+// connect against a guest with no vsock transport blocks (the
+// completion handler never fires), which turned "5 seconds" into
+// "forever" and `dew run` into a process that hangs until killed.
+func connectVsockDeadline(v vm.VM, port uint32, total time.Duration) (net.Conn, error) {
+	deadline := time.Now().Add(total)
+	var lastErr error
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			if lastErr == nil {
+				lastErr = fmt.Errorf("no attempt completed")
+			}
+			return nil, fmt.Errorf("vsock connect: guest agent not reachable within %s: %w", total, lastErr)
+		}
+		conn, err := vsockConnectAttempt(v, port, remaining)
 		if err == nil {
 			return conn, nil
 		}
+		lastErr = err
 		time.Sleep(10 * time.Millisecond)
 	}
-	return nil, err
+}
+
+// vsockConnectAttempt bounds a single VsockConnect call. The darwin
+// backend bounds its own connects too; this layer exists so the CLI's
+// deadlines hold for any vm.VM implementation (and so the behavior is
+// unit-testable with a fake VM, no Virtualization.framework needed).
+func vsockConnectAttempt(v vm.VM, port uint32, timeout time.Duration) (net.Conn, error) {
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		conn, err := v.VsockConnect(port)
+		ch <- result{conn, err}
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return nil, r.err
+		}
+		return r.conn, nil
+	case <-timer.C:
+		go func() {
+			// Close only on success: a failed dial may carry a
+			// typed-nil conn whose Close() would panic.
+			if r := <-ch; r.err == nil && r.conn != nil {
+				r.conn.Close()
+			}
+		}()
+		return nil, fmt.Errorf("vsock connect: no response within %s", timeout)
+	}
 }
 
 func parseForward(s string) (vm.PortForward, error) {

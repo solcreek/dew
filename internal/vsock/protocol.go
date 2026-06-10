@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"time"
 )
 
 const (
@@ -110,4 +112,23 @@ func ReadJSON(r io.Reader, v any) error {
 		return fmt.Errorf("read payload: %w", err)
 	}
 	return json.Unmarshal(data, v)
+}
+
+// ReadJSONTimeout reads one length-prefixed JSON message, giving up
+// after timeout. The vz-backed vsock conns can't be relied on to honor
+// SetReadDeadline, so cancellation works by closing the conn — which
+// unblocks the pending read and makes the conn unusable afterwards.
+// Callers that hit the timeout must treat the connection as dead.
+func ReadJSONTimeout(conn net.Conn, v any, timeout time.Duration) error {
+	done := make(chan error, 1)
+	go func() { done <- ReadJSON(conn, v) }()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		conn.Close()
+		return fmt.Errorf("vsock read: no response within %s", timeout)
+	}
 }

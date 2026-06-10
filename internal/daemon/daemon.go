@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/solcreek/dew/internal/vm"
 	vsockProto "github.com/solcreek/dew/internal/vsock"
@@ -380,8 +381,16 @@ func (s *State) handleExec(conn net.Conn, req ExecRequest) {
 			}
 		}
 	} else {
+		// The agent enforces the exec timeout guest-side and always
+		// replies; the host bound (guest budget + grace) only fires
+		// when the agent or transport died mid-exec, so `dew exec`
+		// reports an error instead of hanging its caller.
+		guestBudget := 30 * time.Second
+		if req.TimeoutMs > 0 {
+			guestBudget = time.Duration(req.TimeoutMs) * time.Millisecond
+		}
 		var resp vsockProto.ExecResponse
-		if err := vsockProto.ReadJSON(vsockConn, &resp); err != nil {
+		if err := vsockProto.ReadJSONTimeout(vsockConn, &resp, guestBudget+15*time.Second); err != nil {
 			json.NewEncoder(conn).Encode(map[string]string{"error": err.Error()})
 			return
 		}

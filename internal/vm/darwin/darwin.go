@@ -333,18 +333,72 @@ func (d *DarwinVM) State() vm.State {
 	return d.state
 }
 
-func (d *DarwinVM) VsockConnect(port uint32) (net.Conn, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+// vsockConnectTimeout bounds a single vz socket connect. vz's
+// VirtioSocketDevice.Connect never returns when the guest has no vsock
+// transport at all (e.g. the virtio module failed to load): the
+// completion handler simply never fires, so without a bound here every
+// caller up the stack hangs forever. A healthy guest accepts or refuses
+// within milliseconds; 5s is generous.
+const vsockConnectTimeout = 5 * time.Second
 
-	if d.machine == nil {
+func (d *DarwinVM) VsockConnect(port uint32) (net.Conn, error) {
+	// Snapshot the machine under RLock but do NOT hold the lock across
+	// the blocking Connect call: an abandoned connect goroutine that
+	// held the RLock would deadlock Stop (which needs the write lock).
+	d.mu.RLock()
+	machine := d.machine
+	d.mu.RUnlock()
+
+	if machine == nil {
 		return nil, fmt.Errorf("dew: VM not running")
 	}
-	devices := d.machine.SocketDevices()
+	devices := machine.SocketDevices()
 	if len(devices) == 0 {
 		return nil, fmt.Errorf("dew: VM has no vsock devices")
 	}
-	return devices[0].Connect(port)
+	return connectWithTimeout(func() (net.Conn, error) {
+		conn, err := devices[0].Connect(port)
+		if err != nil {
+			// Return a true nil interface: passing the typed-nil
+			// *VirtioSocketConnection through net.Conn makes
+			// `conn != nil` true for callers and Close() panics.
+			return nil, err
+		}
+		return conn, nil
+	}, vsockConnectTimeout)
+}
+
+// connectWithTimeout runs dial in a goroutine and abandons it after
+// timeout. The abandoned goroutine holds no locks; if the dial ever
+// completes late, its conn is closed so the fd doesn't leak.
+func connectWithTimeout(dial func() (net.Conn, error), timeout time.Duration) (net.Conn, error) {
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		conn, err := dial()
+		ch <- result{conn, err}
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return nil, r.err
+		}
+		return r.conn, nil
+	case <-timer.C:
+		go func() {
+			// Close only on success: a failed dial may carry a
+			// typed-nil conn whose Close() would panic.
+			if r := <-ch; r.err == nil && r.conn != nil {
+				r.conn.Close()
+			}
+		}()
+		return nil, fmt.Errorf("vsock connect: guest did not respond within %s", timeout)
+	}
 }
 
 func (d *DarwinVM) WaitForState(ctx context.Context, target vm.State) error {
