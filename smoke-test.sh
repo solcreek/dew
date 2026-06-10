@@ -6,9 +6,13 @@ set -uo pipefail
 #
 # Usage: ./smoke-test.sh [kernel] [initramfs-dir]
 
-DEW="$(cd "$(dirname "$0")" && pwd)/dew"
-KERNEL="${1:-$(dirname "$0")/initramfs/vmlinuz}"
-INITRD_DIR="${2:-$(dirname "$0")/initramfs}"
+# Absolute paths throughout: the `dew up` tests cd into temp project
+# dirs, where a relative ./initramfs/vmlinuz silently stops existing
+# and dew tries (and fails) to re-download assets into the project.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DEW="$SCRIPT_DIR/dew"
+KERNEL="${1:-$SCRIPT_DIR/initramfs/vmlinuz}"
+INITRD_DIR="${2:-$SCRIPT_DIR/initramfs}"
 PASS=0
 FAIL=0
 SKIP=0
@@ -71,8 +75,11 @@ if [ -f "$INITRD_MIN" ] && [ -f "$KERNEL" ]; then
         --network --forward 19876:9876 2>/dev/null &
     PID=$!
     for i in $(seq 1 60); do [ -S ~/.local/state/dew/default.sock ] && break; sleep 0.5; done
-    # Start a simple listener inside VM
-    $DEW exec "echo 'HTTP/1.0 200 OK\r\n\r\nsmoke-port' | nc -l -p 9876 &" 2>/dev/null
+    # Start a simple listener inside VM. printf, not echo: busybox
+    # echo's backslash-escape handling is a compile-time option, and
+    # without expansion curl never sees the CRLF header terminator and
+    # times out waiting for the response to complete.
+    $DEW exec "printf 'HTTP/1.0 200 OK\r\n\r\nsmoke-port' | nc -l -p 9876 &" 2>/dev/null
     sleep 1
     RESULT=$(curl -s --max-time 3 http://localhost:19876/ 2>/dev/null)
     kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -f ~/.local/state/dew/default.sock
@@ -90,7 +97,9 @@ INITRD_MIN="$INITRD_DIR/initramfs-minimal.cpio.gz"
 if [ -f "$INITRD_MIN" ] && [ -f "$KERNEL" ]; then
     RESULT=$($DEW run --kernel "$KERNEL" --initrd "$INITRD_MIN" \
         -- "ip link show eth0 2>&1" 2>/dev/null)
-    if echo "$RESULT" | grep -q "does not exist\|not found\|No such"; then
+    # busybox `ip` says "can't find device"; iproute2 says "does not
+    # exist" — accept both so the assertion survives initramfs rebuilds.
+    if echo "$RESULT" | grep -q "does not exist\|not found\|No such\|can't find"; then
         test_result "network isolation (no NIC)" "pass"
     elif [ -z "$RESULT" ]; then
         test_result "network isolation (no NIC)" "pass"
@@ -105,11 +114,17 @@ fi
 INITRD_NODE="$INITRD_DIR/initramfs-node.cpio.gz"
 if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ]; then
     rm -f ~/.local/state/dew/default.sock ~/.local/share/dew/node.img
-    # First boot
+    # First boot. Poll for node: the CI-built initramfs bakes it
+    # (immediate), the Darwin-local build installs it on first boot
+    # (apk, needs network + time) — the test must pass with either.
     $DEW start --profile node --kernel "$KERNEL" --initrd "$INITRD_NODE" --network 2>/dev/null &
     PID=$!
     for i in $(seq 1 120); do [ -S ~/.local/state/dew/default.sock ] && break; sleep 0.5; done
-    $DEW exec "node --version" 2>/dev/null
+    for i in $(seq 1 45); do
+        NODE_V=$($DEW exec "node --version" 2>/dev/null)
+        [ -n "$NODE_V" ] && break
+        sleep 2
+    done
     kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -f ~/.local/state/dew/default.sock; sleep 1
     # Second boot
     $DEW start --profile node --kernel "$KERNEL" --initrd "$INITRD_NODE" --network 2>/dev/null &
@@ -314,6 +329,55 @@ if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ] && command -v npm >/dev/null 2>&1; 
     rm -rf "$PROJ"
 else
     test_result "dew up: sharp triggers build tools" "skip"
+fi
+
+# --- Test 6d: hang guard — a mute guest errors out, never hangs ---
+# Regression guard for the `dew run` lockup: against a guest with no
+# vsock transport (vz's connect completion handler never fires) and no
+# serial shell, `dew run` used to block forever. Boot a deliberately
+# mute init and assert dew gives up with a non-zero exit within the
+# documented deadlines (60s vsock wait + 60s serial wait + slack).
+if [ -f "$KERNEL" ] && command -v go >/dev/null 2>&1; then
+    MUTE_DIR=$(mktemp -d /tmp/dew-smoke-mute.XXXXXX)
+    case "$(uname -m)" in
+        arm64|aarch64) MUTE_ARCH=arm64 ;;
+        *)             MUTE_ARCH=amd64 ;;
+    esac
+    (cd "$(dirname "$0")" && CGO_ENABLED=0 GOOS=linux GOARCH=$MUTE_ARCH \
+        go build -ldflags="-s -w" -o "$MUTE_DIR/init" ./test/mute-init/) 2>/dev/null
+    if [ -x "$MUTE_DIR/init" ]; then
+        (cd "$MUTE_DIR" && echo init | cpio -o -H newc 2>/dev/null | gzip > mute.cpio.gz)
+        START_S=$(date +%s)
+        $DEW run --kernel "$KERNEL" --initrd "$MUTE_DIR/mute.cpio.gz" \
+            -- echo hang-guard >/dev/null 2>&1 &
+        RUNPID=$!
+        # Watchdog: if the hang regresses, fail the test instead of
+        # hanging the whole suite.
+        HUNG=0
+        for i in $(seq 1 160); do
+            kill -0 $RUNPID 2>/dev/null || break
+            sleep 1
+        done
+        if kill -0 $RUNPID 2>/dev/null; then
+            HUNG=1
+            kill -9 $RUNPID 2>/dev/null
+        fi
+        wait $RUNPID 2>/dev/null
+        RC=$?
+        ELAPSED_S=$(($(date +%s)-START_S))
+        if [ "$HUNG" = "0" ] && [ "$RC" -ne 0 ]; then
+            test_result "hang guard: mute guest errors in ${ELAPSED_S}s (rc=$RC)" "pass"
+        elif [ "$HUNG" = "1" ]; then
+            test_result "hang guard: mute guest still hung after ${ELAPSED_S}s" "fail"
+        else
+            test_result "hang guard: mute guest exited 0 (want non-zero)" "fail"
+        fi
+    else
+        test_result "hang guard: mute guest (fixture build failed)" "skip"
+    fi
+    rm -rf "$MUTE_DIR"
+else
+    test_result "hang guard: mute guest" "skip"
 fi
 
 # --- Test 7: Detect (unit-level) ---
