@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.38] - 2026-06-10
+
+### Fixed
+
+- **`dew run` no longer hangs against an unresponsive guest.** vz's
+  vsock connect never returns when the guest has no vsock transport
+  (e.g. a kernel/initramfs module mismatch); `dew run` blocked on it
+  indefinitely — in pipe mode an agent saw zero output until it
+  killed the process. Every host-side wait is now bounded by a
+  wall-clock deadline (vsock connect, token handshake, exec response,
+  serial fallback), failures point at `dew doctor`, and a vz
+  typed-nil conn no longer panics the reaper. The serial fallback
+  also stops racing two readers on one console and no longer leaks
+  boot logs into captured stdout.
+- **Second boot of a disk profile no longer kernel-panics after an
+  abrupt stop.** First-boot writes (rootfs populate, runtime
+  install) sat in the guest page cache; tearing the VM down lost
+  them, leaving zero-length `/bin/busybox`/`ld-musl` on disk and
+  `switch_root: Exec format error` on every later boot. The init
+  scripts now `sync` after populate and after first-boot installs.
+- Asset download creates the destination directory instead of
+  failing with "no such file or directory" when `--kernel` points
+  somewhere fresh.
+
+### Added
+
+- **`dew run --timeout DUR`**: one wall-clock budget for the whole
+  run (boot + agent wait + exec). On expiry the VM is stopped and
+  dew exits with code 104. Without the flag, behavior is unchanged.
+- **`dew vm start --timeout DUR`** bounds the path to readiness, and
+  **`--json`/`--events`** emit a one-line NDJSON ready event
+  (`{"type":"ready","socket",...,"pid","profile","elapsed_ms"}`)
+  on stdout once `dew exec` is available; the guest console moves to
+  stderr in these modes so stdout stays parseable.
+- **`dew vm status` sees transient states**: while a VM is booting
+  (or an ephemeral `dew run` is in flight — it never opens a daemon
+  socket) status reports it, with `phase`/`pid`/`mode`/`profile`/
+  `started_at` in `--json`. Crash leftovers (dead PID) are ignored
+  and cleaned up.
+- Smoke test hang guard: a deliberately mute guest must produce a
+  bounded non-zero exit, never a hang.
+
+### Changed
+
+- Install docs recommend `npm install -g dew` over `npx dew` — npx
+  always resolves the npm package and ignores an installed dew on
+  PATH, adding dispatcher overhead on every call.
+
 ## [0.7.37] - 2026-06-06
 
 ### Fixed
