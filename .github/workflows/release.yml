@@ -280,30 +280,18 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
-      - name: goreleaser
-        # Pin to @v6 — @v7's self-verify step has broken on tags before.
-        # distribution: goreleaser-pro unlocks `prebuilt` builder used for
-        # the signed + notarized darwin binaries (Startup tier license,
-        # paid via Stripe — see https://goreleaser.com/pro/).
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          distribution: goreleaser-pro
-          version: "~> v2"
-          args: release --clean
+      - name: Stage auxiliary assets for goreleaser
+        # checksum.extra_files + release.extra_files in .goreleaser.yaml
+        # both glob prebuilt/aux/* — goreleaser uploads these alongside
+        # the release AND folds their SHA256 into the cosign-signed
+        # checksums.txt. Explicit list (not *) so internal files like
+        # assets-shas.txt can never leak into the release. prebuilt/ is
+        # untracked, which goreleaser's dirty check (diff-index) ignores.
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ steps.tap-token.outputs.token }}
-          GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
-
-      - name: Upload auxiliary assets to the goreleaser-created release
-        # initramfs / kernel / dew-agent / dew-windows / dew-rootfs aren't
-        # part of the goreleaser archives — upload them alongside the
-        # release goreleaser just created.
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARTIFACTS: ${{ runner.temp }}/artifacts
         run: |
-          gh release upload "$GITHUB_REF_NAME" \
+          mkdir -p prebuilt/aux
+          cp \
             "$ARTIFACTS/linux-assets/vmlinuz-aarch64" \
             "$ARTIFACTS/linux-assets/initramfs-minimal-aarch64.cpio.gz" \
             "$ARTIFACTS/linux-assets/initramfs-node-aarch64.cpio.gz" \
@@ -318,7 +306,23 @@ jobs:
             "$ARTIFACTS/linux-assets/initramfs-standard-x86_64.cpio.gz" \
             "$ARTIFACTS/linux-assets/dew-rootfs-x86_64.tar.gz" \
             "$ARTIFACTS/linux-assets/dew-rootfs-aarch64.tar.gz" \
-            --clobber
+            prebuilt/aux/
+          ls -la prebuilt/aux/
+
+      - name: goreleaser
+        # Pin to @v6 — @v7's self-verify step has broken on tags before.
+        # distribution: goreleaser-pro unlocks `prebuilt` builder used for
+        # the signed + notarized darwin binaries (Startup tier license,
+        # paid via Stripe — see https://goreleaser.com/pro/).
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser-pro
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ steps.tap-token.outputs.token }}
+          GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
 
       - name: Bump brew formula on tap (custom — bypasses goreleaser brew)
         # Goreleaser's brews block hits 403 on POST /git/refs despite the

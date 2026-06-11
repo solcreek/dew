@@ -68,6 +68,14 @@ archives:
 
 checksum:
   name_template: "checksums.txt"
+  # Pro feature: fold the auxiliary assets (kernel, initramfs profiles,
+  # guest agent, windows wrappers, WSL rootfs) into checksums.txt, so
+  # the cosign signature below transitively covers EVERY release asset
+  # — previously only the CLI tarballs were pinned and the aux assets
+  # relied on the dew binary's embedded manifest alone. The release
+  # workflow stages them under prebuilt/aux/ before goreleaser runs.
+  extra_files:
+    - glob: prebuilt/aux/*
 
 # Keyless cosign signing for checksums.txt. Signs the bytes that pin
 # every binary's SHA256 — verifying one signature transitively covers
@@ -127,6 +135,12 @@ release:
   draft: false
   prerelease: auto
   name_template: "v{{.Version}}"
+  # Upload the auxiliary assets with the release itself — the same
+  # staged set that checksum.extra_files covers above. Replaces the
+  # workflow's separate `gh release upload` step, so the asset list
+  # and the checksum list can't drift apart.
+  extra_files:
+    - glob: prebuilt/aux/*
   header: |
     `dew` {{ .Tag }} — ultra-lightweight VM + deploy tool.
 
