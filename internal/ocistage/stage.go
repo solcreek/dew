@@ -174,7 +174,7 @@ func Stage(ctx context.Context, ref string, opts Options) (*Bundle, error) {
 	if mErr != nil {
 		return nil, fmt.Errorf("marshal OCI spec: %w", mErr)
 	}
-	if err := os.WriteFile(filepath.Join(opts.StageDir, "config.json"), specBytes, 0o644); err != nil {
+	if err := writeFileAtomic(filepath.Join(opts.StageDir, "config.json"), specBytes, 0o644); err != nil {
 		return nil, err
 	}
 
