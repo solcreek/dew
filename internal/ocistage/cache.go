@@ -2,6 +2,8 @@ package ocistage
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -67,7 +69,7 @@ func resolveDigest(ctx context.Context, ref string, plat *v1.Platform, cacheRoot
 		return ref[i+1:], nil
 	}
 	refsDir := filepath.Join(cacheRoot, "refs")
-	cachePath := filepath.Join(refsDir, sanitize(plat.String()+"_"+ref)+".json")
+	cachePath := filepath.Join(refsDir, refCacheFile(plat, ref))
 
 	var rec refRecord
 	haveRec := false
@@ -186,7 +188,11 @@ func linkOrCopy(src, dst string) error {
 	return out.Close()
 }
 
-// sanitize makes a registry ref safe as a filename.
-func sanitize(s string) string {
-	return strings.NewReplacer("/", "_", ":", "_", "@", "_", " ", "_").Replace(s)
+// refCacheFile returns a collision-resistant filename for the tag→digest record
+// of (platform, ref). A plain character substitution is lossy — e.g.
+// "a/b_c:tag" and "a_b/c:tag" would map to the same name and cross-contaminate
+// each other's digest — so key on a stable hash of the exact platform+ref.
+func refCacheFile(plat *v1.Platform, ref string) string {
+	sum := sha256.Sum256([]byte(plat.String() + "\x00" + ref))
+	return hex.EncodeToString(sum[:]) + ".json"
 }

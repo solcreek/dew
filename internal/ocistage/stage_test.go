@@ -128,6 +128,21 @@ func TestResolveDigest_PinnedNeedsNoNetwork(t *testing.T) {
 
 // When the registry is unreachable, a previously resolved (even stale) digest
 // must be reused so an already-cached rootfs can still be staged offline.
+// Refs that a lossy character substitution would have collided must map to
+// distinct ref-cache files, or one ref's digest cross-contaminates the other.
+func TestRefCacheFile_NoCollision(t *testing.T) {
+	plat := &v1.Platform{OS: "linux", Architecture: "arm64"}
+	a := refCacheFile(plat, "docker.io/a/b_c:tag")
+	b := refCacheFile(plat, "docker.io/a_b/c:tag")
+	if a == b {
+		t.Fatalf("distinct refs collided to the same ref-cache file: %s", a)
+	}
+	// Same ref+platform must be stable across calls.
+	if refCacheFile(plat, "docker.io/a/b_c:tag") != a {
+		t.Fatal("refCacheFile is not stable for the same input")
+	}
+}
+
 func TestResolveDigest_OfflineFallsBackToStaleRecord(t *testing.T) {
 	cacheRoot := t.TempDir()
 	plat := &v1.Platform{OS: "linux", Architecture: "arm64"}
@@ -141,7 +156,7 @@ func TestResolveDigest_OfflineFallsBackToStaleRecord(t *testing.T) {
 	// Stale record (well past the TTL).
 	rec := refRecord{Digest: "sha256:stale", Unix: time.Now().Add(-24 * time.Hour).Unix()}
 	b, _ := json.Marshal(rec)
-	path := filepath.Join(refsDir, sanitize(plat.String()+"_"+ref)+".json")
+	path := filepath.Join(refsDir, refCacheFile(plat, ref))
 	if err := os.WriteFile(path, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +179,7 @@ func TestRefCacheRoundTrip(t *testing.T) {
 	// Pre-seed a fresh ref record; resolveDigest should return it without network.
 	rec := refRecord{Digest: "sha256:cached", Unix: time.Now().Unix()}
 	b, _ := json.Marshal(rec)
-	path := filepath.Join(refsDir, sanitize(plat.String()+"_docker.io/library/redis:7")+".json")
+	path := filepath.Join(refsDir, refCacheFile(plat, "docker.io/library/redis:7"))
 	if err := os.WriteFile(path, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
