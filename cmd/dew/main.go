@@ -721,7 +721,12 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 		CmdLine:  "console=hvc0",
 	}
 	var remaining []string
-	flagTimeout = 0 // reset: parseFlags runs once per command, but tests reuse the process
+	// Reset command-scoped globals: parseFlags runs once per command, but tests
+	// reuse the process, so a prior --image/--platform/--timeout must not leak
+	// into a later invocation that didn't pass them.
+	flagTimeout = 0
+	flagImage = ""
+	flagPlatform = ""
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
