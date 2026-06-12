@@ -64,6 +64,25 @@ func TestOCISpec_CmdOverrideAndBind(t *testing.T) {
 	}
 }
 
+func TestOCISpec_HonorsImageUser(t *testing.T) {
+	cases := []struct {
+		user             string
+		wantUID, wantGID int
+	}{
+		{"", 0, 0},
+		{"1000", 1000, 1000},
+		{"1000:2000", 1000, 2000},
+		{"postgres", 0, 0}, // non-numeric name → root (no /etc/passwd resolution)
+	}
+	for _, tc := range cases {
+		spec := ociSpec(v1.Config{User: tc.user}, "/r", nil, nil, nil)
+		u := spec["process"].(map[string]any)["user"].(map[string]any)
+		if u["uid"] != tc.wantUID || u["gid"] != tc.wantGID {
+			t.Errorf("User %q -> uid=%v gid=%v, want uid=%d gid=%d", tc.user, u["uid"], u["gid"], tc.wantUID, tc.wantGID)
+		}
+	}
+}
+
 func TestOCISpec_DefaultArgsAndEnv(t *testing.T) {
 	spec := ociSpec(v1.Config{}, "/r", nil, nil, nil)
 	proc := spec["process"].(map[string]any)
