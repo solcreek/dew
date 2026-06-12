@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/crane"
+	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
@@ -110,9 +111,19 @@ func Stage(ctx context.Context, ref string, opts Options) (*Bundle, error) {
 			n = fi.Size()
 		}
 	} else {
-		img, perr := crane.Pull(ref, pullOpts(ctx, plat)...)
+		// Pull by the digest we already resolved, not the mutable tag, so the
+		// bytes we fetch are exactly the ones keyed in the cache (no TOCTOU if
+		// the tag is repushed between resolve and pull). Falls back to the raw
+		// ref when the digest is unknown (resolve failed).
+		pullRef := ref
+		if digest != "" {
+			if r, perr := name.ParseReference(ref); perr == nil {
+				pullRef = r.Context().Name() + "@" + digest
+			}
+		}
+		img, perr := crane.Pull(pullRef, pullOpts(ctx, plat)...)
 		if perr != nil {
-			return nil, fmt.Errorf("pull %s: %w", ref, perr)
+			return nil, fmt.Errorf("pull %s: %w", pullRef, perr)
 		}
 		cf, cerr := img.ConfigFile()
 		if cerr != nil {
