@@ -175,18 +175,24 @@ func (d *DarwinVM) configureDisk(config *vz.VirtualMachineConfiguration) error {
 	}
 	// macOS 26 VZ rejects the basic NewDiskImageStorageDeviceAttachment
 	// constructor with VZErrorDomain Code=2 "storage device attachment is
-	// invalid" — config.Validate() refuses an attachment without
-	// explicit caching + sync metadata. The WithCacheAndSync variant
-	// (macOS 12+) lets us pass both. We pick the conservative defaults:
-	//   - Automatic caching: lets the host decide, matches pre-macOS-26 behavior
-	//   - Full synchronization: every guest flush is an fsync — safest,
-	//     matches what the basic constructor implicitly did before
-	// dew already requires macOS 13+ (checked in doctor), so the macOS 12
-	// availability gate of WithCacheAndSync is always satisfied.
+	// invalid" — config.Validate() refuses an attachment without explicit
+	// caching + sync metadata. The WithCacheAndSync variant (macOS 12+) lets
+	// us pass both; dew already requires macOS 13+ (checked in doctor), so the
+	// availability gate is always satisfied.
+	//
+	// We pick Cached + Fsync, not the default Automatic + Full. Full sync maps
+	// to F_FULLFSYNC on macOS/APFS, which forces every guest flush all the way
+	// to physical media — heavy fsync workloads (image-layer unpack, npm
+	// install, db writes, first-boot rootfs populate) crawl (~350 KB/s even on
+	// a 17 MB/s link). Fsync uses a regular fsync() — data stays safe against a
+	// guest crash; only an abrupt host power loss risks the last unflushed
+	// writes — and Cached lets the host page cache absorb the writes. Measured
+	// ~22× faster (350 KB/s → 7.8 MB/s). This is the standard dev-VM trade-off
+	// (Lima/Colima do the same).
 	attachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(
 		d.cfg.DiskPath, false,
-		vz.DiskImageCachingModeAutomatic,
-		vz.DiskImageSynchronizationModeFull,
+		vz.DiskImageCachingModeCached,
+		vz.DiskImageSynchronizationModeFsync,
 	)
 	if err != nil {
 		return fmt.Errorf("disk attach: %w", err)

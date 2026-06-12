@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **~22× faster guest disk I/O.** The VM disk is now attached Cached+Fsync
+  (was Automatic+Full); Full sync mapped to `F_FULLFSYNC` on macOS/APFS and
+  forced every guest flush all the way to physical media. Heavy-fsync
+  workloads (image-layer unpack, `npm install`, db writes, first-boot rootfs
+  populate) measured ~350 KB/s → ~7.8 MB/s. Committed data stays safe against
+  a guest crash (fsync still honored); only an abrupt host power loss risks the
+  last unflushed writes — the standard dev-VM trade-off (Lima/Colima do the same).
 - **`dew up --with` services now run via `crun`, not containerd/nerdctl.**
   Images are pulled on the host and run in the guest through a 2.8MB static
   `crun` over overlayfs. `--with` no longer forces the `standard` profile —
