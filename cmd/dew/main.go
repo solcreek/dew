@@ -49,6 +49,7 @@ var flagJSON bool
 var flagStream bool
 var flagEvents bool
 var flagWith string
+var flagImage string
 var flagDryRun bool
 var flagProfile string
 
@@ -856,6 +857,12 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, fmt.Errorf("--with requires service names (e.g. postgres,redis)")
 			}
 			flagWith = args[i]
+		case "--image":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--image requires an OCI image reference (e.g. docker.io/library/redis:7-alpine)")
+			}
+			flagImage = args[i]
 		case "--stream":
 			flagStream = true
 		case "--events":
@@ -1079,11 +1086,37 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
+	// --image runs the container via crun overlay, which needs an ext4 disk.
+	// Default to the node profile when the user didn't pick a disk profile.
+	if flagImage != "" && (flagProfile == "" || flagProfile == "minimal") {
+		flagProfile = "node"
+	}
 	if err := resolveAssets(&cfg); err != nil {
 		return err
 	}
+
+	// --image <ref>: pull+stage an arbitrary OCI image on the host, share its
+	// bundle at /oci-stage, and run it in the guest via crun (dew-oci-run). Any
+	// `-- <cmd>` overrides the image entrypoint. Foreground so output streams
+	// and the container's exit code propagates.
+	if flagImage != "" {
+		stageRoot := filepath.Join(dewDataDir(), "oci-stage", strconv.Itoa(os.Getpid()))
+		os.RemoveAll(stageRoot)
+		defer os.RemoveAll(stageRoot)
+		fmt.Fprintf(os.Stderr, "dew: staging image %s\n", flagImage)
+		if _, err := ocistage.Stage(context.Background(), flagImage, ocistage.Options{
+			StageDir: filepath.Join(stageRoot, "app"),
+			Name:     "app",
+			Cmd:      cmdArgs,
+		}); err != nil {
+			return fmt.Errorf("stage image: %w", err)
+		}
+		cfg.SharedDirs = append(cfg.SharedDirs, vm.SharedDir{Tag: "oci-stage", HostPath: stageRoot, ReadOnly: true})
+		cmdArgs = []string{"dew-oci-run", "/oci-stage/app", "app"}
+	}
+
 	if len(cmdArgs) == 0 {
-		return fmt.Errorf("no command specified (use -- <cmd>)")
+		return fmt.Errorf("no command specified (use -- <cmd> or --image <ref>)")
 	}
 
 	// Always enable vsock for run mode
