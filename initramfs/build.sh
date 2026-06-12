@@ -430,6 +430,11 @@ if [ -z "$BUNDLE" ] || [ -z "$NAME" ]; then
     echo "usage: dew-oci-run [--detach] [--data hostpath:contpath] <bundle-dir> <name>" >&2
     exit 2
 fi
+# NAME is interpolated into RUN=/var/lib/dew/oci/$NAME and then `rm -rf`'d, so
+# reject anything but a plain container id — no path separators or traversal.
+case "$NAME" in
+    *[!a-zA-Z0-9_-]*) echo "dew-oci-run: invalid name '$NAME' (allowed: a-z A-Z 0-9 _ -)" >&2; exit 2 ;;
+esac
 
 RUN="/var/lib/dew/oci/$NAME"
 # Idempotent cleanup: a previous run of the same NAME may have left a crun
