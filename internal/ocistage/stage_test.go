@@ -124,6 +124,34 @@ func TestResolveDigest_PinnedNeedsNoNetwork(t *testing.T) {
 	}
 }
 
+// When the registry is unreachable, a previously resolved (even stale) digest
+// must be reused so an already-cached rootfs can still be staged offline.
+func TestResolveDigest_OfflineFallsBackToStaleRecord(t *testing.T) {
+	cacheRoot := t.TempDir()
+	plat := &v1.Platform{OS: "linux", Architecture: "arm64"}
+	// Unreachable registry (connection refused, fails fast) and a tag, so
+	// resolveDigest must hit crane.Digest and then fall back.
+	ref := "127.0.0.1:1/x/y:tag"
+	refsDir := filepath.Join(cacheRoot, "refs")
+	if err := os.MkdirAll(refsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Stale record (well past the TTL).
+	rec := refRecord{Digest: "sha256:stale", Unix: time.Now().Add(-24 * time.Hour).Unix()}
+	b, _ := json.Marshal(rec)
+	path := filepath.Join(refsDir, sanitize(plat.String()+"_"+ref)+".json")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveDigest(context.Background(), ref, plat, cacheRoot, false)
+	if err != nil {
+		t.Fatalf("expected stale-digest fallback, got error: %v", err)
+	}
+	if got != "sha256:stale" {
+		t.Fatalf("got %q, want sha256:stale (stale fallback)", got)
+	}
+}
+
 func TestRefCacheRoundTrip(t *testing.T) {
 	cacheRoot := t.TempDir()
 	plat := &v1.Platform{OS: "linux", Architecture: "arm64"}

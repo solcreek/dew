@@ -3,6 +3,7 @@ package ocistage
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -68,18 +69,29 @@ func resolveDigest(ctx context.Context, ref string, plat *v1.Platform, cacheRoot
 	refsDir := filepath.Join(cacheRoot, "refs")
 	cachePath := filepath.Join(refsDir, sanitize(plat.String()+"_"+ref)+".json")
 
+	var rec refRecord
+	haveRec := false
 	if !noCache {
 		if data, err := os.ReadFile(cachePath); err == nil {
-			var rec refRecord
-			if json.Unmarshal(data, &rec) == nil && rec.Digest != "" &&
-				time.Since(time.Unix(rec.Unix, 0)) < refTTL {
-				return rec.Digest, nil
+			if json.Unmarshal(data, &rec) == nil && rec.Digest != "" {
+				haveRec = true
+				if time.Since(time.Unix(rec.Unix, 0)) < refTTL {
+					return rec.Digest, nil
+				}
 			}
 		}
 	}
 
 	d, err := crane.Digest(ref, pullOpts(ctx, plat)...)
 	if err != nil {
+		// Registry unreachable (offline / transient). If we have a previously
+		// resolved digest — even past its TTL — reuse it so an already-cached
+		// rootfs can still be staged offline, instead of bypassing the cache
+		// and forcing a pull that will also fail.
+		if haveRec {
+			fmt.Fprintf(os.Stderr, "dew: registry unreachable for %s; using cached digest\n", ref)
+			return rec.Digest, nil
+		}
 		return "", err
 	}
 	if !noCache {
