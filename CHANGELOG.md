@@ -12,7 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`dew run --image <ref>`** runs any OCI image in a fresh VM. The image
   is pulled and flattened on the host (go-containerregistry), shared into
   the guest over virtiofs, and run with `crun` over an overlay rootfs. Any
-  `-- <cmd>` overrides the image entrypoint.
+  `-- <cmd>` overrides the image entrypoint; `--platform <os/arch>` (with
+  `--rosetta`) runs an amd64 image on Apple Silicon. `dew run` is
+  exec-oriented and does not auto-forward ports — to reach a long-running
+  server, add `--forward <host:guest>`, or use `dew up --with` for managed
+  services with automatic forwarding.
 - **Content-addressed image cache** (`~/Library/Caches/dew/oci`), keyed on
   the platform-specific manifest digest, with a short-lived tag→digest
   cache. Repeat stages skip the registry pull and flatten. The cache is
