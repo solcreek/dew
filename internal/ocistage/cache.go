@@ -142,7 +142,10 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	_, werr := tmp.Write(data)
+	n, werr := tmp.Write(data)
+	if werr == nil && n < len(data) {
+		werr = io.ErrShortWrite
+	}
 	cerr := tmp.Close()
 	if werr == nil {
 		werr = cerr
