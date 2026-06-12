@@ -424,6 +424,12 @@ if [ -z "$BUNDLE" ] || [ -z "$NAME" ]; then
 fi
 
 RUN="/var/lib/dew/oci/$NAME"
+# Idempotent cleanup: a previous run of the same NAME may have left a crun
+# container registered and/or an overlay still mounted at $RUN/merged. Without
+# this, rm -rf hits a busy mountpoint and crun run fails with "container already
+# exists" — leaving the service unable to restart without manual cleanup.
+crun delete --force "$NAME" 2>/dev/null || true
+umount "$RUN/merged" 2>/dev/null || true
 rm -rf "$RUN"
 mkdir -p "$RUN/lower" "$RUN/upper" "$RUN/work" "$RUN/merged" "$RUN/bundle"
 
@@ -458,6 +464,10 @@ if [ "$DETACH" = "1" ]; then
     else
         echo "dew-oci-run: $NAME failed to start" >&2
         cat "$LOG" >&2 2>/dev/null || true
+        # Don't leave the overlay mounted / a half-created container behind, or
+        # the next start of this NAME trips over the busy mount.
+        crun delete --force "$NAME" 2>/dev/null || true
+        umount "$RUN/merged" 2>/dev/null || true
         exit 1
     fi
 else
