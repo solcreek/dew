@@ -50,6 +50,7 @@ var flagStream bool
 var flagEvents bool
 var flagWith string
 var flagImage string
+var flagPlatform string
 var flagDryRun bool
 var flagProfile string
 
@@ -863,6 +864,12 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, fmt.Errorf("--image requires an OCI image reference (e.g. docker.io/library/redis:7-alpine)")
 			}
 			flagImage = args[i]
+		case "--platform":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--platform requires an os/arch (e.g. linux/amd64)")
+			}
+			flagPlatform = args[i]
 		case "--stream":
 			flagStream = true
 		case "--events":
@@ -1108,6 +1115,7 @@ func cmdRun(args []string) error {
 			StageDir: filepath.Join(stageRoot, "app"),
 			Name:     "app",
 			Cmd:      cmdArgs,
+			Platform: flagPlatform, // empty = guest arch; set e.g. linux/amd64 with --rosetta
 		}); err != nil {
 			return fmt.Errorf("stage image: %w", err)
 		}
