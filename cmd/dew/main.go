@@ -1961,7 +1961,22 @@ func cmdUp(args []string) error {
 			runCmd += " --data " + s.dataArg
 		}
 		runCmd += " " + s.bundle + " " + s.name
-		execInVM(runCmd)
+		// dew-oci-run exits non-zero (and logs to stderr) if crun didn't come
+		// up, so don't claim "started" — and don't forward a dead port.
+		res, rerr := execInVM(runCmd)
+		if rerr != nil || (res != nil && res.ExitCode != 0) {
+			reason := "container failed to start"
+			if rerr != nil {
+				reason = rerr.Error()
+			} else if res != nil && strings.TrimSpace(res.Stderr) != "" {
+				reason = strings.TrimSpace(res.Stderr)
+			}
+			emit(map[string]interface{}{"type": "service", "status": "failed", "name": s.name, "error": reason})
+			if spin != nil {
+				spin.Fail(fmt.Sprintf("%s: %s", s.name, reason))
+			}
+			continue
+		}
 
 		// Add port forward for this service via the daemon so
 		// runtime additions and initial cfg.Forwards share one path.

@@ -433,15 +433,33 @@ if [ -n "$DATA" ]; then
     mkdir -p "${DATA%%:*}"
 fi
 
-tar -xf "$BUNDLE/rootfs.tar" -C "$RUN/lower" 2>/dev/null
+# Do not swallow tar's stderr: a truncated/corrupt rootfs must surface a real
+# error, not a silently-empty lowerdir and a later opaque crun failure.
+tar -xf "$BUNDLE/rootfs.tar" -C "$RUN/lower"
 mount -t overlay overlay \
     -o "lowerdir=$RUN/lower,upperdir=$RUN/upper,workdir=$RUN/work" \
     "$RUN/merged"
 cp "$BUNDLE/config.json" "$RUN/bundle/config.json"
 
 if [ "$DETACH" = "1" ]; then
-    setsid crun run -b "$RUN/bundle" "$NAME" >"/var/log/dew-oci-$NAME.log" 2>&1 &
-    echo "dew-oci-run: $NAME started (detached)"
+    LOG="/var/log/dew-oci-$NAME.log"
+    setsid crun run -b "$RUN/bundle" "$NAME" >"$LOG" 2>&1 &
+    # crun run backgrounded with & exits 0 regardless of whether the container
+    # actually came up, so confirm it did before reporting success. Without
+    # this the host reports a service "started" that is actually dead.
+    i=0
+    while [ "$i" -lt 20 ]; do
+        crun state "$NAME" 2>/dev/null | grep -q '"status": "running"' && break
+        i=$((i + 1))
+        sleep 0.1
+    done
+    if crun state "$NAME" 2>/dev/null | grep -q '"status": "running"'; then
+        echo "dew-oci-run: $NAME started (detached)"
+    else
+        echo "dew-oci-run: $NAME failed to start" >&2
+        cat "$LOG" >&2 2>/dev/null || true
+        exit 1
+    fi
 else
     exec crun run -b "$RUN/bundle" "$NAME"
 fi
