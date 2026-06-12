@@ -95,7 +95,7 @@ func ociSpec(c v1.Config, rootPath string, cmdOverride, extraEnv []string, bind 
 	}
 
 	return map[string]any{
-		"ociVersion": "1.0.2-dev",
+		"ociVersion": "1.0.2",
 		"process": map[string]any{
 			"terminal":        false,
 			"user":            map[string]any{"uid": uid, "gid": gid},
