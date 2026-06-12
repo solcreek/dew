@@ -39,11 +39,28 @@ echo "  crun (Variant C runtime):              $CRUN_SZ"
 echo "  standard initramfs (containerd stack):  $STD_SZ"
 echo ""
 
-# --- Variant C: host stage (pull + flatten) ---
-echo "--- Variant C: host-side pull + flatten (go-containerregistry) ---"
+# --- Variant C: host stage cost, cold vs warm cache ---
+echo "--- Variant C: host-side stage (cold vs warm content-addressed cache) ---"
+CACHE="${CACHE:-$HOME/Library/Caches/dew/oci}"
+report_stage() { # $1=label  reads /tmp/ocipoc.json, $2=wall_ms
+    python3 -c "import json;d=json.load(open('/tmp/ocipoc.json'));print(f\"  $1: wall=$2ms cache={'HIT' if d['cached'] else 'miss'} pull={d['pull_ms']}ms flatten={d['flatten_ms']}ms rootfs={d['rootfs_bytes']/1e6:.1f}MB\")"
+}
+# cold: wipe just this image's cache entry by clearing the whole cache root
+rm -rf "$CACHE"
 rm -rf "$STAGE" && mkdir -p "$STAGE"
-"$OCIPOC" -stage "$STAGE" -crun "$CRUN" -platform linux/arm64 -cmd "$CMD" -json "$IMAGE" > /tmp/ocipoc.json
-cat /tmp/ocipoc.json | python3 -c "import json,sys;d=json.load(sys.stdin);print(f\"  pull={d['pull_ms']}ms flatten={d['flatten_ms']}ms rootfs={d['rootfs_bytes']/1e6:.1f}MB\")"
+T1=$(ms); "$OCIPOC" -stage "$STAGE" -crun "$CRUN" -platform linux/arm64 -cmd "$CMD" -json "$IMAGE" > /tmp/ocipoc.json; T2=$(ms)
+report_stage "cold " $((T2-T1))
+# warm (tag): cache HIT, but still one manifest HEAD to resolve tag->digest
+rm -rf "$STAGE" && mkdir -p "$STAGE"
+T1=$(ms); "$OCIPOC" -stage "$STAGE" -crun "$CRUN" -platform linux/arm64 -cmd "$CMD" -json "$IMAGE" > /tmp/ocipoc.json; T2=$(ms)
+report_stage "warm(tag)   " $((T2-T1))
+# warm (digest-pinned): cache HIT with NO network at all — local hardlink + spec gen
+DIGEST=$(python3 -c "import json;print(json.load(open('/tmp/ocipoc.json'))['digest'])")
+REPO="${IMAGE%:*}"
+rm -rf "$STAGE" && mkdir -p "$STAGE"
+T1=$(ms); "$OCIPOC" -stage "$STAGE" -crun "$CRUN" -platform linux/arm64 -cmd "$CMD" -json "$REPO@$DIGEST" > /tmp/ocipoc.json; T2=$(ms)
+report_stage "warm(digest)" $((T2-T1))
+echo "  (warm-tag pays one manifest HEAD to resolve the tag; pinning by digest needs no network)"
 echo ""
 
 # --- Variant C: per-run VM boot + assemble + crun ---
@@ -67,6 +84,8 @@ echo ""
 # no guest egress) so this is a fair warm-image run: boot + containerd start +
 # nerdctl load + nerdctl run, all in one fresh VM.
 echo "--- Baseline: cold VM boot (+containerd) -> nerdctl load -> nerdctl run ---"
+# Build the docker-archive once (benchmark-only; Variant C never needs it).
+"$OCIPOC" -stage "$STAGE" -crun "$CRUN" -platform linux/arm64 -cmd "$CMD" -archive "$IMAGE" >/dev/null
 BASE_SH='set -e; nerdctl load -i /oci/image.tar >/dev/null 2>&1; nerdctl run --rm --net=host '"$IMAGE $CMD"
 for i in $(seq 1 $RUNS); do
     T1=$(ms)

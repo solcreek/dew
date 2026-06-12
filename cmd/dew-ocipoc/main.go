@@ -38,6 +38,7 @@ func main() {
 		platform = flag.String("platform", "linux/arm64", "image platform os/arch to pull (guest arch)")
 		cacheDir = flag.String("cache", defaultCacheDir(), "content-addressed cache root")
 		noCache  = flag.Bool("no-cache", false, "bypass the cache (always pull+flatten)")
+		archive  = flag.Bool("archive", false, "also emit image.tar docker-archive (for the containerd baseline; not needed by Variant C)")
 		jsonOut  = flag.Bool("json", false, "emit machine-readable timing JSON to stdout")
 	)
 	flag.Usage = func() {
@@ -51,7 +52,7 @@ func main() {
 	}
 	image := flag.Arg(0)
 
-	if err := run(image, *stageDir, *crunPath, *name, *cmdOver, *platform, *cacheDir, *noCache, *jsonOut); err != nil {
+	if err := run(image, *stageDir, *crunPath, *name, *cmdOver, *platform, *cacheDir, *noCache, *archive, *jsonOut); err != nil {
 		fmt.Fprintln(os.Stderr, "dew-ocipoc:", err)
 		os.Exit(1)
 	}
@@ -76,7 +77,7 @@ func defaultCacheDir() string {
 	return filepath.Join(d, "dew", "oci")
 }
 
-func run(image, stageDir, crunPath, name, cmdOver, platform, cacheRoot string, noCache, jsonOut bool) error {
+func run(image, stageDir, crunPath, name, cmdOver, platform, cacheRoot string, noCache, archive, jsonOut bool) error {
 	if err := os.MkdirAll(stageDir, 0o755); err != nil {
 		return err
 	}
@@ -199,8 +200,12 @@ func run(image, stageDir, crunPath, name, cmdOver, platform, cacheRoot string, n
 	// crane.Save re-fetches remote layers and deadlocks on go-containerregistry's
 	// pull limiter for multi-layer images, and this is also faster. The baseline
 	// loads the same flattened content Variant C uses, so the comparison is fair.
-	if err := saveArchive(stageRootfs, cfg, image, plat.OS, plat.Architecture, filepath.Join(stageDir, "image.tar")); err != nil {
-		return fmt.Errorf("save docker archive: %w", err)
+	// Off by default: Variant C itself never needs it, so the host-cost numbers
+	// stay honest — only the benchmark's baseline turns it on.
+	if archive {
+		if err := saveArchive(stageRootfs, cfg, image, plat.OS, plat.Architecture, filepath.Join(stageDir, "image.tar")); err != nil {
+			return fmt.Errorf("save docker archive: %w", err)
+		}
 	}
 
 	t := timings{Image: image, Digest: digest, Cached: cacheHit, PullMs: pullMs, FlattenMs: flattenMs, RootfsBytes: n}
