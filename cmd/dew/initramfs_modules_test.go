@@ -10,45 +10,6 @@ import (
 	"testing"
 )
 
-// Regression guard for the standard-profile CNI bridge plugin: nerdctl fails
-// with `could not add "nerdctl0": operation not supported` if any of these
-// kernel modules aren't loaded before containerd starts.
-func TestInitramfsBuildScript_LoadsCNIBridgeModules(t *testing.T) {
-	repoRoot, err := filepath.Abs("../..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(repoRoot, "initramfs", "build.sh"))
-	if err != nil {
-		t.Fatalf("read build.sh: %v", err)
-	}
-	script := string(data)
-
-	containerdIdx := strings.Index(script, "if [ -x /usr/local/bin/containerd ]")
-	if containerdIdx == -1 {
-		t.Fatal("could not locate containerd startup block in build.sh — test needs updating")
-	}
-	endIdx := strings.Index(script[containerdIdx:], "INIT2_EOF")
-	if endIdx == -1 {
-		t.Fatal("could not locate end of init-stage2 heredoc")
-	}
-	containerdBlock := script[containerdIdx : containerdIdx+endIdx]
-
-	required := []string{
-		"modprobe bridge",        // creates the nerdctl0 bridge
-		"modprobe br_netfilter",  // sysctl bridge-nf-call-iptables=1 (set by CNI)
-		"modprobe veth",          // container-side network pair
-		"modprobe iptable_nat",   // masquerade chain
-		"modprobe nf_nat",        // NAT engine
-		"modprobe xt_MASQUERADE", // -j MASQUERADE rule
-	}
-	for _, want := range required {
-		if !strings.Contains(containerdBlock, want) {
-			t.Errorf("init-stage2 containerd block missing %q — CNI bridge networking will fail in standard profile", want)
-		}
-	}
-}
-
 // /lib/modules on the persistent disk must be refreshed from the initramfs on
 // every boot, not just first boot. Otherwise a kernel-APK bump in the
 // initramfs leaves stale modules behind, every modprobe silently fails, and
@@ -151,24 +112,22 @@ func TestInitramfsBuildScript_ModprobeMatchesAllowlist(t *testing.T) {
 		t.Fatal("found zero modprobe lines — test scanning is broken")
 	}
 
-	// Extract the allowlist: KMODS_BASE + KMODS_STANDARD assignments.
-	// Each value is on a continuation-line block; we join them and split
-	// on whitespace.
+	// Extract the allowlist: KMODS_BASE (the single module set all profiles
+	// share now that containers run via crun --net=host, no CNI bridge).
+	// The value spans continuation lines; join and split on whitespace.
 	allowed := map[string]struct{}{}
-	for _, varName := range []string{"KMODS_BASE", "KMODS_STANDARD"} {
-		re := regexp.MustCompile(varName + `="((?:[^"]|\n)*)"`)
-		m := re.FindStringSubmatch(script)
-		if m == nil {
-			t.Fatalf("could not find %s allowlist in build.sh", varName)
-		}
-		for _, tok := range strings.Fields(strings.ReplaceAll(m[1], "\\", "")) {
-			allowed[tok] = struct{}{}
-		}
+	re := regexp.MustCompile(`KMODS_BASE="((?:[^"]|\n)*)"`)
+	m := re.FindStringSubmatch(script)
+	if m == nil {
+		t.Fatal("could not find KMODS_BASE allowlist in build.sh")
+	}
+	for _, tok := range strings.Fields(strings.ReplaceAll(m[1], "\\", "")) {
+		allowed[tok] = struct{}{}
 	}
 
 	for name := range probed {
 		if _, ok := allowed[name]; !ok {
-			t.Errorf("modprobe %s appears in init scripts but is missing from KMODS_BASE/KMODS_STANDARD allowlist — boot will silently skip it after prune", name)
+			t.Errorf("modprobe %s appears in init scripts but is missing from KMODS_BASE allowlist — boot will silently skip it after prune", name)
 		}
 	}
 }

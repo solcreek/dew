@@ -43,16 +43,6 @@ var Registry = map[string]Service{
 	},
 }
 
-// NerdctlRunCmd builds the nerdctl run command for a service.
-func NerdctlRunCmd(s Service) string {
-	cmd := "nerdctl run -d --net=host --name " + s.Name
-	for _, e := range s.Env {
-		cmd += " -e " + e
-	}
-	cmd += " " + s.Image
-	return cmd
-}
-
 // Lookup returns a service by name, or nil if not found.
 func Lookup(name string) *Service {
 	s, ok := Registry[name]

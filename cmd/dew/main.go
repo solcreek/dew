@@ -27,6 +27,7 @@ import (
 	"github.com/solcreek/dew/internal/vmstate"
 	"github.com/solcreek/dew/internal/detect"
 	"github.com/solcreek/dew/internal/nmcache"
+	"github.com/solcreek/dew/internal/ocistage"
 	"github.com/solcreek/dew/internal/progress"
 	"github.com/solcreek/dew/internal/selfupdate"
 	"github.com/solcreek/dew/internal/services"
@@ -48,6 +49,8 @@ var flagJSON bool
 var flagStream bool
 var flagEvents bool
 var flagWith string
+var flagImage string
+var flagPlatform string
 var flagDryRun bool
 var flagProfile string
 
@@ -672,13 +675,26 @@ Network:
                 the guest to reach those IPs. Only meaningful with
                 --network-policy=restricted.
 
+Containers:
+  --image REF   (dew run) Pull an OCI image on the host and run it in the VM
+                via crun. A trailing -- <cmd> overrides the image entrypoint.
+                dew run does not auto-forward ports — add --forward, or use
+                dew up --with for managed services.
+  --platform OS/ARCH
+                Image platform to pull (default: the guest arch). Set
+                linux/amd64 with --rosetta to run an amd64 image.
+  --with NAMES  (dew up) Comma-separated predefined services to run alongside
+                the project (e.g. postgres,redis). Each is pulled on the host,
+                run via crun, and its port forwarded.
+
 Compatibility:
   --rosetta     Apple Silicon only. Mounts Apple's Rosetta translator into
                 the guest and registers binfmt_misc, so x86_64/amd64 binaries
-                run under translation. Pair with --profile standard to run
-                amd64 containers: dew run --profile standard --network --rosetta
-                -- nerdctl run --platform linux/amd64 <image>. Expect ~0.7-0.8x
-                native speed on compiled code; far slower on crypto/SIMD work.
+                run under translation. To run an amd64 container, pair it with
+                --image and --platform:
+                dew run --rosetta --platform linux/amd64 --image <ref>
+                Expect ~0.7-0.8x native speed on compiled code; far slower on
+                crypto/SIMD work.
 `)
 }
 
@@ -717,7 +733,13 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 		CmdLine:  "console=hvc0",
 	}
 	var remaining []string
-	flagTimeout = 0 // reset: parseFlags runs once per command, but tests reuse the process
+	// Reset command-scoped globals: parseFlags runs once per command, but tests
+	// reuse the process, so a prior --image/--platform/--timeout must not leak
+	// into a later invocation that didn't pass them.
+	flagTimeout = 0
+	flagImage = ""
+	flagPlatform = ""
+	flagWith = ""
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -855,6 +877,18 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, fmt.Errorf("--with requires service names (e.g. postgres,redis)")
 			}
 			flagWith = args[i]
+		case "--image":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--image requires an OCI image reference (e.g. docker.io/library/redis:7-alpine)")
+			}
+			flagImage = args[i]
+		case "--platform":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--platform requires an os/arch (e.g. linux/amd64)")
+			}
+			flagPlatform = args[i]
 		case "--stream":
 			flagStream = true
 		case "--events":
@@ -1078,11 +1112,48 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
+	// --image runs the container via crun overlay, which needs an ext4 disk.
+	// Default to the node profile when the user didn't pick a disk profile.
+	if flagImage != "" && (flagProfile == "" || flagProfile == "minimal") {
+		flagProfile = "node"
+	}
 	if err := resolveAssets(&cfg); err != nil {
 		return err
 	}
+
+	// One wall-clock budget spans host-side staging + boot + agent wait + exec,
+	// so --timeout bounds the whole run (and cancels a slow registry pull).
+	budget := newRunBudget(flagTimeout)
+
+	// --image <ref>: pull+stage an arbitrary OCI image on the host, share its
+	// bundle at /oci-stage, and run it in the guest via crun (dew-oci-run). Any
+	// `-- <cmd>` overrides the image entrypoint. Foreground so output streams
+	// and the container's exit code propagates.
+	if flagImage != "" {
+		stageRoot := filepath.Join(dewDataDir(), "oci-stage", strconv.Itoa(os.Getpid()))
+		os.RemoveAll(stageRoot)
+		defer os.RemoveAll(stageRoot)
+		fmt.Fprintf(os.Stderr, "dew: staging image %s\n", flagImage)
+		stageCtx := context.Background()
+		if flagTimeout > 0 {
+			var cancel context.CancelFunc
+			stageCtx, cancel = context.WithTimeout(stageCtx, budget.window(flagTimeout))
+			defer cancel()
+		}
+		if _, err := ocistage.Stage(stageCtx, flagImage, ocistage.Options{
+			StageDir: filepath.Join(stageRoot, "app"),
+			Name:     "app",
+			Cmd:      cmdArgs,
+			Platform: flagPlatform, // empty = guest arch; set e.g. linux/amd64 with --rosetta
+		}); err != nil {
+			return fmt.Errorf("stage image: %w", err)
+		}
+		cfg.SharedDirs = append(cfg.SharedDirs, vm.SharedDir{Tag: "oci-stage", HostPath: stageRoot, ReadOnly: true})
+		cmdArgs = []string{"dew-oci-run", "/oci-stage/app", "app"}
+	}
+
 	if len(cmdArgs) == 0 {
-		return fmt.Errorf("no command specified (use -- <cmd>)")
+		return fmt.Errorf("no command specified (use -- <cmd> or --image <ref>)")
 	}
 
 	// Always enable vsock for run mode
@@ -1105,7 +1176,7 @@ func cmdRun(args []string) error {
 		return err
 	}
 
-	budget := newRunBudget(flagTimeout)
+	// budget was created before staging so --timeout spans the whole run.
 	timeoutErr := func(stage string) error {
 		return dewerr.Newf(dewerr.CodeTimeout, "run: timed out after %s during %s (--timeout)", flagTimeout, stage)
 	}
@@ -1392,6 +1463,65 @@ func execVsockStreamArgv(conn net.Conn, token, command string, args []string, ti
 	}
 }
 
+// stagedService is a --with service resolved and pulled on the host, ready to
+// launch in the guest via dew-oci-run.
+type stagedService struct {
+	name    string
+	port    int
+	bundle  string // guest path of the staged bundle (/oci-stage/<name>)
+	dataArg string // "hostsrc:contdest" for dew-oci-run --data, or ""
+}
+
+type serviceFailure struct {
+	name       string
+	reason     string
+	suggestion string
+}
+
+// stageServices resolves each --with name, pulls+stages its image into
+// stageRoot/<name> on the host (content-addressed cache), and returns the
+// staged services plus any failures. A service with a DataDir gets a persistent
+// bind mount on the guest's ext4 disk so its data survives restarts.
+func stageServices(ctx context.Context, names []string, stageRoot string) ([]stagedService, []serviceFailure) {
+	var staged []stagedService
+	var failures []serviceFailure
+	for _, raw := range names {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		svc := services.Lookup(name)
+		if svc == nil {
+			failures = append(failures, serviceFailure{
+				name: name, reason: "unknown service",
+				suggestion: "available: " + strings.Join(services.Names(), ", "),
+			})
+			continue
+		}
+		var data *ocistage.Bind
+		dataArg := ""
+		if svc.DataDir != "" {
+			src := "/var/lib/dew/services/" + svc.Name + "/data"
+			data = &ocistage.Bind{Source: src, Destination: svc.DataDir}
+			dataArg = src + ":" + svc.DataDir
+		}
+		if _, err := ocistage.Stage(ctx, svc.Image, ocistage.Options{
+			StageDir: filepath.Join(stageRoot, svc.Name),
+			Name:     svc.Name,
+			Env:      svc.Env,
+			Data:     data,
+		}); err != nil {
+			failures = append(failures, serviceFailure{name: svc.Name, reason: err.Error()})
+			continue
+		}
+		staged = append(staged, stagedService{
+			name: svc.Name, port: svc.Port,
+			bundle: "/oci-stage/" + svc.Name, dataArg: dataArg,
+		})
+	}
+	return staged, failures
+}
+
 func cmdUp(args []string) error {
 	parsedCfg, remaining, err := parseFlags(args)
 	if err != nil {
@@ -1439,9 +1569,11 @@ func cmdUp(args []string) error {
 
 	absDir, _ := filepath.Abs(dir)
 	flagProfile = proj.Profile
-	// --with requires containerd → upgrade to standard profile
-	if flagWith != "" && flagProfile != "standard" {
-		flagProfile = "standard"
+	// --with services run via crun (host-pulled rootfs + overlay), which needs
+	// an ext4 disk + overlayfs. Every non-minimal profile has that; only a
+	// diskless minimal needs upgrading (to node).
+	if flagWith != "" && flagProfile == "minimal" {
+		flagProfile = "node"
 	}
 
 	// --dry-run: print the resolved plan and exit. No VM boot, no
@@ -1524,6 +1656,25 @@ func cmdUp(args []string) error {
 	var spin *progress.Spinner
 	if !flagJSON && !flagEvents {
 		spin = progress.New()
+	}
+
+	// Stage --with service images on the host before boot, so the virtiofs
+	// share holding their rootfs bundles exists when the guest comes up. crun
+	// (baked into the initramfs) runs them in the guest — no containerd.
+	var stagedSvcs []stagedService
+	var svcFailures []serviceFailure
+	if flagWith != "" {
+		stageRoot := filepath.Join(dewDataDir(), "oci-stage", strconv.Itoa(os.Getpid()))
+		os.RemoveAll(stageRoot)
+		defer os.RemoveAll(stageRoot)
+		if spin != nil {
+			spin.Step("pulling service images")
+		}
+		stagedSvcs, svcFailures = stageServices(context.Background(), strings.Split(flagWith, ","), stageRoot)
+		if len(stagedSvcs) > 0 {
+			cfg.SharedDirs = append(cfg.SharedDirs, vm.SharedDir{Tag: "oci-stage", HostPath: stageRoot, ReadOnly: true})
+			cfg.CmdLine += " dew.share=oci-stage:/oci-stage"
+		}
 	}
 
 	// Remove stale socket
@@ -1826,38 +1977,52 @@ func cmdUp(args []string) error {
 		} // end of else: non-cache-hit install
 	}
 
-	// Start services (--with postgres,redis)
-	if flagWith != "" {
-		svcNames := strings.Split(flagWith, ",")
-		for _, name := range svcNames {
-			name = strings.TrimSpace(name)
-			svc := services.Lookup(name)
-			if svc == nil {
-				emit(map[string]interface{}{
-					"type": "service", "status": "failed", "name": name,
-					"error": "unknown service", "suggestion": "available: " + strings.Join(services.Names(), ", "),
-				})
-				if spin != nil {
-					spin.Fail(fmt.Sprintf("unknown service: %s", name))
-				}
-				continue
-			}
-			emit(map[string]interface{}{"type": "service", "status": "starting", "name": svc.Name, "port": svc.Port})
-			if spin != nil {
-				spin.Step(fmt.Sprintf("%s (port %d)", svc.Name, svc.Port))
-			}
-			runCmd := services.NerdctlRunCmd(*svc)
-			execInVM(runCmd)
-
-			// Add port forward for this service via the daemon so
-			// runtime additions and initial cfg.Forwards share one path.
-			cfg.Forwards = append(cfg.Forwards, vm.PortForward{HostPort: svc.Port, GuestPort: svc.Port})
-			if _, err := dmn.AddForward(svc.Port, svc.Port); err != nil {
-				fmt.Fprintf(os.Stderr, "dew: forward %d: %v\n", svc.Port, err)
-			}
-
-			emit(map[string]interface{}{"type": "service", "status": "started", "name": svc.Name, "port": svc.Port})
+	// Start services (--with postgres,redis). Images were staged on the host
+	// before boot (shared at /oci-stage); launch each via crun (dew-oci-run).
+	for _, f := range svcFailures {
+		emit(map[string]interface{}{
+			"type": "service", "status": "failed", "name": f.name,
+			"error": f.reason, "suggestion": f.suggestion,
+		})
+		if spin != nil {
+			spin.Fail(fmt.Sprintf("%s: %s", f.name, f.reason))
 		}
+	}
+	for _, s := range stagedSvcs {
+		emit(map[string]interface{}{"type": "service", "status": "starting", "name": s.name, "port": s.port})
+		if spin != nil {
+			spin.Step(fmt.Sprintf("%s (port %d)", s.name, s.port))
+		}
+		runCmd := "dew-oci-run --detach"
+		if s.dataArg != "" {
+			runCmd += " --data " + s.dataArg
+		}
+		runCmd += " " + s.bundle + " " + s.name
+		// dew-oci-run exits non-zero (and logs to stderr) if crun didn't come
+		// up, so don't claim "started" — and don't forward a dead port.
+		res, rerr := execInVM(runCmd)
+		if rerr != nil || (res != nil && res.ExitCode != 0) {
+			reason := "container failed to start"
+			if rerr != nil {
+				reason = rerr.Error()
+			} else if res != nil && strings.TrimSpace(res.Stderr) != "" {
+				reason = strings.TrimSpace(res.Stderr)
+			}
+			emit(map[string]interface{}{"type": "service", "status": "failed", "name": s.name, "error": reason})
+			if spin != nil {
+				spin.Fail(fmt.Sprintf("%s: %s", s.name, reason))
+			}
+			continue
+		}
+
+		// Add port forward for this service via the daemon so
+		// runtime additions and initial cfg.Forwards share one path.
+		cfg.Forwards = append(cfg.Forwards, vm.PortForward{HostPort: s.port, GuestPort: s.port})
+		if _, err := dmn.AddForward(s.port, s.port); err != nil {
+			fmt.Fprintf(os.Stderr, "dew: forward %d: %v\n", s.port, err)
+		}
+
+		emit(map[string]interface{}{"type": "service", "status": "started", "name": s.name, "port": s.port})
 	}
 
 	// Start dev server. The earlier "cmd &" launched vite inside a shell
