@@ -98,19 +98,25 @@ func Stage(ctx context.Context, ref string, opts Options) (*Bundle, error) {
 		cacheHit bool
 	)
 
+	// Try the cache. A corrupt/partial entry (e.g. left by an interrupted run
+	// before atomic writes, or external damage) must not brick staging — purge
+	// it and fall through to a fresh pull instead of returning an error.
 	if useCache && fileExists(cachedRootfs) && fileExists(cachedCfg) {
-		cacheHit = true
-		data, rerr := os.ReadFile(cachedCfg)
-		if rerr != nil {
-			return nil, fmt.Errorf("read cached config: %w", rerr)
+		if data, rerr := os.ReadFile(cachedCfg); rerr == nil {
+			if jerr := json.Unmarshal(data, &cfg); jerr == nil {
+				if fi, serr := os.Stat(cachedRootfs); serr == nil && fi.Size() > 0 {
+					n = fi.Size()
+					cacheHit = true
+				}
+			}
 		}
-		if jerr := json.Unmarshal(data, &cfg); jerr != nil {
-			return nil, fmt.Errorf("parse cached config: %w", jerr)
+		if !cacheHit {
+			fmt.Fprintf(os.Stderr, "dew: cached image entry for %s is unusable; re-pulling\n", ref)
+			os.RemoveAll(itemDir)
 		}
-		if fi, serr := os.Stat(cachedRootfs); serr == nil {
-			n = fi.Size()
-		}
-	} else {
+	}
+
+	if !cacheHit {
 		// Pull by the digest we already resolved, not the mutable tag, so the
 		// bytes we fetch are exactly the ones keyed in the cache (no TOCTOU if
 		// the tag is repushed between resolve and pull). Falls back to the raw
