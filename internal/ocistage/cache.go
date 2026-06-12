@@ -85,25 +85,64 @@ func resolveDigest(ctx context.Context, ref string, plat *v1.Platform, cacheRoot
 	if !noCache {
 		_ = os.MkdirAll(refsDir, 0o755)
 		if b, mErr := json.Marshal(refRecord{Digest: d, Unix: time.Now().Unix()}); mErr == nil {
-			_ = os.WriteFile(cachePath, b, 0o644)
+			_ = writeFileAtomic(cachePath, b, 0o644)
 		}
 	}
 	return d, nil
 }
 
-// flattenTo writes the image's flattened (whiteout-applied) rootfs to path.
+// flattenTo writes the image's flattened (whiteout-applied) rootfs to path
+// atomically: it streams to a sibling temp file and renames into place. Two
+// concurrent cold stages of the same image (or an interrupted one) therefore
+// never leave a partial rootfs.tar that a later run mistakes for a cache hit.
 func flattenTo(img v1.Image, path string) (int64, error) {
-	f, err := os.Create(path)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".rootfs-*.tmp")
 	if err != nil {
 		return 0, err
 	}
+	tmpName := tmp.Name()
 	rc := mutate.Extract(img)
-	n, err := io.Copy(f, rc)
+	n, err := io.Copy(tmp, rc)
 	rc.Close()
-	if cerr := f.Close(); err == nil {
+	if cerr := tmp.Close(); err == nil {
 		err = cerr
 	}
-	return n, err
+	if err == nil {
+		if rerr := os.Rename(tmpName, path); rerr != nil {
+			err = rerr
+		}
+	}
+	if err != nil {
+		os.Remove(tmpName)
+		return 0, err
+	}
+	return n, nil
+}
+
+// writeFileAtomic writes data to path via a sibling temp file + rename, so a
+// reader never observes a torn or zero-length file.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	_, werr := tmp.Write(data)
+	cerr := tmp.Close()
+	if werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Chmod(tmpName, perm)
+	}
+	if werr == nil {
+		werr = os.Rename(tmpName, path)
+	}
+	if werr != nil {
+		os.Remove(tmpName)
+		return werr
+	}
+	return nil
 }
 
 func fileExists(p string) bool {

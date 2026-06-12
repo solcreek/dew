@@ -133,7 +133,10 @@ func Stage(ctx context.Context, ref string, opts Options) (*Bundle, error) {
 		}
 		if useCache {
 			if b, mErr := json.Marshal(cfg); mErr == nil {
-				if err := os.WriteFile(cachedCfg, b, 0o644); err != nil {
+				// Atomic so a concurrent reader never sees a zero-length
+				// imgcfg.json (which would unmarshal to an empty config and
+				// drop the image entrypoint).
+				if err := writeFileAtomic(cachedCfg, b, 0o644); err != nil {
 					return nil, fmt.Errorf("write cached config: %w", err)
 				}
 			}
