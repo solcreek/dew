@@ -36,6 +36,8 @@ func main() {
 		name     = flag.String("name", "poc", "container id")
 		cmdOver  = flag.String("cmd", "", "override the image entrypoint/cmd (space-split), e.g. 'echo hi'")
 		platform = flag.String("platform", "linux/arm64", "image platform os/arch to pull (guest arch)")
+		cacheDir = flag.String("cache", defaultCacheDir(), "content-addressed cache root")
+		noCache  = flag.Bool("no-cache", false, "bypass the cache (always pull+flatten)")
 		jsonOut  = flag.Bool("json", false, "emit machine-readable timing JSON to stdout")
 	)
 	flag.Usage = func() {
@@ -49,20 +51,32 @@ func main() {
 	}
 	image := flag.Arg(0)
 
-	if err := run(image, *stageDir, *crunPath, *name, *cmdOver, *platform, *jsonOut); err != nil {
+	if err := run(image, *stageDir, *crunPath, *name, *cmdOver, *platform, *cacheDir, *noCache, *jsonOut); err != nil {
 		fmt.Fprintln(os.Stderr, "dew-ocipoc:", err)
 		os.Exit(1)
 	}
 }
 
 type timings struct {
-	Image      string `json:"image"`
-	PullMs     int64  `json:"pull_ms"`
-	FlattenMs  int64  `json:"flatten_ms"`
-	RootfsBytes int64 `json:"rootfs_bytes"`
+	Image       string `json:"image"`
+	Digest      string `json:"digest"`
+	Cached      bool   `json:"cached"`
+	PullMs      int64  `json:"pull_ms"`
+	FlattenMs   int64  `json:"flatten_ms"`
+	RootfsBytes int64  `json:"rootfs_bytes"`
 }
 
-func run(image, stageDir, crunPath, name, cmdOver, platform string, jsonOut bool) error {
+// defaultCacheDir returns the per-user content-addressed cache root
+// (~/Library/Caches/dew/oci on macOS), falling back to a temp dir.
+func defaultCacheDir() string {
+	d, err := os.UserCacheDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "dew", "oci")
+	}
+	return filepath.Join(d, "dew", "oci")
+}
+
+func run(image, stageDir, crunPath, name, cmdOver, platform, cacheRoot string, noCache, jsonOut bool) error {
 	if err := os.MkdirAll(stageDir, 0o755); err != nil {
 		return err
 	}
@@ -75,42 +89,96 @@ func run(image, stageDir, crunPath, name, cmdOver, platform string, jsonOut bool
 		return fmt.Errorf("platform %q: %w", platform, err)
 	}
 
-	// --- pull (manifest + layers into local cache) ---
-	// PoC: anonymous auth for public images. Production would wire the
-	// macOS keychain here — exactly the "host-side auth" benefit of this
-	// approach. The host's ~/.docker/config.json credential helper is
-	// bypassed to avoid depending on a Docker Desktop install.
-	t0 := time.Now()
-	img, err := crane.Pull(image, crane.WithAuth(authn.Anonymous), crane.WithPlatform(plat))
-	if err != nil {
-		return fmt.Errorf("pull %s: %w", image, err)
+	// Content-addressed cache keyed on the platform-specific manifest digest.
+	// A hit skips both the registry download and the (often dominant) flatten.
+	// Resolving the digest of a tag costs one cheap manifest HEAD; an image
+	// pinned by @sha256: needs no network at all. The key includes os/arch so
+	// arm64 and amd64 variants of the same tag never collide. The cache is
+	// dew's own — fully separate from any Docker image store on the host.
+	digest, derr := resolveDigest(image, plat)
+	useCache := !noCache && derr == nil
+	if derr != nil {
+		fmt.Fprintf(os.Stderr, "dew-ocipoc: digest resolve failed (%v); cache bypassed\n", derr)
 	}
-	pullMs := time.Since(t0).Milliseconds()
+	var itemDir string
+	if useCache {
+		itemDir = filepath.Join(cacheRoot, plat.OS+"_"+plat.Architecture, strings.ReplaceAll(digest, ":", "-"))
+	}
+	cachedRootfs := filepath.Join(itemDir, "rootfs.tar")
+	cachedCfg := filepath.Join(itemDir, "imgcfg.json")
 
-	// --- flatten layers -> single rootfs tar (whiteouts applied) ---
-	t1 := time.Now()
-	rootfsPath := filepath.Join(stageDir, "rootfs.tar")
-	f, err := os.Create(rootfsPath)
-	if err != nil {
-		return err
-	}
-	rc := mutate.Extract(img)
-	n, err := io.Copy(f, rc)
-	rc.Close()
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return fmt.Errorf("flatten rootfs: %w", err)
-	}
-	flattenMs := time.Since(t1).Milliseconds()
+	var (
+		cfg       v1.Config
+		pullMs    int64
+		flattenMs int64
+		n         int64
+		cacheHit  bool
+	)
 
-	// --- derive OCI runtime config.json from image config ---
-	cfgFile, err := img.ConfigFile()
-	if err != nil {
-		return fmt.Errorf("config file: %w", err)
+	if useCache && fileExists(cachedRootfs) && fileExists(cachedCfg) {
+		// --- cache hit: no network, no flatten ---
+		cacheHit = true
+		data, err := os.ReadFile(cachedCfg)
+		if err != nil {
+			return fmt.Errorf("read cached config: %w", err)
+		}
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return fmt.Errorf("parse cached config: %w", err)
+		}
+		if fi, serr := os.Stat(cachedRootfs); serr == nil {
+			n = fi.Size()
+		}
+	} else {
+		// --- cache miss (or disabled): pull + flatten ---
+		// PoC: anonymous auth for public images. Production would wire the
+		// macOS keychain here. The host's ~/.docker/config.json credential
+		// helper is bypassed to avoid depending on a Docker Desktop install.
+		t0 := time.Now()
+		img, err := crane.Pull(image, crane.WithAuth(authn.Anonymous), crane.WithPlatform(plat))
+		if err != nil {
+			return fmt.Errorf("pull %s: %w", image, err)
+		}
+		pullMs = time.Since(t0).Milliseconds()
+
+		cfgFile, err := img.ConfigFile()
+		if err != nil {
+			return fmt.Errorf("config file: %w", err)
+		}
+		cfg = cfgFile.Config
+
+		// Flatten into the cache (or the stage dir if the cache is off).
+		dstDir := stageDir
+		if useCache {
+			dstDir = itemDir
+		}
+		if err := os.MkdirAll(dstDir, 0o755); err != nil {
+			return err
+		}
+		cachedRootfs = filepath.Join(dstDir, "rootfs.tar")
+		t1 := time.Now()
+		n, err = flattenTo(img, cachedRootfs)
+		if err != nil {
+			return fmt.Errorf("flatten rootfs: %w", err)
+		}
+		flattenMs = time.Since(t1).Milliseconds()
+
+		if useCache {
+			b, _ := json.Marshal(cfg)
+			if err := os.WriteFile(cachedCfg, b, 0o644); err != nil {
+				return fmt.Errorf("write cached config: %w", err)
+			}
+		}
 	}
-	spec := ociSpec(cfgFile.Config)
+
+	// --- stage: rootfs (link/copy from cache), OCI spec, crun, run.sh, archive ---
+	stageRootfs := filepath.Join(stageDir, "rootfs.tar")
+	if stageRootfs != cachedRootfs {
+		if err := linkOrCopy(cachedRootfs, stageRootfs); err != nil {
+			return fmt.Errorf("stage rootfs: %w", err)
+		}
+	}
+
+	spec := ociSpec(cfg)
 	if cmdOver != "" {
 		spec["process"].(map[string]any)["args"] = strings.Fields(cmdOver)
 	}
@@ -118,8 +186,6 @@ func run(image, stageDir, crunPath, name, cmdOver, platform string, jsonOut bool
 	if err := os.WriteFile(filepath.Join(stageDir, "config.json"), specBytes, 0o644); err != nil {
 		return err
 	}
-
-	// --- stage crun + run.sh ---
 	if err := copyExec(crunPath, filepath.Join(stageDir, "crun")); err != nil {
 		return fmt.Errorf("stage crun: %w", err)
 	}
@@ -133,18 +199,75 @@ func run(image, stageDir, crunPath, name, cmdOver, platform string, jsonOut bool
 	// crane.Save re-fetches remote layers and deadlocks on go-containerregistry's
 	// pull limiter for multi-layer images, and this is also faster. The baseline
 	// loads the same flattened content Variant C uses, so the comparison is fair.
-	if err := saveArchive(rootfsPath, cfgFile.Config, image, plat.OS, plat.Architecture, filepath.Join(stageDir, "image.tar")); err != nil {
+	if err := saveArchive(stageRootfs, cfg, image, plat.OS, plat.Architecture, filepath.Join(stageDir, "image.tar")); err != nil {
 		return fmt.Errorf("save docker archive: %w", err)
 	}
 
-	t := timings{Image: image, PullMs: pullMs, FlattenMs: flattenMs, RootfsBytes: n}
+	t := timings{Image: image, Digest: digest, Cached: cacheHit, PullMs: pullMs, FlattenMs: flattenMs, RootfsBytes: n}
 	if jsonOut {
 		json.NewEncoder(os.Stdout).Encode(t)
 	} else {
-		fmt.Printf("staged %s -> %s\n  pull=%dms flatten=%dms rootfs=%.1fMB\n",
-			image, stageDir, pullMs, flattenMs, float64(n)/1e6)
+		status := "miss"
+		if cacheHit {
+			status = "HIT"
+		}
+		fmt.Printf("staged %s -> %s\n  cache=%s pull=%dms flatten=%dms rootfs=%.1fMB\n",
+			image, stageDir, status, pullMs, flattenMs, float64(n)/1e6)
 	}
 	return nil
+}
+
+// resolveDigest returns the content address used as the cache key. An image
+// already pinned by @sha256: needs no network; a tag is resolved with one
+// manifest request (platform-specific for a multi-arch index).
+func resolveDigest(image string, plat *v1.Platform) (string, error) {
+	if i := strings.LastIndex(image, "@"); i >= 0 {
+		return image[i+1:], nil
+	}
+	return crane.Digest(image, crane.WithAuth(authn.Anonymous), crane.WithPlatform(plat))
+}
+
+// flattenTo writes the image's flattened (whiteout-applied) rootfs to path.
+func flattenTo(img v1.Image, path string) (int64, error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return 0, err
+	}
+	rc := mutate.Extract(img)
+	n, err := io.Copy(f, rc)
+	rc.Close()
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return n, err
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// linkOrCopy hard-links src to dst (instant, no extra disk) and falls back to
+// a byte copy across filesystems (e.g. cache on ~, stage on /tmp).
+func linkOrCopy(src, dst string) error {
+	os.Remove(dst)
+	if err := os.Link(src, dst); err == nil {
+		return nil
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // ociSpec builds a minimal-but-valid OCI runtime spec from the image config.
