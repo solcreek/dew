@@ -413,7 +413,15 @@ DATA=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --detach) DETACH=1; shift ;;
-        --data)   DATA="$2"; shift 2 ;;
+        --data)
+            # Require a value in the documented hostpath:contpath form, rather
+            # than blindly reading $2 (a missing value trips `shift 2` under
+            # set -e, and a colon-less value would mkdir an unintended path).
+            case "${2:-}" in
+                ?*:?*) DATA="$2" ;;
+                *) echo "dew-oci-run: --data requires hostpath:contpath" >&2; exit 2 ;;
+            esac
+            shift 2 ;;
         *) break ;;
     esac
 done
