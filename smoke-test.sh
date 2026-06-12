@@ -141,7 +141,10 @@ else
     test_result "node: second boot" "skip"
 fi
 
-# --- Test 6: Standard profile + containerd ---
+# --- Test 6: Standard profile crun runtime (replaces containerd) ---
+# Containers run via crun on the host-pull + overlay path (dew-oci-run); there
+# is no in-guest containerd. Assert the runtime binary and launcher are present
+# and crun is executable.
 INITRD_STD="$INITRD_DIR/initramfs-standard.cpio.gz"
 if [ -f "$INITRD_STD" ] && [ -f "$KERNEL" ]; then
     rm -f ~/.local/state/dew/default.sock /tmp/dew-smoke-std.img
@@ -149,25 +152,22 @@ if [ -f "$INITRD_STD" ] && [ -f "$KERNEL" ]; then
         --network --memory 2048 --disk /tmp/dew-smoke-std.img 2>/dev/null &
     PID=$!
     for i in $(seq 1 120); do [ -S ~/.local/state/dew/default.sock ] && break; sleep 0.5; done
-    RESULT=$($DEW exec "containerd --version 2>&1 | head -1" 2>&1)
-    if echo "$RESULT" | grep -q "containerd"; then
-        test_result "standard: containerd running" "pass"
+    RESULT=$($DEW exec "crun --version 2>&1 | head -1" 2>&1)
+    if echo "$RESULT" | grep -q "crun"; then
+        test_result "standard: crun runtime available" "pass"
     else
-        test_result "standard: containerd running" "fail"
+        test_result "standard: crun runtime available" "fail"
     fi
-    # CNI bridge networking: a bare `ip link add` proves the bridge kernel
-    # module is loaded. Without it, nerdctl run fails with "operation not
-    # supported" when CNI tries to create the nerdctl0 bridge.
-    BR_RESULT=$($DEW exec "ip link add dewtestbr type bridge && ip link del dewtestbr && echo bridge-ok" 2>&1)
-    if echo "$BR_RESULT" | grep -q "bridge-ok"; then
-        test_result "standard: CNI bridge module loaded" "pass"
+    LAUNCHER=$($DEW exec "test -x /usr/local/bin/dew-oci-run && echo launcher-ok" 2>&1)
+    if echo "$LAUNCHER" | grep -q "launcher-ok"; then
+        test_result "standard: dew-oci-run launcher present" "pass"
     else
-        test_result "standard: CNI bridge module loaded" "fail"
+        test_result "standard: dew-oci-run launcher present" "fail"
     fi
     kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -f ~/.local/state/dew/default.sock
 else
-    test_result "standard: containerd" "skip"
-    test_result "standard: CNI bridge module loaded" "skip"
+    test_result "standard: crun runtime available" "skip"
+    test_result "standard: dew-oci-run launcher present" "skip"
 fi
 
 # --- Test 6b: First-boot DHCP lease arrives quickly across cold boots ---

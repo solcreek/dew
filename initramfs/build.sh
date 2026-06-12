@@ -7,7 +7,7 @@ set -euo pipefail
 #   ./build.sh              # standard profile (default)
 #   ./build.sh minimal      # exec-only, no container runtime
 #   ./build.sh node          # Node.js + npm + build-base (React/Vite ready)
-#   ./build.sh standard     # node + containerd + nerdctl + runc + CNI
+#   ./build.sh standard     # node + crun (larger RAM/disk tier)
 
 PROFILE="${1:-standard}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -66,11 +66,6 @@ case "$ALPINE_ARCH" in
 esac
 KERNEL_APK_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${ALPINE_ARCH}/linux-virt-${KERNEL_PKG_VER}.apk"
 
-# Container runtime versions
-CONTAINERD_VERSION="2.1.1"
-NERDCTL_VERSION="2.1.2"
-RUNC_VERSION="1.2.6"
-CNI_VERSION="1.7.1"
 # crun: the lightweight OCI runtime used by dew's host-pull + overlay path
 # (the dew-oci-run launcher). Static binary, runs on musl. Baked into every
 # disk-bearing profile (node/python/standard).
@@ -157,13 +152,10 @@ KMODS_BASE="af_packet virtio_net overlay mbcache jbd2 ext4 virtio_blk \
             vsock vmw_vsock_virtio_transport fuse virtiofs \
             nf_tables nft_compat ip_tables iptable_filter \
             crc32c_generic virtio-rng binfmt_misc"
-# Container networking (CNI bridge + masquerade) — standard profile only.
-KMODS_STANDARD="bridge br_netfilter veth iptable_nat nf_nat \
-                xt_MASQUERADE xt_addrtype"
+# All profiles use the same module set now: crun runs containers with
+# --net=host (no CNI bridge), so the standard profile no longer needs the
+# bridge/veth/masquerade modules the old containerd path required.
 KMODS_KEEP="$KMODS_BASE"
-if [ "$PROFILE" = "standard" ]; then
-    KMODS_KEEP="$KMODS_KEEP $KMODS_STANDARD"
-fi
 
 MODS_ROOT="$WORK_DIR/lib/modules/${KERNEL_VER}"
 DEP_FILE="$MODS_ROOT/modules.dep"
@@ -391,65 +383,6 @@ for pkg in $EXTRA_PKGS; do
     fi
     [ -f "$APK_FILE" ] && tar xzf "$APK_FILE" -C "$WORK_DIR" 2>/dev/null || true
 done
-
-# --- Step 4b: Container runtime (standard profile only) ---
-if [ "$PROFILE" = "standard" ]; then
-    echo "--- Step 4b: Container runtime ---"
-
-    # containerd (static build for musl/Alpine)
-    CONTAINERD_TAR="${CACHE}/containerd-static-${CONTAINERD_VERSION}-linux-${GO_ARCH}.tar.gz"
-    if [ ! -f "$CONTAINERD_TAR" ]; then
-        echo "Downloading containerd ${CONTAINERD_VERSION} (static)..."
-        curl -fSL -o "$CONTAINERD_TAR" \
-            "https://github.com/containerd/containerd/releases/download/v${CONTAINERD_VERSION}/containerd-static-${CONTAINERD_VERSION}-linux-${GO_ARCH}.tar.gz"
-    fi
-    tar xzf "$CONTAINERD_TAR" -C "$WORK_DIR/usr/local/" 2>/dev/null
-    echo "containerd: $(ls -lh "$WORK_DIR/usr/local/bin/containerd" | awk '{print $5}')"
-
-    # runc
-    RUNC_BIN="${CACHE}/runc-${RUNC_VERSION}-${GO_ARCH}"
-    if [ ! -f "$RUNC_BIN" ]; then
-        echo "Downloading runc ${RUNC_VERSION}..."
-        curl -fSL -o "$RUNC_BIN" \
-            "https://github.com/opencontainers/runc/releases/download/v${RUNC_VERSION}/runc.${GO_ARCH}"
-    fi
-    cp "$RUNC_BIN" "$WORK_DIR/usr/local/bin/runc"
-    chmod 755 "$WORK_DIR/usr/local/bin/runc"
-    echo "runc: $(ls -lh "$WORK_DIR/usr/local/bin/runc" | awk '{print $5}')"
-
-    # nerdctl
-    NERDCTL_TAR="${CACHE}/nerdctl-${NERDCTL_VERSION}-linux-${GO_ARCH}.tar.gz"
-    if [ ! -f "$NERDCTL_TAR" ]; then
-        echo "Downloading nerdctl ${NERDCTL_VERSION}..."
-        curl -fSL -o "$NERDCTL_TAR" \
-            "https://github.com/containerd/nerdctl/releases/download/v${NERDCTL_VERSION}/nerdctl-${NERDCTL_VERSION}-linux-${GO_ARCH}.tar.gz"
-    fi
-    tar xzf "$NERDCTL_TAR" -C "$WORK_DIR/usr/local/bin/" nerdctl 2>/dev/null
-    echo "nerdctl: $(ls -lh "$WORK_DIR/usr/local/bin/nerdctl" | awk '{print $5}')"
-
-    # CNI plugins
-    CNI_TAR="${CACHE}/cni-plugins-${CNI_VERSION}-linux-${GO_ARCH}.tgz"
-    if [ ! -f "$CNI_TAR" ]; then
-        echo "Downloading CNI plugins ${CNI_VERSION}..."
-        curl -fSL -o "$CNI_TAR" \
-            "https://github.com/containernetworking/plugins/releases/download/v${CNI_VERSION}/cni-plugins-linux-${GO_ARCH}-v${CNI_VERSION}.tgz"
-    fi
-    mkdir -p "$WORK_DIR/opt/cni/bin"
-    tar xzf "$CNI_TAR" -C "$WORK_DIR/opt/cni/bin/" 2>/dev/null
-    echo "CNI: $(du -sh "$WORK_DIR/opt/cni/bin" | awk '{print $1}')"
-
-    # e2fsprogs already installed by node/standard shared block above
-
-    # containerd config
-    mkdir -p "$WORK_DIR/etc/containerd"
-    cat > "$WORK_DIR/etc/containerd/config.toml" << 'CTRD_EOF'
-version = 3
-[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc]
-  runtime_type = "io.containerd.runc.v2"
-[plugins."io.containerd.cri.v1.runtime".cni]
-  bin_dir = "/opt/cni/bin"
-CTRD_EOF
-fi
 
 # --- Step 4c: crun OCI runtime + dew-oci-run launcher (disk-bearing profiles) ---
 # crun is the runtime for dew's host-pull + overlay path: the host pulls/flattens
@@ -800,30 +733,10 @@ mkdir -p /etc/sudoers.d 2>/dev/null || true
 echo "dew ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/dew 2>/dev/null || true
 chmod 440 /etc/sudoers.d/dew 2>/dev/null || true
 
-# containerd (standard profile, now on ext4 rootfs)
-if [ -x /usr/local/bin/containerd ]; then
-    # CNI bridge networking modules. Without these the bridge plugin fails
-    # with `could not add "nerdctl0": operation not supported` because the
-    # bridge driver isn't registered with the kernel.
-    modprobe bridge 2>/dev/null || true
-    modprobe br_netfilter 2>/dev/null || true
-    modprobe veth 2>/dev/null || true
-    # Masquerade NAT for outbound traffic from containers
-    modprobe iptable_nat 2>/dev/null || true
-    modprobe nf_nat 2>/dev/null || true
-    modprobe xt_MASQUERADE 2>/dev/null || true
-    modprobe xt_addrtype 2>/dev/null || true
-    # iptables needed for CNI bridge networking
-    command -v iptables >/dev/null 2>&1 || apk add -q --no-cache iptables 2>/dev/null || true
-    # TMPDIR for nerdctl/containerd scratch mounts
-    export TMPDIR=/tmp/containerd-tmp
-    mkdir -p /tmp/containerd-tmp
-    chmod 1777 /tmp/containerd-tmp
-    mkdir -p /run/containerd /var/lib/containerd /var/lib/nerdctl
-    containerd >/var/log/containerd.log 2>&1 &
-    sleep 0.5
-    echo "containerd: started"
-fi
+# Container runtime: dew uses crun via the host-pull + overlay path
+# (dew-oci-run), launched on demand by `dew up --with` / `dew run --image`.
+# There is no in-guest containerd/nerdctl daemon to start at boot. cgroup v2
+# (mounted above) and overlay (in KMODS_BASE) are all crun needs.
 
 # dew-agent. Start BEFORE the per-runtime apk install below — the
 # released node profile bakes nodejs+npm into the initramfs, so the

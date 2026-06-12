@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dew run --image <ref>`** runs any OCI image in a fresh VM. The image
+  is pulled and flattened on the host (go-containerregistry), shared into
+  the guest over virtiofs, and run with `crun` over an overlay rootfs. Any
+  `-- <cmd>` overrides the image entrypoint.
+- **Content-addressed image cache** (`~/Library/Caches/dew/oci`), keyed on
+  the platform-specific manifest digest, with a short-lived tag→digest
+  cache. Repeat stages skip the registry pull and flatten. The cache is
+  dew's own and fully separate from any Docker image store on the host.
+- **`--with` services now persist their data.** Each service's data dir is
+  bind-mounted from `/var/lib/dew/services/<name>/data` on the guest ext4
+  disk, surviving restarts.
+
+### Changed
+
+- **`dew up --with` services now run via `crun`, not containerd/nerdctl.**
+  Images are pulled on the host and run in the guest through a 2.8MB static
+  `crun` over overlayfs. `--with` no longer forces the `standard` profile —
+  services run on the project's own profile (a diskless `minimal` is
+  upgraded to `node`). Cold-VM container start is ~3× faster.
+
+### Removed
+
+- **In-guest containerd / nerdctl / runc / CNI are gone.** They are no
+  longer installed in any profile; the `standard` profile shrinks from
+  ~122MB to a `node`+`crun` tier (kept for its larger RAM/disk defaults).
+  Breaking: `dew exec nerdctl …` / `containerd` inside the VM no longer
+  work. The remote `dew deploy` / `dew serve` runtime is unaffected.
+
+### Known issues
+
+- An abrupt VM stop can lose unsynced page-cache writes for service data;
+  committed database data is safe (DBs fsync). A graceful-shutdown sync is
+  a planned follow-up.
+
 ## [0.7.38] - 2026-06-10
 
 ### Fixed
