@@ -80,8 +80,10 @@ func TestStage_CacheHitOffline(t *testing.T) {
 // TestStage_Integration exercises the real pull+flatten+cache path against
 // Docker Hub. Skipped under -short (and offline CI).
 func TestStage_Integration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("network integration test; skipped under -short")
+	// Opt-in: this pulls from Docker Hub, so it must not run in the default
+	// `go test ./...` CI (flaky/slow, fails in restricted-network sandboxes).
+	if testing.Short() || os.Getenv("DEW_OCI_INTEGRATION") == "" {
+		t.Skip("network integration test; set DEW_OCI_INTEGRATION=1 to run")
 	}
 	cacheRoot := t.TempDir()
 	stageDir := t.TempDir()
