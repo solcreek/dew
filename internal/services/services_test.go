@@ -1,7 +1,6 @@
 package services
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -33,20 +32,6 @@ func TestLookup(t *testing.T) {
 		if s.Port != tt.port {
 			t.Errorf("Lookup(%q).Port = %d, want %d", tt.name, s.Port, tt.port)
 		}
-	}
-}
-
-func TestNerdctlRunCmd(t *testing.T) {
-	s := Registry["postgres"]
-	cmd := NerdctlRunCmd(s)
-	if !strings.Contains(cmd, "--net=host") {
-		t.Errorf("missing --net=host: %q", cmd)
-	}
-	if !strings.Contains(cmd, "POSTGRES_PASSWORD=dew") {
-		t.Errorf("missing env: %q", cmd)
-	}
-	if !strings.Contains(cmd, "postgres:16-alpine") {
-		t.Errorf("missing image: %q", cmd)
 	}
 }
 
