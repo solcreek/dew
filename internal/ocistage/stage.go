@@ -170,7 +170,10 @@ func Stage(ctx context.Context, ref string, opts Options) (*Bundle, error) {
 
 	// Write the OCI runtime spec.
 	spec := ociSpec(cfg, GuestRootPath(opts.Name), opts.Cmd, opts.Env, opts.Data)
-	specBytes, _ := json.MarshalIndent(spec, "", "  ")
+	specBytes, mErr := json.MarshalIndent(spec, "", "  ")
+	if mErr != nil {
+		return nil, fmt.Errorf("marshal OCI spec: %w", mErr)
+	}
 	if err := os.WriteFile(filepath.Join(opts.StageDir, "config.json"), specBytes, 0o644); err != nil {
 		return nil, err
 	}
