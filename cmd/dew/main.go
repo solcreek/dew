@@ -678,10 +678,11 @@ Network:
 Compatibility:
   --rosetta     Apple Silicon only. Mounts Apple's Rosetta translator into
                 the guest and registers binfmt_misc, so x86_64/amd64 binaries
-                run under translation. Pair with --profile standard to run
-                amd64 containers: dew run --profile standard --network --rosetta
-                -- nerdctl run --platform linux/amd64 <image>. Expect ~0.7-0.8x
-                native speed on compiled code; far slower on crypto/SIMD work.
+                run under translation. To run an amd64 container, pair it with
+                --image and --platform:
+                dew run --rosetta --platform linux/amd64 --image <ref>
+                Expect ~0.7-0.8x native speed on compiled code; far slower on
+                crypto/SIMD work.
 `)
 }
 
