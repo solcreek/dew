@@ -1121,6 +1121,10 @@ func cmdRun(args []string) error {
 		return err
 	}
 
+	// One wall-clock budget spans host-side staging + boot + agent wait + exec,
+	// so --timeout bounds the whole run (and cancels a slow registry pull).
+	budget := newRunBudget(flagTimeout)
+
 	// --image <ref>: pull+stage an arbitrary OCI image on the host, share its
 	// bundle at /oci-stage, and run it in the guest via crun (dew-oci-run). Any
 	// `-- <cmd>` overrides the image entrypoint. Foreground so output streams
@@ -1130,7 +1134,13 @@ func cmdRun(args []string) error {
 		os.RemoveAll(stageRoot)
 		defer os.RemoveAll(stageRoot)
 		fmt.Fprintf(os.Stderr, "dew: staging image %s\n", flagImage)
-		if _, err := ocistage.Stage(context.Background(), flagImage, ocistage.Options{
+		stageCtx := context.Background()
+		if flagTimeout > 0 {
+			var cancel context.CancelFunc
+			stageCtx, cancel = context.WithTimeout(stageCtx, budget.window(flagTimeout))
+			defer cancel()
+		}
+		if _, err := ocistage.Stage(stageCtx, flagImage, ocistage.Options{
 			StageDir: filepath.Join(stageRoot, "app"),
 			Name:     "app",
 			Cmd:      cmdArgs,
@@ -1166,7 +1176,7 @@ func cmdRun(args []string) error {
 		return err
 	}
 
-	budget := newRunBudget(flagTimeout)
+	// budget was created before staging so --timeout spans the whole run.
 	timeoutErr := func(stage string) error {
 		return dewerr.Newf(dewerr.CodeTimeout, "run: timed out after %s during %s (--timeout)", flagTimeout, stage)
 	}
