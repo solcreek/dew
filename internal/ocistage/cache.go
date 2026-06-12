@@ -118,7 +118,12 @@ func flattenTo(img v1.Image, path string) (int64, error) {
 	tmpName := tmp.Name()
 	rc := mutate.Extract(img)
 	n, err := io.Copy(tmp, rc)
-	rc.Close()
+	// Capture the stream Close error too: a decompressor may only detect layer
+	// corruption when it reads the gzip trailer at Close, and missing it would
+	// cache a truncated rootfs as if it were valid.
+	if cerr := rc.Close(); err == nil {
+		err = cerr
+	}
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
 	}
