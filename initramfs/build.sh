@@ -71,6 +71,10 @@ CONTAINERD_VERSION="2.1.1"
 NERDCTL_VERSION="2.1.2"
 RUNC_VERSION="1.2.6"
 CNI_VERSION="1.7.1"
+# crun: the lightweight OCI runtime used by dew's host-pull + overlay path
+# (the dew-oci-run launcher). Static binary, runs on musl. Baked into every
+# disk-bearing profile (node/python/standard).
+CRUN_VERSION="1.20"
 
 echo "=== Building Dew initramfs (${PROFILE}) ==="
 echo "Arch: ${ALPINE_ARCH}"
@@ -445,6 +449,71 @@ version = 3
 [plugins."io.containerd.cri.v1.runtime".cni]
   bin_dir = "/opt/cni/bin"
 CTRD_EOF
+fi
+
+# --- Step 4c: crun OCI runtime + dew-oci-run launcher (disk-bearing profiles) ---
+# crun is the runtime for dew's host-pull + overlay path: the host pulls/flattens
+# an image and stages rootfs.tar + config.json over virtiofs; dew-oci-run
+# assembles the overlay and runs it with crun. No containerd/nerdctl/CNI needed.
+if [ "$PROFILE" != "minimal" ]; then
+    echo "--- Step 4c: crun runtime ---"
+    CRUN_BIN="${CACHE}/crun-${CRUN_VERSION}-${GO_ARCH}"
+    if [ ! -f "$CRUN_BIN" ]; then
+        echo "Downloading crun ${CRUN_VERSION}..."
+        curl -fSL -o "$CRUN_BIN" \
+            "https://github.com/containers/crun/releases/download/${CRUN_VERSION}/crun-${CRUN_VERSION}-linux-${GO_ARCH}"
+    fi
+    cp "$CRUN_BIN" "$WORK_DIR/usr/local/bin/crun"
+    chmod 755 "$WORK_DIR/usr/local/bin/crun"
+    echo "crun: $(ls -lh "$WORK_DIR/usr/local/bin/crun" | awk '{print $5}')"
+
+    # dew-oci-run: given a bundle dir (rootfs.tar + config.json staged by the
+    # host over virtiofs) and a name, assemble an overlay rootfs on the ext4
+    # disk and run the container with crun. The overlay path must match
+    # ocistage.GuestRootPath: /var/lib/dew/oci/<name>/merged. upper/work live on
+    # the ext4 root (not tmpfs, which overlay rejects as an upperdir).
+    cat > "$WORK_DIR/usr/local/bin/dew-oci-run" << 'OCIRUN_EOF'
+#!/bin/sh
+set -e
+DETACH=0
+DATA=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --detach) DETACH=1; shift ;;
+        --data)   DATA="$2"; shift 2 ;;
+        *) break ;;
+    esac
+done
+BUNDLE="$1"; NAME="$2"
+if [ -z "$BUNDLE" ] || [ -z "$NAME" ]; then
+    echo "usage: dew-oci-run [--detach] [--data hostpath:contpath] <bundle-dir> <name>" >&2
+    exit 2
+fi
+
+RUN="/var/lib/dew/oci/$NAME"
+rm -rf "$RUN"
+mkdir -p "$RUN/lower" "$RUN/upper" "$RUN/work" "$RUN/merged" "$RUN/bundle"
+
+# Ensure the persistent data dir (host side of the bind mount) exists so crun
+# can bind it; the bind itself is already declared in config.json.
+if [ -n "$DATA" ]; then
+    mkdir -p "${DATA%%:*}"
+fi
+
+tar -xf "$BUNDLE/rootfs.tar" -C "$RUN/lower" 2>/dev/null
+mount -t overlay overlay \
+    -o "lowerdir=$RUN/lower,upperdir=$RUN/upper,workdir=$RUN/work" \
+    "$RUN/merged"
+cp "$BUNDLE/config.json" "$RUN/bundle/config.json"
+
+if [ "$DETACH" = "1" ]; then
+    setsid crun run -b "$RUN/bundle" "$NAME" >"/var/log/dew-oci-$NAME.log" 2>&1 &
+    echo "dew-oci-run: $NAME started (detached)"
+else
+    exec crun run -b "$RUN/bundle" "$NAME"
+fi
+OCIRUN_EOF
+    chmod 755 "$WORK_DIR/usr/local/bin/dew-oci-run"
 fi
 
 # --- Step 5: Helper scripts ---
