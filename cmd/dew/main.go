@@ -739,6 +739,7 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 	flagTimeout = 0
 	flagImage = ""
 	flagPlatform = ""
+	flagWith = ""
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
