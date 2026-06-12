@@ -675,6 +675,18 @@ Network:
                 the guest to reach those IPs. Only meaningful with
                 --network-policy=restricted.
 
+Containers:
+  --image REF   (dew run) Pull an OCI image on the host and run it in the VM
+                via crun. A trailing -- <cmd> overrides the image entrypoint.
+                dew run does not auto-forward ports — add --forward, or use
+                dew up --with for managed services.
+  --platform OS/ARCH
+                Image platform to pull (default: the guest arch). Set
+                linux/amd64 with --rosetta to run an amd64 image.
+  --with NAMES  (dew up) Comma-separated predefined services to run alongside
+                the project (e.g. postgres,redis). Each is pulled on the host,
+                run via crun, and its port forwarded.
+
 Compatibility:
   --rosetta     Apple Silicon only. Mounts Apple's Rosetta translator into
                 the guest and registers binfmt_misc, so x86_64/amd64 binaries
