@@ -84,12 +84,13 @@ func resolveDigest(ctx context.Context, ref string, plat *v1.Platform, cacheRoot
 
 	d, err := crane.Digest(ref, pullOpts(ctx, plat)...)
 	if err != nil {
-		// Registry unreachable (offline / transient). If we have a previously
-		// resolved digest — even past its TTL — reuse it so an already-cached
-		// rootfs can still be staged offline, instead of bypassing the cache
-		// and forcing a pull that will also fail.
+		// Digest refresh failed (offline, auth, 404, rate-limit, …). If we have
+		// a previously resolved digest — even past its TTL — reuse it so an
+		// already-cached rootfs can still be staged, instead of bypassing the
+		// cache and forcing a pull that will also fail. Log the actual error so
+		// the cause is debuggable rather than asserting "unreachable".
 		if haveRec {
-			fmt.Fprintf(os.Stderr, "dew: registry unreachable for %s; using cached digest\n", ref)
+			fmt.Fprintf(os.Stderr, "dew: digest refresh for %s failed (%v); using cached digest\n", ref, err)
 			return rec.Digest, nil
 		}
 		return "", err
