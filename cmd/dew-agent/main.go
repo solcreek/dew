@@ -28,6 +28,10 @@ import (
 var authToken string
 var tokenSet bool
 
+// syncInterval bounds how much unsynced guest data an abrupt VM stop can lose.
+// 10s is a light touch given the Cached+Fsync disk attachment.
+const syncInterval = 10 * time.Second
+
 // isAuthorized wraps the package-level state for the dispatch loop.
 // The pure logic lives in internal/agentauth so it can be tested on
 // any host OS (this package is //go:build linux only).
@@ -39,6 +43,20 @@ var execUser string
 func main() {
 	// Token is now injected via vsock handshake, not env/cmdline
 	execUser = os.Getenv("DEW_EXEC_USER")
+
+	// Periodically flush filesystem buffers. The host attaches the disk
+	// Cached+Fsync, so non-fsync'd guest writes sit in the host page cache
+	// until something fsyncs; an abrupt VM stop (or `dew down`) would lose
+	// them. A periodic sync bounds that window to the interval for every stop
+	// path — no host-side handshake needed. sync() here is a regular fsync to
+	// the image file (not F_FULLFSYNC), so the cost is small.
+	go func() {
+		t := time.NewTicker(syncInterval)
+		defer t.Stop()
+		for range t.C {
+			syscall.Sync()
+		}
+	}()
 
 	port := uint32(protocol.DefaultPort)
 	if p := os.Getenv("DEW_VSOCK_PORT"); p != "" {
