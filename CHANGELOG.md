@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   populate) measured ~350 KB/s → ~7.8 MB/s. Committed data stays safe against
   a guest crash (fsync still honored); only an abrupt host power loss risks the
   last unflushed writes — the standard dev-VM trade-off (Lima/Colima do the same).
+- **The guest flushes filesystem buffers every 10s.** With the Cached+Fsync
+  disk attachment, non-fsync'd writes otherwise sit in the host page cache
+  until something fsyncs; the periodic sync bounds what an abrupt VM stop (or
+  `dew down`) can lose to at most ~10s, for every stop path. Committed DB data
+  was already safe via fsync.
 - **`dew up --with` services now run via `crun`, not containerd/nerdctl.**
   Images are pulled on the host and run in the guest through a 2.8MB static
   `crun` over overlayfs. `--with` no longer forces the `standard` profile —
@@ -47,12 +52,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ~122MB to a `node`+`crun` tier (kept for its larger RAM/disk defaults).
   Breaking: `dew exec nerdctl …` / `containerd` inside the VM no longer
   work. The remote `dew deploy` / `dew serve` runtime is unaffected.
-
-### Known issues
-
-- An abrupt VM stop can lose unsynced page-cache writes for service data;
-  committed database data is safe (DBs fsync). A graceful-shutdown sync is
-  a planned follow-up.
 
 ## [0.7.38] - 2026-06-10
 

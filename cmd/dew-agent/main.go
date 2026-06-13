@@ -28,6 +28,10 @@ import (
 var authToken string
 var tokenSet bool
 
+// syncInterval bounds how much unsynced guest data an abrupt VM stop can lose.
+// 10s is a light touch given the Cached+Fsync disk attachment.
+const syncInterval = 10 * time.Second
+
 // isAuthorized wraps the package-level state for the dispatch loop.
 // The pure logic lives in internal/agentauth so it can be tested on
 // any host OS (this package is //go:build linux only).
@@ -39,6 +43,26 @@ var execUser string
 func main() {
 	// Token is now injected via vsock handshake, not env/cmdline
 	execUser = os.Getenv("DEW_EXEC_USER")
+
+	// Periodically flush filesystem buffers. The host attaches the disk
+	// Cached+Fsync, so non-fsync'd guest writes sit in the host page cache
+	// until something fsyncs; an abrupt VM stop (or `dew down`) would lose
+	// them. A periodic sync bounds that window for every stop path — no
+	// host-side handshake needed. syscall.Sync() is the guest sync(2): it
+	// flushes the guest's dirty pages to the virtio block device, and the
+	// host's Cached+Fsync attachment turns that into an fsync() on the backing
+	// image file (not the heavier F_FULLFSYNC), so the cost is small.
+	//
+	// Sleep between syncs rather than a Ticker: a Ticker keeps a pending tick
+	// queued, so if one Sync() runs longer than the interval the next fires
+	// immediately — degrading to back-to-back syncs under heavy write. A sleep
+	// guarantees a fixed pause between sync completions regardless of duration.
+	go func() {
+		for {
+			time.Sleep(syncInterval)
+			syscall.Sync()
+		}
+	}()
 
 	port := uint32(protocol.DefaultPort)
 	if p := os.Getenv("DEW_VSOCK_PORT"); p != "" {
