@@ -48,8 +48,10 @@ func main() {
 	// Cached+Fsync, so non-fsync'd guest writes sit in the host page cache
 	// until something fsyncs; an abrupt VM stop (or `dew down`) would lose
 	// them. A periodic sync bounds that window for every stop path — no
-	// host-side handshake needed. sync() here is a regular fsync to the image
-	// file (not F_FULLFSYNC), so the cost is small.
+	// host-side handshake needed. syscall.Sync() is the guest sync(2): it
+	// flushes the guest's dirty pages to the virtio block device, and the
+	// host's Cached+Fsync attachment turns that into an fsync() on the backing
+	// image file (not the heavier F_FULLFSYNC), so the cost is small.
 	//
 	// Sleep between syncs rather than a Ticker: a Ticker keeps a pending tick
 	// queued, so if one Sync() runs longer than the interval the next fires

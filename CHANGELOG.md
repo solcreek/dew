@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The guest flushes filesystem buffers every 10s.** With the Cached+Fsync
   disk attachment, non-fsync'd writes otherwise sit in the host page cache
   until something fsyncs; the periodic sync bounds what an abrupt VM stop (or
-  `dew down`) can lose to a few seconds, for every stop path. Committed DB data
+  `dew down`) can lose to at most ~10s, for every stop path. Committed DB data
   was already safe via fsync.
 - **`dew up --with` services now run via `crun`, not containerd/nerdctl.**
   Images are pulled on the host and run in the guest through a 2.8MB static
