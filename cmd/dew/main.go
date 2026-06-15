@@ -1812,6 +1812,13 @@ func cmdUp(args []string) error {
 
 	if err := d.Start(ctx); err != nil {
 		emit(map[string]interface{}{"type": "boot", "status": "failed", "error": err.Error()})
+		// VZ Code=2 ("storage device attachment is invalid") means the
+		// existing disk image is unusable. The darwin layer already prints
+		// the rm recovery; also point at the one-command rebuild.
+		if !flagResetDisk && cfg.DiskPath != "" &&
+			strings.Contains(err.Error(), "storage device attachment is invalid") {
+			return fmt.Errorf("%w\n\n  Rebuild the disk in one step: dew up --reset-disk", err)
+		}
 		return err
 	}
 	bootMs := time.Since(start).Milliseconds()
