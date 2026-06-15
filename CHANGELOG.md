@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dew services`**: lists the predefined services (postgres, redis,
+  mysql, mongo, minio) with ready-to-use connection strings, and — when
+  a VM is running — marks which are live and on what host port. Replaces
+  digging through `/proc/*/environ` to recover credentials. `--json`
+  emits a structured envelope.
+- **`dew logs <service>`**: prints a `--with` service's container log
+  (crun writes it to `/var/log/dew-oci-<name>.log` in the guest) so you
+  don't need to know the path or that services run under crun.
+- **`dew up --services-only`** (alias `--no-dev`): boot only the
+  `--with` services, skipping project detection and the dev server — so
+  running just a database no longer needs a fake `package.json`. Emits a
+  top-level `{ready,mode:services-only}` once services are up.
+
+### Fixed
+
+- **Service `started` events no longer lie**: `dew up --with` emitted
+  `{service,started}` as soon as `dew-oci-run` reported the crun
+  container "running", even if the service then died or bound IPv6-only —
+  so the forwarded port hit a dead backend ("Connection terminated
+  unexpectedly"). Startup is now health-gated: dew polls the guest's
+  IPv4 LISTEN socket and only emits `started` once the port truly
+  accepts connections, otherwise `{service,failed}` with the container's
+  crun log captured at failure time. The started event also reports the
+  actual forwarded host port and a ready-to-use connection string.
+- **mysql is reachable over the forwarded port**: the mysql service now
+  starts with `--bind-address=0.0.0.0` (via a new `ocistage` Append
+  option that preserves the image entrypoint) so it listens on IPv4
+  instead of the image's IPv6-only default, which made `127.0.0.1:3306`
+  hang.
+- **`--json`/`--events` output is pure NDJSON**: `dew up` no longer
+  interleaves the VM serial console (kernel/boot lines) into the
+  lifecycle stream on stdout — the console moves to stderr in
+  machine-readable modes, matching `dew vm start`.
+- **Port-forward conflicts fall back instead of failing**: when the
+  requested host port is busy (e.g. a local postgres on 5432),
+  `dew vm forward add` and the `--with` auto-forward now bind a free
+  port and report the actual one rather than erroring out.
+- **Dead forward backends are no longer silent**: a failed guest-side
+  backend connection logs the reason before closing instead of leaving
+  the client to hang.
+- **`dew exec` has a reliable PATH**: guest commands always run with a
+  guaranteed PATH (sbin + `/usr/local/bin` + busybox dirs), fixing
+  intermittent `ss: not found` and empty output when the agent booted
+  with an empty environment.
+- **`dew vm start --help` (and other two-level commands)** print help
+  instead of `unknown flag`; subcommand help lookup is now
+  namespace-aware.
+
 ## [0.7.39] - 2026-06-13
 
 ### Added
