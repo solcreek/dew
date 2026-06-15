@@ -9,6 +9,30 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// For passthrough commands, main()'s global flag pre-scan must stop at
+// the subcommand so a guest command's own --json isn't read as dew's.
+func TestGlobalFlagScanArgs(t *testing.T) {
+	// dew exec curl --json url  → leading globals only (none here).
+	all := []string{"exec", "curl", "--json", "url"}
+	dispatch := []string{"exec", "curl", "--json", "url"}
+	if got := globalFlagScanArgs(all, dispatch, true); len(got) != 0 {
+		t.Errorf("passthrough scan = %v, want [] (guest --json not scanned)", got)
+	}
+	// dew --json exec curl → leading --json IS scanned.
+	all = []string{"--json", "exec", "curl"}
+	dispatch = []string{"exec", "curl"}
+	got := globalFlagScanArgs(all, dispatch, true)
+	if strings.Join(got, " ") != "--json" {
+		t.Errorf("leading scan = %v, want [--json]", got)
+	}
+	// Non-passthrough (e.g. share): scan everything (position-independent).
+	all = []string{"share", "--json", "3000"}
+	dispatch = []string{"share", "--json", "3000"}
+	if got := globalFlagScanArgs(all, dispatch, false); len(got) != 3 {
+		t.Errorf("non-passthrough scan = %v, want all 3 args", got)
+	}
+}
+
 // The whole point of migrating exec to cobra with SetInterspersed(false)
 // is that a guest command's own flags pass through untouched. This locks
 // that contract at the parse layer (no VM needed): we swap RunE to

@@ -18,6 +18,19 @@ import (
 // a guest command's own flags (e.g. `dew exec curl --json url`).
 var cobraCommands = map[string]bool{
 	"exec": true,
+	"run":  true,
+	"logs": true,
+}
+
+// passthroughCommands take a guest command after their own flags. For
+// these, main()'s global flag pre-scan must NOT look past the
+// subcommand token, or a guest command's own --json/--events would be
+// mistaken for dew's. They parse their own dew flags, so nothing is
+// lost by limiting the pre-scan to leading globals.
+var passthroughCommands = map[string]bool{
+	"exec": true,
+	"run":  true,
+	"logs": true,
 }
 
 // dispatchCobra runs a migrated command through cobra and reports
@@ -33,6 +46,18 @@ func dispatchCobra(cmd string, subArgs []string) (handled bool, err error) {
 	return true, root.Execute()
 }
 
+// globalFlagScanArgs returns the slice main() scans for leading global
+// no-value flags (--json/--events/...). For a passthrough command it
+// excludes the guest command (everything from the subcommand token on,
+// i.e. dispatchArgs), so the guest's own flags aren't read as dew's.
+// allArgs is os.Args[1:]; dispatchArgs is it with leading globals stripped.
+func globalFlagScanArgs(allArgs, dispatchArgs []string, passthrough bool) []string {
+	if passthrough {
+		return allArgs[:len(allArgs)-len(dispatchArgs)]
+	}
+	return allArgs
+}
+
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use: "dew",
@@ -42,7 +67,47 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.AddCommand(newExecCmd())
+	root.AddCommand(newRunCmd())
+	root.AddCommand(newLogsCmd())
 	return root
+}
+
+// newRunCmd is a thin shim: run shares the big parseFlags() parser with
+// `vm start` and `up` (--cpus/--memory/--profile/--image/--network/...),
+// so flag handling stays in cmdRun for now. DisableFlagParsing makes
+// cobra pass every token through verbatim — including the `--` separator
+// that parseFlags relies on to mark the start of a dash-leading guest
+// command. A later slice can lift the shared flags onto cobra natively.
+func newRunCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "run [flags] -- <cmd...>",
+		Short:              "Run a command in an ephemeral VM",
+		Long:               "Run a command in a fresh, throwaway VM. State does NOT persist between\ninvocations; use `dew vm start` + `dew exec` for a long-lived VM.",
+		DisableFlagParsing: true,
+		RunE: func(_ *cobra.Command, args []string) error {
+			return cmdRun(args)
+		},
+	}
+}
+
+// newLogsCmd prints a --with service's container log. No dew flags of
+// its own, so a plain native command (the single positional is the
+// service name).
+func newLogsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "logs <service>",
+		Short: "Show a --with service's container logs",
+		Long:  "Print the container log for a --with service (postgres, redis, …),\nwhich runs via crun in the guest at /var/log/dew-oci-<name>.log.",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) < 1 {
+				return dewerr.New(dewerr.CodeUsage, "usage: dew logs <service>")
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, args []string) error {
+			return cmdLogs(args)
+		},
+	}
 }
 
 func newExecCmd() *cobra.Command {

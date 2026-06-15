@@ -482,23 +482,6 @@ func main() {
 		os.Exit(int(dewerr.CodeUsage))
 	}
 
-	// Pre-scan args for global no-value flags so they're set BEFORE
-	// cmd dispatch — covers cases where a subcommand's own arg parser
-	// doesn't run parseFlags() (e.g. cmdShare). Position-independent:
-	// `dew --events share 3000` and `dew share --events 3000` both work.
-	for _, a := range os.Args[1:] {
-		switch a {
-		case "--json":
-			flagJSON = true
-		case "--events":
-			flagEvents = true
-		case "--stream":
-			flagStream = true
-		case "--dry-run":
-			flagDryRun = true
-		}
-	}
-
 	// Allow global no-value flags to appear before the subcommand:
 	// `dew --json apps`, `dew --events up`, etc. Previously the
 	// dispatcher saw `--json` as the command and errored. Per-command
@@ -512,10 +495,33 @@ func main() {
 		printUsage()
 		os.Exit(int(dewerr.CodeUsage))
 	}
+	cmd := dispatchArgs[0]
+
+	// Pre-scan args for global no-value flags so they're set BEFORE
+	// cmd dispatch — covers cases where a subcommand's own arg parser
+	// doesn't run parseFlags() (e.g. cmdShare). Position-independent:
+	// `dew --events share 3000` and `dew share --events 3000` both work.
+	//
+	// For passthrough commands (exec/run/logs) only the LEADING globals
+	// count — scanning the guest command's own flags would mistake e.g.
+	// `dew exec curl --json url` for dew's JSON mode. Those commands
+	// parse their own dew flags, so nothing is lost.
+	scan := globalFlagScanArgs(os.Args[1:], dispatchArgs, passthroughCommands[cmd])
+	for _, a := range scan {
+		switch a {
+		case "--json":
+			flagJSON = true
+		case "--events":
+			flagEvents = true
+		case "--stream":
+			flagStream = true
+		case "--dry-run":
+			flagDryRun = true
+		}
+	}
 
 	// Only check for updates on user-facing commands, not internal (exec, start).
 	// Skip in JSON mode — agents don't want noise.
-	cmd := dispatchArgs[0]
 	if !flagJSON && cmd != "exec" && cmd != "start" && cmd != "run" && cmd != "serve" {
 		go selfupdate.CheckBackground(version)
 	}
@@ -546,7 +552,7 @@ func main() {
 		deprecationHint("start", "vm start")
 		err = cmdStart(subArgs)
 	case "run":
-		err = cmdRun(subArgs)
+		_, err = dispatchCobra("run", subArgs)
 	case "exec":
 		// Migrated to cobra (see cobra.go). Legacy cmdExec stays for
 		// internal callers like cmdLogs.
@@ -574,7 +580,7 @@ func main() {
 	case "services":
 		err = cmdServices(subArgs)
 	case "logs":
-		err = cmdLogs(subArgs)
+		_, err = dispatchCobra("logs", subArgs)
 	case "down":
 		err = cmdDown()
 	case "assets":
