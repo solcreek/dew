@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Upgrades no longer boot a stale kernel/initramfs (guest kernel
+  panic).** The darwin binaries shipped with an empty `ExpectedAssetSHA`
+  map because they were compiled in `build-macos` before the SHA
+  manifest existed, with goreleaser only packaging them prebuilt. With
+  no embedded SHAs, dew fell back to legacy un-versioned cache paths and
+  reused a previous version's `vmlinuz`/initramfs across upgrades —
+  surfacing on Intel as `switch_root: can't execute '/init-stage2':
+  Exec format error` and a kernel panic (booting 6.12.91 instead of the
+  shipped kernel). `build-macos` now depends on `build-linux`, pulls the
+  asset SHA manifest, and generates `assets_shas_generated.go` before
+  compiling, so darwin and linux binaries both embed the SHAs and
+  content-address their asset cache. Recovery for an already-broken
+  install: `rm -rf ~/.local/share/dew` then re-run.
+
 ## [0.7.40] - 2026-06-15
 
 ### Added
