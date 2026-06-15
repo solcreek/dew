@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **CLI dispatch migrated to cobra.** The hand-rolled command switch is
+  gone; every command now routes through a cobra root. Behavior is
+  preserved — the grouped `dew --help`, per-command help, deprecation
+  nudges for `dew start`/`status`/`forward`, and usage exit codes are
+  unchanged. `dew exec` parses its own flags natively
+  (`SetInterspersed(false)`); other commands keep their existing arg
+  parsing behind the new dispatch.
+
+### Fixed
+
+- **A guest command's own `--json` is no longer mistaken for dew's.**
+  `dew exec curl --json <url>` (and the run/logs passthrough paths) used
+  to flip dew into JSON-envelope mode because the global flag pre-scan
+  scanned the whole argument list. It now stops at the subcommand for
+  passthrough commands, so flags after the command belong to the guest.
+
 ## [0.7.42] - 2026-06-15
 
 ### Added
