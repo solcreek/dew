@@ -48,6 +48,34 @@ var Registry = map[string]Service{
 	},
 }
 
+// ListenProbeCmd returns a guest shell command that exits 0 only when
+// something is listening on the given TCP port on the IPv4 stack. It
+// reads /proc/net/tcp directly (no ss/nc dependency) and matches the
+// port in hex against sockets in the LISTEN state (st == 0A).
+//
+// Requiring an IPv4 listen socket is deliberate: dew's port forward
+// dials 127.0.0.1 (IPv4), so an IPv6-only bind would never be reachable
+// and must not count as ready. A crun container that came up but whose
+// service then died has no listen socket, which is how we catch a
+// "running" container that isn't actually accepting connections.
+func ListenProbeCmd(port int) string {
+	return fmt.Sprintf(
+		`awk '$2 ~ ":%04X$" && $4=="0A"{f=1} END{exit !f}' /proc/net/tcp`,
+		port)
+}
+
+// LogPath is where dew-oci-run writes a detached service's stdout/stderr
+// in the guest.
+func LogPath(name string) string {
+	return "/var/log/dew-oci-" + name + ".log"
+}
+
+// LogTailCmd returns a guest command printing the last n lines of a
+// service's crun log.
+func LogTailCmd(name string, n int) string {
+	return fmt.Sprintf("tail -n %d %s 2>/dev/null", n, LogPath(name))
+}
+
 // EnvVal returns the value of env var key from the service definition,
 // or "" if unset.
 func EnvVal(s Service, key string) string {

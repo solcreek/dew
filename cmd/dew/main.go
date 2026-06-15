@@ -2025,21 +2025,66 @@ func cmdUp(args []string) error {
 			} else if res != nil && strings.TrimSpace(res.Stderr) != "" {
 				reason = strings.TrimSpace(res.Stderr)
 			}
-			emit(map[string]interface{}{"type": "service", "status": "failed", "name": s.name, "error": reason})
+			ev := map[string]interface{}{"type": "service", "status": "failed", "name": s.name, "error": reason}
+			appendServiceDiag(ev, execInVM, s.name)
+			emit(ev)
 			if spin != nil {
 				spin.Fail(fmt.Sprintf("%s: %s", s.name, reason))
 			}
 			continue
 		}
 
-		// Add port forward for this service via the daemon so
-		// runtime additions and initial cfg.Forwards share one path.
-		cfg.Forwards = append(cfg.Forwards, vm.PortForward{HostPort: s.port, GuestPort: s.port})
-		if _, err := dmn.AddForward(s.port, s.port); err != nil {
+		// Add the port forward. AddForward falls back to a free host port
+		// when the requested one is busy (e.g. a local postgres already on
+		// 5432), so capture the ACTUAL bound port — otherwise the started
+		// event would advertise a port nothing is listening on.
+		hostFwd := s.port
+		if addr, err := dmn.AddForward(s.port, s.port); err != nil {
 			fmt.Fprintf(os.Stderr, "dew: forward %d: %v\n", s.port, err)
+		} else if _, p, e := net.SplitHostPort(addr); e == nil {
+			if n, e2 := strconv.Atoi(p); e2 == nil {
+				hostFwd = n
+			}
+		}
+		cfg.Forwards = append(cfg.Forwards, vm.PortForward{HostPort: hostFwd, GuestPort: s.port})
+		if hostFwd != s.port && !flagJSON && !flagEvents {
+			fmt.Fprintf(os.Stderr, "  %s: host :%d busy → forwarding :%d\n", s.name, s.port, hostFwd)
 		}
 
-		emit(map[string]interface{}{"type": "service", "status": "started", "name": s.name, "port": s.port})
+		// Health gate: `dew-oci-run` only confirms the crun process is
+		// "running", not that the service bound its port. Poll the guest's
+		// IPv4 LISTEN socket and only report "started" once it truly
+		// accepts connections; otherwise report "failed" with the captured
+		// log so a service that came up then died doesn't masquerade as
+		// ready (the recurring "started but the port is dead" report).
+		ready := waitGuestReady(func() bool {
+			pr, perr := execInVMTimeout(services.ListenProbeCmd(s.port), 5*time.Second)
+			return perr == nil && pr != nil && pr.ExitCode == 0
+		}, 30, time.Second)
+		if !ready {
+			ev := map[string]interface{}{
+				"type": "service", "status": "failed", "name": s.name,
+				"port":  s.port,
+				"error": "service did not start accepting connections within 30s",
+			}
+			appendServiceDiag(ev, execInVM, s.name)
+			emit(ev)
+			if spin != nil {
+				spin.Fail(fmt.Sprintf("%s never became ready", s.name))
+			}
+			continue
+		}
+
+		// Report the actual host port and a ready-to-use connection string
+		// so agents don't have to reconstruct credentials.
+		startedEv := map[string]interface{}{
+			"type": "service", "status": "started", "name": s.name,
+			"port": s.port, "host_port": hostFwd,
+		}
+		if svc := services.Lookup(s.name); svc != nil {
+			startedEv["conn"] = services.ConnString(*svc, hostFwd)
+		}
+		emit(startedEv)
 	}
 
 	// Start dev server. The earlier "cmd &" launched vite inside a shell

@@ -61,6 +61,24 @@ func TestLookup(t *testing.T) {
 	}
 }
 
+func TestListenProbeCmd(t *testing.T) {
+	cmd := ListenProbeCmd(3306) // 3306 == 0x0CEA
+	for _, want := range []string{"0CEA", "0A", "/proc/net/tcp"} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("ListenProbeCmd missing %q: %q", want, cmd)
+		}
+	}
+}
+
+func TestLogTailCmd(t *testing.T) {
+	cmd := LogTailCmd("postgres", 20)
+	for _, want := range []string{"tail -n 20", "/var/log/dew-oci-postgres.log"} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("LogTailCmd missing %q: %q", want, cmd)
+		}
+	}
+}
+
 func TestNames(t *testing.T) {
 	names := Names()
 	if len(names) < 5 {
