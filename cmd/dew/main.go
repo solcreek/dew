@@ -491,7 +491,9 @@ func main() {
 	if len(subArgs) > 0 {
 		for _, a := range subArgs {
 			if a == "--help" || a == "-h" {
-				if printSubcommandHelp(cmd) {
+				// Namespace-aware: `dew vm start --help` resolves the
+				// "start" block; `dew vm --help` the "vm" block.
+				if printSubcommandHelpPath(cmd, subArgs) {
 					return
 				}
 				break
