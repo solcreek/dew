@@ -9,6 +9,41 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// cobraCommands (what main() routes to cobra) and the commands actually
+// registered on the root must agree exactly. A command on the root but
+// missing from cobraCommands silently 404s ("unknown command"); the
+// reverse means dispatch points at a non-existent command. This guards
+// the drift class that let `dew --version` regress.
+func TestCobraCommands_MatchRoot(t *testing.T) {
+	registered := map[string]bool{}
+	for _, c := range newRootCmd().Commands() {
+		registered[c.Name()] = true
+		for _, a := range c.Aliases {
+			registered[a] = true
+		}
+	}
+	for name := range cobraCommands {
+		if !registered[name] {
+			t.Errorf("cobraCommands has %q but it isn't registered on the cobra root (dispatch would 404 it)", name)
+		}
+	}
+	for name := range registered {
+		if !cobraCommands[name] {
+			t.Errorf("root registers %q but it's missing from cobraCommands (main() would never route to it)", name)
+		}
+	}
+}
+
+// passthroughCommands must be a subset of cobraCommands — a passthrough
+// command not routed to cobra can't have its pre-scan limited correctly.
+func TestPassthroughCommands_SubsetOfCobra(t *testing.T) {
+	for name := range passthroughCommands {
+		if !cobraCommands[name] {
+			t.Errorf("passthroughCommands has %q but it's not in cobraCommands", name)
+		}
+	}
+}
+
 // For passthrough commands, main()'s global flag pre-scan must stop at
 // the subcommand so a guest command's own --json isn't read as dew's.
 func TestGlobalFlagScanArgs(t *testing.T) {

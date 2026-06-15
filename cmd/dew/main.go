@@ -550,6 +550,13 @@ func main() {
 		printUsage()
 		return
 	}
+	// `dew version` is a cobra command, but the bare flag aliases
+	// `--version`/`-v` aren't subcommands — handle them here so they
+	// keep printing the version (they did before the cobra migration).
+	if cmd == "--version" || cmd == "-v" {
+		fmt.Printf("dew %s\n", version)
+		return
+	}
 
 	// All commands now dispatch through the cobra root (see cobra.go).
 	var err error
