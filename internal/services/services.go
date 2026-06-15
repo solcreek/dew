@@ -2,6 +2,11 @@
 // for dew up --with.
 package services
 
+import (
+	"fmt"
+	"strings"
+)
+
 type Service struct {
 	Name      string
 	Image     string
@@ -41,6 +46,41 @@ var Registry = map[string]Service{
 		Port:  9000,
 		Env:   []string{"MINIO_ROOT_USER=dew", "MINIO_ROOT_PASSWORD=dewpassword"},
 	},
+}
+
+// EnvVal returns the value of env var key from the service definition,
+// or "" if unset.
+func EnvVal(s Service, key string) string {
+	for _, e := range s.Env {
+		if strings.HasPrefix(e, key+"=") {
+			return strings.TrimPrefix(e, key+"=")
+		}
+	}
+	return ""
+}
+
+// ConnString returns a client connection string for service s reachable
+// at host port p (over 127.0.0.1). Returns "" for services without a
+// well-known URI scheme. Credentials come from the service's env
+// defaults so callers no longer have to dig through /proc/*/environ to
+// learn them.
+func ConnString(s Service, p int) string {
+	switch s.Name {
+	case "postgres":
+		return fmt.Sprintf("postgresql://postgres:%s@127.0.0.1:%d/%s",
+			EnvVal(s, "POSTGRES_PASSWORD"), p, EnvVal(s, "POSTGRES_DB"))
+	case "mysql":
+		return fmt.Sprintf("mysql://root:%s@127.0.0.1:%d/%s",
+			EnvVal(s, "MYSQL_ROOT_PASSWORD"), p, EnvVal(s, "MYSQL_DATABASE"))
+	case "redis":
+		return fmt.Sprintf("redis://127.0.0.1:%d", p)
+	case "mongo":
+		return fmt.Sprintf("mongodb://127.0.0.1:%d", p)
+	case "minio":
+		return fmt.Sprintf("http://%s:%s@127.0.0.1:%d",
+			EnvVal(s, "MINIO_ROOT_USER"), EnvVal(s, "MINIO_ROOT_PASSWORD"), p)
+	}
+	return ""
 }
 
 // Lookup returns a service by name, or nil if not found.

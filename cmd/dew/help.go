@@ -206,6 +206,33 @@ Examples:
   dew share 3000
   dew share --events 3000 | jq 'select(.event=="established")'
 `,
+	"services": `dew services — list services and their connection strings
+
+Usage:
+  dew services [--json]
+
+Lists the predefined services (postgres, redis, mysql, mongo, minio),
+their default credentials as ready-to-use connection strings, and —
+when a VM is running — which are live and on what host port (which may
+differ from the default after a busy-port fallback).
+
+Examples:
+  dew services
+  dew services --json | jq '.data.services[] | select(.running)'
+`,
+	"logs": `dew logs — show a service's container logs
+
+Usage:
+  dew logs <service>
+
+Prints the container logs for a --with service (postgres, redis, …),
+which run via crun in the guest. Saves you from knowing the guest log
+path or that services run under crun.
+
+Examples:
+  dew logs postgres
+  dew logs mysql
+`,
 	"vm": `dew vm — manage a long-lived VM
 
 Usage:

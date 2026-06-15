@@ -532,6 +532,10 @@ func main() {
 		err = cmdShare(subArgs)
 	case "up":
 		err = cmdUp(subArgs)
+	case "services":
+		err = cmdServices(subArgs)
+	case "logs":
+		err = cmdLogs(subArgs)
 	case "down":
 		err = cmdDown()
 	case "assets":
@@ -622,6 +626,8 @@ Try: dew run -- uname -a
 Dev (project-aware):
   dew up [dir]                   Start dev environment (auto-detect project)
   dew up --with postgres,redis   Dev with services
+  dew services                   List services + connection strings
+  dew logs <service>             Show a service's container logs
   dew down                       Stop dev environment
 
 VM (generic compute primitive):
