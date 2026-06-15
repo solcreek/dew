@@ -62,10 +62,11 @@ var passthroughCommands = map[string]bool{
 	"logs": true,
 }
 
-// dispatchCobra runs a migrated command through cobra and reports
-// whether it handled it. main() falls back to the legacy switch for
-// anything not in cobraCommands. The returned error funnels through
-// main()'s existing exit-code mapper.
+// dispatchCobra runs a command through the cobra root and reports
+// whether the root recognised it (i.e. cmd is in cobraCommands). When
+// it returns handled=false, main() renders the unknown-command error —
+// there is no legacy switch any more. The returned error funnels
+// through main()'s existing exit-code mapper.
 func dispatchCobra(cmd string, subArgs []string) (handled bool, err error) {
 	if !cobraCommands[cmd] {
 		return false, nil
@@ -199,20 +200,29 @@ func newRunCmd() *cobra.Command {
 // its own, so a plain native command (the single positional is the
 // service name).
 func newLogsCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "logs <service>",
+	var jsonOut bool
+	c := &cobra.Command{
+		Use:   "logs [--json] <service>",
 		Short: "Show a --with service's container logs",
 		Long:  "Print the container log for a --with service (postgres, redis, …),\nwhich runs via crun in the guest at /var/log/dew-oci-<name>.log.",
 		Args: func(_ *cobra.Command, args []string) error {
 			if len(args) < 1 {
-				return dewerr.New(dewerr.CodeUsage, "usage: dew logs <service>")
+				return dewerr.New(dewerr.CodeUsage, "usage: dew logs [--json] <service>")
 			}
 			return nil
 		},
 		RunE: func(_ *cobra.Command, args []string) error {
+			if jsonOut {
+				flagJSON = true
+			}
 			return cmdLogs(args)
 		},
 	}
+	// Accept --json like the other commands (it would otherwise be an
+	// "unknown flag" error). cmdLogs runs through the exec path, which
+	// honors flagJSON and emits the result envelope.
+	c.Flags().BoolVar(&jsonOut, "json", false, "emit a JSON result envelope on stdout")
+	return c
 }
 
 func newExecCmd() *cobra.Command {

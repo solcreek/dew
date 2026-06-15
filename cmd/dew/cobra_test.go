@@ -44,6 +44,32 @@ func TestPassthroughCommands_SubsetOfCobra(t *testing.T) {
 	}
 }
 
+// dew logs must accept --json (before or after the service name) like
+// the other commands, not reject it as an unknown flag. The service
+// name stays the sole positional.
+func TestLogsCmd_AcceptsJSON(t *testing.T) {
+	for _, in := range [][]string{{"postgres", "--json"}, {"--json", "postgres"}} {
+		var gotJSON bool
+		var gotArgs []string
+		c := newLogsCmd()
+		c.RunE = func(cmd *cobra.Command, args []string) error {
+			gotJSON, _ = cmd.Flags().GetBool("json")
+			gotArgs = args
+			return nil
+		}
+		c.SetArgs(in)
+		if err := c.Execute(); err != nil {
+			t.Fatalf("%v: unexpected error %v", in, err)
+		}
+		if !gotJSON {
+			t.Errorf("%v: --json not parsed", in)
+		}
+		if len(gotArgs) != 1 || gotArgs[0] != "postgres" {
+			t.Errorf("%v: args = %v, want [postgres]", in, gotArgs)
+		}
+	}
+}
+
 // For passthrough commands, main()'s global flag pre-scan must stop at
 // the subcommand so a guest command's own --json isn't read as dew's.
 func TestGlobalFlagScanArgs(t *testing.T) {
