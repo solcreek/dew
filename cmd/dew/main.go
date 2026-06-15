@@ -53,6 +53,7 @@ var flagImage string
 var flagPlatform string
 var flagDryRun bool
 var flagProfile string
+var flagServicesOnly bool
 
 // flagTimeout is the overall wall-clock budget for `dew run`
 // (boot + agent wait + exec). Zero means no overall bound; each
@@ -748,6 +749,7 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 	flagImage = ""
 	flagPlatform = ""
 	flagWith = ""
+	flagServicesOnly = false
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -885,6 +887,8 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, fmt.Errorf("--with requires service names (e.g. postgres,redis)")
 			}
 			flagWith = args[i]
+		case "--services-only", "--no-dev":
+			flagServicesOnly = true
 		case "--image":
 			i++
 			if i >= len(args) {
@@ -1541,17 +1545,30 @@ func cmdUp(args []string) error {
 		dir = remaining[0]
 	}
 
-	proj, err := detect.Detect(dir)
-	if err != nil {
-		return err
-	}
-	if proj.Framework == "" && proj.Runtime == "" {
-		// "Floor = works" — don't punish first contact. Surface multiple
-		// exits so beginners + agents have a parseable next step. Error
-		// code `no_project_detected` is grep-able for agents. Every
-		// suggested command below must work today; never point at planned
-		// commands that don't yet exist.
-		return fmt.Errorf("no project detected in %s [no_project_detected]\n\nQuick options:\n  • dew up --profile minimal       — boot a minimal Linux VM here\n  • dew vm start --profile minimal — same, returns immediately, use 'dew exec' afterwards\n  • dew app run code               — run an OSS app like VS Code\n\nDocs: https://dewvm.dev/start", dir)
+	var proj *detect.Project
+	if flagServicesOnly {
+		// Services-only: no project, no dev server — just boot a VM and
+		// bring up the requested --with services. Lets users run
+		// `dew up --services-only --with postgres` for a throwaway DB
+		// without inventing a fake package.json. node has the ext4 disk +
+		// overlayfs crun needs.
+		if flagWith == "" {
+			return fmt.Errorf("--services-only requires --with <service> (e.g. dew up --services-only --with postgres)")
+		}
+		proj = &detect.Project{Profile: "node"}
+	} else {
+		proj, err = detect.Detect(dir)
+		if err != nil {
+			return err
+		}
+		if proj.Framework == "" && proj.Runtime == "" {
+			// "Floor = works" — don't punish first contact. Surface multiple
+			// exits so beginners + agents have a parseable next step. Error
+			// code `no_project_detected` is grep-able for agents. Every
+			// suggested command below must work today; never point at planned
+			// commands that don't yet exist.
+			return fmt.Errorf("no project detected in %s [no_project_detected]\n\nQuick options:\n  • dew up --profile minimal       — boot a minimal Linux VM here\n  • dew vm start --profile minimal — same, returns immediately, use 'dew exec' afterwards\n  • dew app run code               — run an OSS app like VS Code\n\nDocs: https://dewvm.dev/start", dir)
+		}
 	}
 
 	emit := func(data map[string]interface{}) {
@@ -1569,11 +1586,15 @@ func cmdUp(args []string) error {
 
 	if !flagJSON && !flagEvents {
 		fmt.Fprintf(os.Stderr, "\n  💧 dew up\n\n")
-		fmt.Fprintf(os.Stderr, "  detected: %s", proj.Framework)
-		if proj.PackageMgr != "" {
-			fmt.Fprintf(os.Stderr, " (%s)", proj.PackageMgr)
+		if flagServicesOnly {
+			fmt.Fprintf(os.Stderr, "  services-only: %s\n\n", flagWith)
+		} else {
+			fmt.Fprintf(os.Stderr, "  detected: %s", proj.Framework)
+			if proj.PackageMgr != "" {
+				fmt.Fprintf(os.Stderr, " (%s)", proj.PackageMgr)
+			}
+			fmt.Fprintf(os.Stderr, "\n\n")
 		}
-		fmt.Fprintf(os.Stderr, "\n\n")
 	}
 
 	absDir, _ := filepath.Abs(dir)
@@ -2086,6 +2107,29 @@ func cmdUp(args []string) error {
 			startedEv["conn"] = services.ConnString(*svc, hostFwd)
 		}
 		emit(startedEv)
+	}
+
+	// Services-only: there's no dev server to start or port to probe.
+	// The services above were already health-gated, so emit a top-level
+	// ready (independent of any dev-server port) and wait for ^C. This
+	// also fixes the "ready never fires without a bound dev port" gap for
+	// the no-dev-server case.
+	if flagServicesOnly {
+		emit(map[string]interface{}{
+			"type": "ready", "mode": "services-only",
+			"services":   strings.Split(flagWith, ","),
+			"elapsed_ms": time.Since(start).Milliseconds(),
+		})
+		if !flagJSON && !flagEvents {
+			if spin != nil {
+				spin.Done("services ready")
+			}
+			fmt.Fprintf(os.Stderr, "  Ctrl+C to stop\n")
+		}
+		<-ctx.Done()
+		dmn.Stop()
+		fmt.Fprintf(os.Stderr, "\n  stopping...\n")
+		return d.Stop(context.Background())
 	}
 
 	// Start dev server. The earlier "cmd &" launched vite inside a shell

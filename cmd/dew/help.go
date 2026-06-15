@@ -34,7 +34,10 @@ Flags:
                 Override auto-detected profile.
   --with <services>
                 Comma-separated services to start (postgres, redis,
-                mysql, mongo, minio). Upgrades to standard profile.
+                mysql, mongo, minio).
+  --services-only
+                Boot only the --with services; skip project detection
+                and the dev server. Requires --with. (alias: --no-dev)
   --dry-run     Print the plan (project, profile, install/dev
                 commands, ports) and exit without booting.
   --json        Emit lifecycle events as NDJSON; final {"type":"ready"}
