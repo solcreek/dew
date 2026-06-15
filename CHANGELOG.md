@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.43] - 2026-06-15
+
 ### Changed
 
 - **CLI dispatch migrated to cobra.** The hand-rolled command switch is
