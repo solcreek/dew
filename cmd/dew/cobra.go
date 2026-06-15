@@ -96,6 +96,13 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	// Map every flag-parse error (unknown flag, bad value) to a dewerr
+	// usage error so main()'s exit-code mapper returns 2, not the generic
+	// 1. Set on the root; cobra inherits it to every subcommand, so
+	// native commands (exec, logs, …) don't each need their own.
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return dewerr.Newf(dewerr.CodeUsage, "%v", err)
+	})
 	root.AddCommand(newExecCmd())
 	root.AddCommand(newRunCmd())
 	root.AddCommand(newLogsCmd())
@@ -196,9 +203,9 @@ func newRunCmd() *cobra.Command {
 	}
 }
 
-// newLogsCmd prints a --with service's container log. No dew flags of
-// its own, so a plain native command (the single positional is the
-// service name).
+// newLogsCmd prints a --with service's container log. Native command
+// with a single service-name positional and a --json flag (the JSON
+// result envelope, consistent with the other commands).
 func newLogsCmd() *cobra.Command {
 	var jsonOut bool
 	c := &cobra.Command{
@@ -258,8 +265,7 @@ func newExecCmd() *cobra.Command {
 	// THE load-bearing line: stop parsing dew flags at the first
 	// positional so a guest command's own flags pass through untouched.
 	c.Flags().SetInterspersed(false)
-	c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
-		return dewerr.Newf(dewerr.CodeUsage, "%v", err)
-	})
+	// Flag-parse errors map to CodeUsage via the root's FlagErrorFunc
+	// (inherited), so no per-command override is needed here.
 	return c
 }

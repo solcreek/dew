@@ -7,7 +7,24 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/solcreek/dew/pkg/dewerr"
 )
+
+// A flag-parse error on any native subcommand must map to CodeUsage
+// (exit 2), via the root's inherited FlagErrorFunc — not the generic
+// code 1. Exercises logs (no per-command FlagErrorFunc of its own).
+func TestRoot_FlagErrorIsUsageCode(t *testing.T) {
+	root := newRootCmd()
+	root.SetArgs([]string{"logs", "--bogus", "svc"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected an unknown-flag error")
+	}
+	if got := dewerr.CodeOf(err); got != dewerr.CodeUsage {
+		t.Errorf("flag error code = %v, want CodeUsage", got)
+	}
+}
 
 // cobraCommands (what main() routes to cobra) and the commands actually
 // registered on the root must agree exactly. A command on the root but
