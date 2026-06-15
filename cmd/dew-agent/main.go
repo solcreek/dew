@@ -22,6 +22,7 @@ import (
 
 	"github.com/mdlayher/vsock"
 	"github.com/solcreek/dew/internal/agentauth"
+	"github.com/solcreek/dew/internal/guestenv"
 	protocol "github.com/solcreek/dew/internal/vsock"
 )
 
@@ -186,9 +187,10 @@ func executeCommand(req protocol.ExecRequest) protocol.ExecResponse {
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
 	}
-	if len(req.Env) > 0 {
-		cmd.Env = append(os.Environ(), req.Env...)
-	}
+	// Always build the env (even with no request overrides) so a PATH is
+	// guaranteed; otherwise bare names like `ss` resolve only by luck of
+	// the agent's boot environment.
+	cmd.Env = guestenv.ExecEnv(os.Environ(), req.Env)
 	setExecUser(cmd)
 
 	stdout, err := cmd.Output()
@@ -226,9 +228,7 @@ func executeStreaming(conn net.Conn, req protocol.ExecRequest) {
 		cmd.Dir = req.Dir
 	}
 	setExecUser(cmd)
-	if len(req.Env) > 0 {
-		cmd.Env = append(os.Environ(), req.Env...)
-	}
+	cmd.Env = guestenv.ExecEnv(os.Environ(), req.Env)
 
 	stdoutPipe, _ := cmd.StdoutPipe()
 	stderrPipe, _ := cmd.StderrPipe()
