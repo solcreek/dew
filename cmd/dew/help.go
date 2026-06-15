@@ -38,6 +38,9 @@ Flags:
   --services-only
                 Boot only the --with services; skip project detection
                 and the dev server. Requires --with. (alias: --no-dev)
+  --reset-disk  Delete the profile's persistent disk image before boot
+                (rebuilds it fresh). Recovery for a stale/corrupt disk
+                from a previous version. Resets VM state.
   --dry-run     Print the plan (project, profile, install/dev
                 commands, ports) and exit without booting.
   --json        Emit lifecycle events as NDJSON; final {"type":"ready"}
@@ -136,6 +139,9 @@ Flags for scripted/agent use:
                          dew exits with the timeout code (104).
                          After ready, the process stays in the
                          foreground as usual.
+  --reset-disk           Delete the profile's persistent disk image
+                         before boot (rebuilds it fresh). Recovery for a
+                         stale/corrupt disk from a previous version.
 
 Wait-until-usable loop:
   dew vm start --profile standard --json --timeout 60s > events.ndjson &

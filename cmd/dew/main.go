@@ -54,6 +54,7 @@ var flagPlatform string
 var flagDryRun bool
 var flagProfile string
 var flagServicesOnly bool
+var flagResetDisk bool
 
 // flagTimeout is the overall wall-clock budget for `dew run`
 // (boot + agent wait + exec). Zero means no overall bound; each
@@ -384,6 +385,50 @@ func fetchAsset(url, dest, name, profile, expectedSHA string) (r struct {
 	return
 }
 
+// parseAssetsArgs extracts the profile and force flag from
+// `dew assets <sub> ...` args (args[0] is the subcommand). The profile
+// may be given positionally (`dew assets pull standard`) or via
+// `--profile standard`; a later --profile wins. Falls back to def.
+//
+// The positional form was previously ignored — `dew assets pull
+// standard` silently pulled the default (minimal), so users couldn't
+// refresh a specific profile's assets.
+func parseAssetsArgs(args []string, def string) (profile string, force bool) {
+	profile = def
+	for i := 1; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--profile" && i+1 < len(args):
+			profile = args[i+1]
+			i++
+		case a == "--force":
+			force = true
+		case !strings.HasPrefix(a, "-"):
+			profile = a
+		}
+	}
+	return profile, force
+}
+
+// staleDiskHint returns a recovery message for a disk-profile VM that
+// booted but whose agent never came up. The most common cause is a
+// stale/corrupt persistent disk image from a previous version: the
+// guest panics at switch_root ("/init-stage2: Exec format error"), so
+// the host sees only an agent timeout, never a VZ error — meaning the
+// VZ Code=2 "delete the image" path can't fire. Returns "" with no disk.
+func staleDiskHint(diskPath, rebuildCmd string) string {
+	if diskPath == "" {
+		return ""
+	}
+	return fmt.Sprintf(
+		"the VM booted but its agent never came up — a stale disk image from a\n"+
+			"  previous version is a common cause. Rebuild it with:\n"+
+			"    %s\n"+
+			"  or delete it manually (resets VM state):\n"+
+			"    rm %s",
+		rebuildCmd, diskPath)
+}
+
 func cmdAssets(args []string) error {
 	sub := "pull"
 	if len(args) > 0 {
@@ -391,20 +436,11 @@ func cmdAssets(args []string) error {
 	}
 
 	dataDir := dewDataDir()
-	profile := flagProfile
-	if profile == "" {
-		profile = "minimal"
+	def := flagProfile
+	if def == "" {
+		def = "minimal"
 	}
-	// Parse --profile + --force from remaining args.
-	force := false
-	for i, a := range args {
-		if a == "--profile" && i+1 < len(args) {
-			profile = args[i+1]
-		}
-		if a == "--force" {
-			force = true
-		}
-	}
+	profile, force := parseAssetsArgs(args, def)
 
 	switch sub {
 	case "pull":
@@ -750,6 +786,7 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 	flagPlatform = ""
 	flagWith = ""
 	flagServicesOnly = false
+	flagResetDisk = false
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -910,6 +947,8 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 			flagJSON = true
 		case "--dry-run":
 			flagDryRun = true
+		case "--reset-disk":
+			flagResetDisk = true
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				return cfg, nil, fmt.Errorf("unknown flag %q", args[i])
@@ -978,6 +1017,18 @@ func cmdStart(args []string) error {
 	}
 	if err := resolveAssets(&cfg); err != nil {
 		return err
+	}
+
+	// --reset-disk: rebuild the persistent disk fresh (recovery for a
+	// stale/corrupt image from a previous version). See cmdUp.
+	if flagResetDisk && cfg.DiskPath != "" {
+		if err := os.Remove(cfg.DiskPath); err == nil {
+			if !flagJSON && !flagEvents {
+				fmt.Fprintf(os.Stderr, "dew: reset disk: %s\n", cfg.DiskPath)
+			}
+		} else if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "dew: could not reset disk %s: %v\n", cfg.DiskPath, err)
+		}
 	}
 
 	// Network on by default for `dew vm start` (and its legacy alias
@@ -1079,6 +1130,9 @@ func cmdStart(args []string) error {
 			return dewerr.Newf(dewerr.CodeTimeout, "vm start: guest agent not ready within %s (--timeout) — run 'dew doctor' to check assets", flagTimeout)
 		}
 		fmt.Fprintf(os.Stderr, "dew: warning: token handshake failed, daemon may not work (run 'dew doctor' to check assets)\n")
+		if h := staleDiskHint(cfg.DiskPath, "dew vm start --reset-disk"); h != "" {
+			fmt.Fprintf(os.Stderr, "  %s\n", h)
+		}
 	}
 
 	// Start daemon socket AFTER token is set (so clients can exec immediately).
@@ -1681,6 +1735,21 @@ func cmdUp(args []string) error {
 	cfg.VsockPort = uint32(vsockProto.DefaultPort)
 	cfg.CmdLine += " dew.share=project:/app"
 
+	// --reset-disk: delete the persistent disk image before boot so it's
+	// rebuilt fresh from the current initramfs. The one-command recovery
+	// for a stale/corrupt disk image left by a previous version (which
+	// otherwise guest-panics at switch_root with "Exec format error").
+	if flagResetDisk && cfg.DiskPath != "" {
+		if err := os.Remove(cfg.DiskPath); err == nil {
+			emit(map[string]interface{}{"type": "disk", "status": "reset", "path": cfg.DiskPath})
+			if !flagJSON && !flagEvents {
+				fmt.Fprintf(os.Stderr, "  reset disk: %s\n", cfg.DiskPath)
+			}
+		} else if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "dew: could not reset disk %s: %v\n", cfg.DiskPath, err)
+		}
+	}
+
 	// In machine-readable modes the serial console must not share stdout
 	// with the NDJSON lifecycle stream — interleaved kernel/boot lines
 	// (EXT4-fs, udhcpc, "Bridge firewalling registered") break `| jq`.
@@ -1743,6 +1812,13 @@ func cmdUp(args []string) error {
 
 	if err := d.Start(ctx); err != nil {
 		emit(map[string]interface{}{"type": "boot", "status": "failed", "error": err.Error()})
+		// VZ Code=2 ("storage device attachment is invalid") means the
+		// existing disk image is unusable. The darwin layer already prints
+		// the rm recovery; also point at the one-command rebuild.
+		if !flagResetDisk && cfg.DiskPath != "" &&
+			strings.Contains(err.Error(), "storage device attachment is invalid") {
+			return fmt.Errorf("%w\n\n  Rebuild the disk in one step: dew up --reset-disk", err)
+		}
 		return err
 	}
 	bootMs := time.Since(start).Milliseconds()
@@ -1763,7 +1839,14 @@ func cmdUp(args []string) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if !tokenSent {
-		emit(map[string]interface{}{"type": "agent", "status": "failed", "error": "token handshake timeout"})
+		ev := map[string]interface{}{"type": "agent", "status": "failed", "error": "token handshake timeout"}
+		if h := staleDiskHint(cfg.DiskPath, "dew up --reset-disk"); h != "" {
+			ev["hint"] = h
+			if !flagJSON && !flagEvents {
+				fmt.Fprintf(os.Stderr, "\n  %s\n", h)
+			}
+		}
+		emit(ev)
 		if spin != nil {
 			spin.Fail("agent not ready")
 		}
