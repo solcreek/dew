@@ -53,6 +53,7 @@ var flagImage string
 var flagPlatform string
 var flagDryRun bool
 var flagProfile string
+var flagServicesOnly bool
 
 // flagTimeout is the overall wall-clock budget for `dew run`
 // (boot + agent wait + exec). Zero means no overall bound; each
@@ -491,7 +492,9 @@ func main() {
 	if len(subArgs) > 0 {
 		for _, a := range subArgs {
 			if a == "--help" || a == "-h" {
-				if printSubcommandHelp(cmd) {
+				// Namespace-aware: `dew vm start --help` resolves the
+				// "start" block; `dew vm --help` the "vm" block.
+				if printSubcommandHelpPath(cmd, subArgs) {
 					return
 				}
 				break
@@ -530,6 +533,10 @@ func main() {
 		err = cmdShare(subArgs)
 	case "up":
 		err = cmdUp(subArgs)
+	case "services":
+		err = cmdServices(subArgs)
+	case "logs":
+		err = cmdLogs(subArgs)
 	case "down":
 		err = cmdDown()
 	case "assets":
@@ -620,6 +627,8 @@ Try: dew run -- uname -a
 Dev (project-aware):
   dew up [dir]                   Start dev environment (auto-detect project)
   dew up --with postgres,redis   Dev with services
+  dew services                   List services + connection strings
+  dew logs <service>             Show a service's container logs
   dew down                       Stop dev environment
 
 VM (generic compute primitive):
@@ -740,6 +749,7 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 	flagImage = ""
 	flagPlatform = ""
 	flagWith = ""
+	flagServicesOnly = false
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -877,6 +887,8 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, fmt.Errorf("--with requires service names (e.g. postgres,redis)")
 			}
 			flagWith = args[i]
+		case "--services-only", "--no-dev":
+			flagServicesOnly = true
 		case "--image":
 			i++
 			if i >= len(args) {
@@ -1510,6 +1522,7 @@ func stageServices(ctx context.Context, names []string, stageRoot string) ([]sta
 			Name:     svc.Name,
 			Env:      svc.Env,
 			Data:     data,
+			Append:   svc.Args,
 		}); err != nil {
 			failures = append(failures, serviceFailure{name: svc.Name, reason: err.Error()})
 			continue
@@ -1532,17 +1545,30 @@ func cmdUp(args []string) error {
 		dir = remaining[0]
 	}
 
-	proj, err := detect.Detect(dir)
-	if err != nil {
-		return err
-	}
-	if proj.Framework == "" && proj.Runtime == "" {
-		// "Floor = works" — don't punish first contact. Surface multiple
-		// exits so beginners + agents have a parseable next step. Error
-		// code `no_project_detected` is grep-able for agents. Every
-		// suggested command below must work today; never point at planned
-		// commands that don't yet exist.
-		return fmt.Errorf("no project detected in %s [no_project_detected]\n\nQuick options:\n  • dew up --profile minimal       — boot a minimal Linux VM here\n  • dew vm start --profile minimal — same, returns immediately, use 'dew exec' afterwards\n  • dew app run code               — run an OSS app like VS Code\n\nDocs: https://dewvm.dev/start", dir)
+	var proj *detect.Project
+	if flagServicesOnly {
+		// Services-only: no project, no dev server — just boot a VM and
+		// bring up the requested --with services. Lets users run
+		// `dew up --services-only --with postgres` for a throwaway DB
+		// without inventing a fake package.json. node has the ext4 disk +
+		// overlayfs crun needs.
+		if flagWith == "" {
+			return fmt.Errorf("--services-only requires --with <service> (e.g. dew up --services-only --with postgres)")
+		}
+		proj = &detect.Project{Profile: "node"}
+	} else {
+		proj, err = detect.Detect(dir)
+		if err != nil {
+			return err
+		}
+		if proj.Framework == "" && proj.Runtime == "" {
+			// "Floor = works" — don't punish first contact. Surface multiple
+			// exits so beginners + agents have a parseable next step. Error
+			// code `no_project_detected` is grep-able for agents. Every
+			// suggested command below must work today; never point at planned
+			// commands that don't yet exist.
+			return fmt.Errorf("no project detected in %s [no_project_detected]\n\nQuick options:\n  • dew up --profile minimal       — boot a minimal Linux VM here\n  • dew vm start --profile minimal — same, returns immediately, use 'dew exec' afterwards\n  • dew app run code               — run an OSS app like VS Code\n\nDocs: https://dewvm.dev/start", dir)
+		}
 	}
 
 	emit := func(data map[string]interface{}) {
@@ -1560,11 +1586,15 @@ func cmdUp(args []string) error {
 
 	if !flagJSON && !flagEvents {
 		fmt.Fprintf(os.Stderr, "\n  💧 dew up\n\n")
-		fmt.Fprintf(os.Stderr, "  detected: %s", proj.Framework)
-		if proj.PackageMgr != "" {
-			fmt.Fprintf(os.Stderr, " (%s)", proj.PackageMgr)
+		if flagServicesOnly {
+			fmt.Fprintf(os.Stderr, "  services-only: %s\n\n", flagWith)
+		} else {
+			fmt.Fprintf(os.Stderr, "  detected: %s", proj.Framework)
+			if proj.PackageMgr != "" {
+				fmt.Fprintf(os.Stderr, " (%s)", proj.PackageMgr)
+			}
+			fmt.Fprintf(os.Stderr, "\n\n")
 		}
-		fmt.Fprintf(os.Stderr, "\n\n")
 	}
 
 	absDir, _ := filepath.Abs(dir)
@@ -1650,6 +1680,15 @@ func cmdUp(args []string) error {
 	}
 	cfg.VsockPort = uint32(vsockProto.DefaultPort)
 	cfg.CmdLine += " dew.share=project:/app"
+
+	// In machine-readable modes the serial console must not share stdout
+	// with the NDJSON lifecycle stream — interleaved kernel/boot lines
+	// (EXT4-fs, udhcpc, "Bridge firewalling registered") break `| jq`.
+	// Route the console to stderr so stdout carries structured events
+	// only (matches the convention dew vm start already uses).
+	if (flagJSON || flagEvents) && cfg.Console == nil {
+		cfg.Console = &vm.ConsoleFiles{In: os.Stdin, Out: os.Stderr}
+	}
 
 	token := generateToken()
 
@@ -2008,21 +2047,89 @@ func cmdUp(args []string) error {
 			} else if res != nil && strings.TrimSpace(res.Stderr) != "" {
 				reason = strings.TrimSpace(res.Stderr)
 			}
-			emit(map[string]interface{}{"type": "service", "status": "failed", "name": s.name, "error": reason})
+			ev := map[string]interface{}{"type": "service", "status": "failed", "name": s.name, "error": reason}
+			appendServiceDiag(ev, execInVM, s.name)
+			emit(ev)
 			if spin != nil {
 				spin.Fail(fmt.Sprintf("%s: %s", s.name, reason))
 			}
 			continue
 		}
 
-		// Add port forward for this service via the daemon so
-		// runtime additions and initial cfg.Forwards share one path.
-		cfg.Forwards = append(cfg.Forwards, vm.PortForward{HostPort: s.port, GuestPort: s.port})
-		if _, err := dmn.AddForward(s.port, s.port); err != nil {
+		// Add the port forward. AddForward falls back to a free host port
+		// when the requested one is busy (e.g. a local postgres already on
+		// 5432), so capture the ACTUAL bound port — otherwise the started
+		// event would advertise a port nothing is listening on.
+		hostFwd := s.port
+		if addr, err := dmn.AddForward(s.port, s.port); err != nil {
 			fmt.Fprintf(os.Stderr, "dew: forward %d: %v\n", s.port, err)
+		} else if _, p, e := net.SplitHostPort(addr); e == nil {
+			if n, e2 := strconv.Atoi(p); e2 == nil {
+				hostFwd = n
+			}
+		}
+		cfg.Forwards = append(cfg.Forwards, vm.PortForward{HostPort: hostFwd, GuestPort: s.port})
+		if hostFwd != s.port && !flagJSON && !flagEvents {
+			fmt.Fprintf(os.Stderr, "  %s: host :%d busy → forwarding :%d\n", s.name, s.port, hostFwd)
 		}
 
-		emit(map[string]interface{}{"type": "service", "status": "started", "name": s.name, "port": s.port})
+		// Health gate: `dew-oci-run` only confirms the crun process is
+		// "running", not that the service bound its port. Poll the guest's
+		// IPv4 LISTEN socket and only report "started" once it truly
+		// accepts connections; otherwise report "failed" with the captured
+		// log so a service that came up then died doesn't masquerade as
+		// ready (the recurring "started but the port is dead" report).
+		ready := waitGuestReady(func() bool {
+			pr, perr := execInVMTimeout(services.ListenProbeCmd(s.port), 5*time.Second)
+			return perr == nil && pr != nil && pr.ExitCode == 0
+		}, 30, time.Second)
+		if !ready {
+			ev := map[string]interface{}{
+				"type": "service", "status": "failed", "name": s.name,
+				"port":  s.port,
+				"error": "service did not start accepting connections within 30s",
+			}
+			appendServiceDiag(ev, execInVM, s.name)
+			emit(ev)
+			if spin != nil {
+				spin.Fail(fmt.Sprintf("%s never became ready", s.name))
+			}
+			continue
+		}
+
+		// Report the actual host port and a ready-to-use connection string
+		// so agents don't have to reconstruct credentials.
+		startedEv := map[string]interface{}{
+			"type": "service", "status": "started", "name": s.name,
+			"port": s.port, "host_port": hostFwd,
+		}
+		if svc := services.Lookup(s.name); svc != nil {
+			startedEv["conn"] = services.ConnString(*svc, hostFwd)
+		}
+		emit(startedEv)
+	}
+
+	// Services-only: there's no dev server to start or port to probe.
+	// The services above were already health-gated, so emit a top-level
+	// ready (independent of any dev-server port) and wait for ^C. This
+	// also fixes the "ready never fires without a bound dev port" gap for
+	// the no-dev-server case.
+	if flagServicesOnly {
+		emit(map[string]interface{}{
+			"type": "ready", "mode": "services-only",
+			"services":   strings.Split(flagWith, ","),
+			"elapsed_ms": time.Since(start).Milliseconds(),
+		})
+		if !flagJSON && !flagEvents {
+			if spin != nil {
+				spin.Done("services ready")
+			}
+			fmt.Fprintf(os.Stderr, "  Ctrl+C to stop\n")
+		}
+		<-ctx.Done()
+		dmn.Stop()
+		fmt.Fprintf(os.Stderr, "\n  stopping...\n")
+		return d.Stop(context.Background())
 	}
 
 	// Start dev server. The earlier "cmd &" launched vite inside a shell

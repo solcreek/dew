@@ -191,3 +191,22 @@ func TestRefCacheRoundTrip(t *testing.T) {
 		t.Fatalf("got %q, want sha256:cached (from ref cache)", got)
 	}
 }
+
+func TestResolveArgs(t *testing.T) {
+	cfg := v1.Config{Entrypoint: []string{"docker-entrypoint.sh"}, Cmd: []string{"mysqld"}}
+
+	// Cmd override wins outright.
+	if got := resolveArgs(cfg, []string{"echo", "hi"}, []string{"--ignored"}); len(got) != 2 || got[0] != "echo" {
+		t.Errorf("Cmd override = %v, want [echo hi]", got)
+	}
+	// Append tacks onto the image entrypoint+cmd.
+	got := resolveArgs(cfg, nil, []string{"--bind-address=0.0.0.0"})
+	want := []string{"docker-entrypoint.sh", "mysqld", "--bind-address=0.0.0.0"}
+	if len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Errorf("append = %v, want %v", got, want)
+	}
+	// Neither → nil (ociSpec falls back to image entrypoint+cmd).
+	if got := resolveArgs(cfg, nil, nil); got != nil {
+		t.Errorf("no override/append = %v, want nil", got)
+	}
+}

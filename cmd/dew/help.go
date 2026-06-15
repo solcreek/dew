@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // subcommandHelp is the per-command help text printed when a user
@@ -33,7 +34,10 @@ Flags:
                 Override auto-detected profile.
   --with <services>
                 Comma-separated services to start (postgres, redis,
-                mysql, mongo, minio). Upgrades to standard profile.
+                mysql, mongo, minio).
+  --services-only
+                Boot only the --with services; skip project detection
+                and the dev server. Requires --with. (alias: --no-dev)
   --dry-run     Print the plan (project, profile, install/dev
                 commands, ports) and exit without booting.
   --json        Emit lifecycle events as NDJSON; final {"type":"ready"}
@@ -205,6 +209,65 @@ Examples:
   dew share 3000
   dew share --events 3000 | jq 'select(.event=="established")'
 `,
+	"services": `dew services — list services and their connection strings
+
+Usage:
+  dew services [--json]
+
+Lists the predefined services (postgres, redis, mysql, mongo, minio),
+their default credentials as ready-to-use connection strings, and —
+when a VM is running — which are live and on what host port (which may
+differ from the default after a busy-port fallback).
+
+Examples:
+  dew services
+  dew services --json | jq '.data.services[] | select(.running)'
+`,
+	"logs": `dew logs — show a service's container logs
+
+Usage:
+  dew logs <service>
+
+Prints the container logs for a --with service (postgres, redis, …),
+which run via crun in the guest. Saves you from knowing the guest log
+path or that services run under crun.
+
+Examples:
+  dew logs postgres
+  dew logs mysql
+`,
+	"vm": `dew vm — manage a long-lived VM
+
+Usage:
+  dew vm <start|stop|status|forward> [args...]
+
+Subcommands:
+  start         Boot a VM without running a command (see
+                ` + "`dew vm start --help`" + `).
+  stop          Stop the running VM (alias: dew down).
+  status        Show the running VM's state.
+  forward       Manage host→guest port forwards at runtime:
+                  dew vm forward add  HOST:GUEST
+                  dew vm forward remove HOST:GUEST
+                  dew vm forward list
+                A busy host port falls back to a free one; the
+                actual port is reported.
+
+Examples:
+  dew vm start --profile node
+  dew vm forward add 5432:5432
+  dew vm forward list
+`,
+	"server": `dew server — manage remote dew deploy targets
+
+Usage:
+  dew server <create|list|destroy> [args...]
+
+Subcommands:
+  create        Provision a new remote dew server.
+  list          List configured servers.
+  destroy       Tear down a server.
+`,
 }
 
 // printSubcommandHelp prints the help block for subcommand and
@@ -216,4 +279,28 @@ func printSubcommandHelp(subcommand string) bool {
 	}
 	fmt.Fprint(os.Stderr, text)
 	return true
+}
+
+// helpKeyCandidates returns the help-map keys to try for a command
+// path, most specific first. For `dew vm start` it yields
+// ["vm start", "start", "vm"]; for `dew up` just ["up"]. This makes
+// two-level commands resolve their help instead of falling through to
+// a flag-parse error (`dew vm start --help` used to print "unknown
+// flag" because the dispatcher only ever looked up the first token).
+func helpKeyCandidates(cmd string, subArgs []string) []string {
+	if len(subArgs) > 0 && !strings.HasPrefix(subArgs[0], "-") {
+		return []string{cmd + " " + subArgs[0], subArgs[0], cmd}
+	}
+	return []string{cmd}
+}
+
+// printSubcommandHelpPath prints the most specific matching help block
+// for a command path and reports whether anything was printed.
+func printSubcommandHelpPath(cmd string, subArgs []string) bool {
+	for _, k := range helpKeyCandidates(cmd, subArgs) {
+		if printSubcommandHelp(k) {
+			return true
+		}
+	}
+	return false
 }

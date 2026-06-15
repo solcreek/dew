@@ -99,3 +99,35 @@ func TestPrintSubcommandHelp_ReturnFlag(t *testing.T) {
 		t.Error("unknown subcommand should return false")
 	}
 }
+
+// `dew vm start --help` (and other two-level commands) used to print
+// "unknown flag" because the dispatcher only looked up the first token
+// ("vm"). The namespace-aware path must resolve the right block.
+func TestHelpKeyCandidates_NamespaceAware(t *testing.T) {
+	got := helpKeyCandidates("vm", []string{"start", "--help"})
+	want := []string{"vm start", "start", "vm"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("candidates = %v, want %v", got, want)
+	}
+	if got := helpKeyCandidates("up", []string{"--help"}); strings.Join(got, ",") != "up" {
+		t.Errorf("candidates = %v, want [up]", got)
+	}
+}
+
+func TestPrintSubcommandHelpPath_ResolvesTwoLevel(t *testing.T) {
+	cases := []struct {
+		cmd     string
+		subArgs []string
+	}{
+		{"vm", []string{"start", "--help"}},
+		{"vm", []string{"forward", "--help"}},
+		{"vm", []string{"--help"}},
+		{"server", []string{"--help"}},
+		{"up", []string{"--help"}},
+	}
+	for _, c := range cases {
+		if !printSubcommandHelpPath(c.cmd, c.subArgs) {
+			t.Errorf("dew %s %v --help did not resolve any help block", c.cmd, c.subArgs)
+		}
+	}
+}

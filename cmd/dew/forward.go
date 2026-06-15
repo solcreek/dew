@@ -66,7 +66,17 @@ func cmdForwardAdd(args []string) error {
 		})
 		return nil
 	}
-	fmt.Printf("dew: forwarding 127.0.0.1:%d → guest:%d\n", host, guest)
+	// The daemon may have bound a different port if the requested one was
+	// busy — report what was actually bound.
+	actual := host
+	if hp, ok := resp["host_port"].(float64); ok {
+		actual = int(hp)
+	}
+	if actual != host {
+		fmt.Printf("dew: 127.0.0.1:%d was busy → forwarding 127.0.0.1:%d → guest:%d\n", host, actual, guest)
+	} else {
+		fmt.Printf("dew: forwarding 127.0.0.1:%d → guest:%d\n", actual, guest)
+	}
 	return nil
 }
 

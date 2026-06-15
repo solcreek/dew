@@ -6,10 +6,42 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"testing"
 
 	"github.com/solcreek/dew/internal/vm"
 )
+
+// When the requested host port is already in use, AddForward must fall
+// back to a free OS-assigned port instead of failing — otherwise a
+// local service on the same port (e.g. host postgres on 5432) blocks
+// the forward entirely.
+func TestAddForward_FallsBackWhenPortBusy(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	busyPort := busy.Addr().(*net.TCPAddr).Port
+
+	s := &State{VM: stubVM{}}
+	addr, err := s.AddForward(busyPort, 5432)
+	if err != nil {
+		t.Fatalf("AddForward should fall back, got error: %v", err)
+	}
+	_, ps, _ := net.SplitHostPort(addr)
+	actual, _ := strconv.Atoi(ps)
+	if actual == busyPort {
+		t.Fatalf("expected a different port than the busy %d, got %d", busyPort, actual)
+	}
+	defer s.RemoveForward(actual, 5432)
+
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("fallback forward not accepting on %s: %v", addr, err)
+	}
+	c.Close()
+}
 
 // stubVM satisfies vm.VM well enough for AddForward/RemoveForward
 // tests. The forward acceptance loop calls VsockConnect on each
