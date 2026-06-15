@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -42,6 +43,12 @@ var cobraCommands = map[string]bool{
 	// subcommand dispatch (and usage errors that vm_test.go pins).
 	"vm":     true,
 	"server": true,
+	// terminal: print version; removed-command stubs.
+	"version": true,
+	"install": true,
+	"app":     true,
+	"apps":    true,
+	"session": true,
 }
 
 // passthroughCommands take a guest command after their own flags. For
@@ -128,6 +135,28 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(legacyShim("forward", "Deprecated: use `dew vm forward`", func(a []string) error {
 		deprecationHint("forward", "vm forward")
 		return cmdForward(a)
+	}))
+
+	root.AddCommand(legacyShim("version", "Print the dew version", func([]string) error {
+		fmt.Printf("dew %s\n", version)
+		return nil
+	}))
+
+	// Removed commands: keep a clear usage error so scripts that survived
+	// the deprecation window fail fast and obvious.
+	appsStub := legacyShim("install", "Removed in v0.7.20", func([]string) error {
+		return dewerr.New(dewerr.CodeUsage,
+			"dew install/app/apps was removed in v0.7.20.\n"+
+				"The pre-packaged apps catalog now lives in a separate tool.\n"+
+				"For arbitrary container workloads in dew, use: dew run --network -- <cmd>")
+	})
+	appsStub.Aliases = []string{"app", "apps"}
+	root.AddCommand(appsStub)
+
+	root.AddCommand(legacyShim("session", "Removed in v0.7.18", func([]string) error {
+		return dewerr.New(dewerr.CodeUsage,
+			"dew session was removed in v0.7.18 — it stored state in-process and `session exec` could never find the VM.\n"+
+				"For persistent VMs use `dew up` (project) or `dew vm start` (manual profile) — both register with the daemon and `dew exec` works against them.")
 	}))
 	return root
 }

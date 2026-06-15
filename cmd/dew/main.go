@@ -544,47 +544,24 @@ func main() {
 		}
 	}
 
+	// `dew help` and the top-level `dew --help`/`-h` render the grouped
+	// usage. (Per-command --help is handled by the interception above.)
+	if cmd == "help" || cmd == "--help" || cmd == "-h" {
+		printUsage()
+		return
+	}
+
+	// All commands now dispatch through the cobra root (see cobra.go).
 	var err error
-	// Migrated commands run through the cobra root (see cobra.go);
-	// everything else falls back to the legacy switch. The switch shrinks
-	// as commands migrate. dispatchCobra reports handled=false for
-	// anything not yet on cobra.
-	if handled, cerr := dispatchCobra(cmd, subArgs); handled {
-		err = cerr
+	handled, derr := dispatchCobra(cmd, subArgs)
+	if handled {
+		err = derr
 	} else {
-		switch cmd {
-		case "install", "app", "apps":
-			// The pre-packaged apps catalog moved to a standalone tool in
-			// v0.7.20. The deprecation notice in v0.7.19 gave the heads-up;
-			// this is the removal. Subcommands respond with a clean usage
-			// error so scripts that survived the deprecation window fail
-			// fast and obvious.
-			err = dewerr.New(dewerr.CodeUsage,
-				"dew "+cmd+" was removed in v0.7.20.\n"+
-					"The pre-packaged apps catalog now lives in a separate tool.\n"+
-					"For arbitrary container workloads in dew, use: dew run --network -- <cmd>")
-		case "session":
-			// `dew session` shipped in earlier versions storing the VM
-			// handle in an in-process map. The CLI handed out an ID but
-			// the next process couldn't reach the VM — `dew session exec`
-			// always errored with "sessions are in-process only." The
-			// command was a documented lie. Surfacing it with a clear
-			// removal notice rather than fixing it half-way: the v0.8
-			// daemon work is the real solution.
-			err = dewerr.New(dewerr.CodeUsage,
-				"dew session was removed in v0.7.18 — it stored state in-process and `session exec` could never find the VM.\n"+
-					"For persistent VMs use `dew up` (project) or `dew vm start` (manual profile) — both register with the daemon and `dew exec` works against them.")
-		case "version", "--version", "-v":
-			fmt.Printf("dew %s\n", version)
-		case "help", "--help", "-h":
+		err = dewerr.Newf(dewerr.CodeUsage, "unknown command %q", cmd)
+		if !flagJSON {
+			fmt.Fprintf(os.Stderr, "dew: %v\n", err)
 			printUsage()
-		default:
-			err = dewerr.Newf(dewerr.CodeUsage, "unknown command %q", cmd)
-			if !flagJSON {
-				fmt.Fprintf(os.Stderr, "dew: %v\n", err)
-				printUsage()
-				os.Exit(int(dewerr.CodeUsage))
-			}
+			os.Exit(int(dewerr.CodeUsage))
 		}
 	}
 	if err != nil {
