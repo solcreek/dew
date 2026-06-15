@@ -31,9 +31,26 @@ type Options struct {
 	StageDir  string   // required: where rootfs.tar + config.json are written
 	Name      string   // container id, used in the guest overlay path; default "dew"
 	Cmd       []string // override image entrypoint+cmd when non-empty
+	Append    []string // extra args appended after the image entrypoint+cmd (ignored if Cmd is set)
 	Env       []string // extra env appended to the image env
 	Data      *Bind    // optional persistent bind mount (guest ext4 -> container)
 	NoCache   bool     // bypass the content-addressed + ref caches
+}
+
+// resolveArgs returns the process args for the OCI spec. An explicit Cmd
+// override wins outright (it replaces entrypoint+cmd). Otherwise, when
+// Append is set, it's tacked onto the image's own entrypoint+cmd — used
+// for server flags (e.g. mysql's --bind-address) without restating the
+// entrypoint. With neither, it returns nil so ociSpec keeps using the
+// image's entrypoint+cmd unchanged.
+func resolveArgs(cfg v1.Config, cmd, appendArgs []string) []string {
+	if len(cmd) > 0 {
+		return cmd
+	}
+	if len(appendArgs) == 0 {
+		return nil
+	}
+	return append(append(append([]string{}, cfg.Entrypoint...), cfg.Cmd...), appendArgs...)
 }
 
 // Bundle is the result of staging: a directory holding rootfs.tar and
@@ -169,7 +186,7 @@ func Stage(ctx context.Context, ref string, opts Options) (*Bundle, error) {
 	}
 
 	// Write the OCI runtime spec.
-	spec := ociSpec(cfg, GuestRootPath(opts.Name), opts.Cmd, opts.Env, opts.Data)
+	spec := ociSpec(cfg, GuestRootPath(opts.Name), resolveArgs(cfg, opts.Cmd, opts.Append), opts.Env, opts.Data)
 	specBytes, mErr := json.MarshalIndent(spec, "", "  ")
 	if mErr != nil {
 		return nil, fmt.Errorf("marshal OCI spec: %w", mErr)

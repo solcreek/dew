@@ -8,11 +8,15 @@ import (
 )
 
 type Service struct {
-	Name      string
-	Image     string
-	Port      int
-	Env       []string
-	DataDir   string // mount path inside container for persistence
+	Name    string
+	Image   string
+	Port    int
+	Env     []string
+	DataDir string // mount path inside container for persistence
+	// Args are appended after the image's entrypoint+cmd (server flags).
+	// Used e.g. to force mysql to bind IPv4 so the forwarded port is
+	// reachable.
+	Args []string
 }
 
 var Registry = map[string]Service{
@@ -34,6 +38,9 @@ var Registry = map[string]Service{
 		Port:    3306,
 		Env:     []string{"MYSQL_ROOT_PASSWORD=dew", "MYSQL_DATABASE=dew"},
 		DataDir: "/var/lib/mysql",
+		// mysql:8 defaults to binding only the IPv6 wildcard, leaving the
+		// forwarded IPv4 port (127.0.0.1:3306) unreachable. Force IPv4.
+		Args: []string{"--bind-address=0.0.0.0"},
 	},
 	"mongo": {
 		Name:  "mongo",

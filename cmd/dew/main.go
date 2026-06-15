@@ -1518,6 +1518,7 @@ func stageServices(ctx context.Context, names []string, stageRoot string) ([]sta
 			Name:     svc.Name,
 			Env:      svc.Env,
 			Data:     data,
+			Append:   svc.Args,
 		}); err != nil {
 			failures = append(failures, serviceFailure{name: svc.Name, reason: err.Error()})
 			continue
