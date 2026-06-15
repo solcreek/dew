@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/solcreek/dew/internal/selfupdate"
 	"github.com/solcreek/dew/pkg/dewerr"
 )
 
@@ -17,9 +18,26 @@ import (
 // specially — `SetInterspersed(false)` is what stops cobra from eating
 // a guest command's own flags (e.g. `dew exec curl --json url`).
 var cobraCommands = map[string]bool{
-	"exec": true,
-	"run":  true,
-	"logs": true,
+	"exec":     true,
+	"run":      true,
+	"logs":     true,
+	"up":       true,
+	"down":     true,
+	"build":    true,
+	"deploy":   true,
+	"rollback": true,
+	"share":    true,
+	"services": true,
+	"assets":   true,
+	"auth":     true,
+	"env":      true,
+	"serve":    true,
+	"doctor":   true,
+	"update":   true,
+	// deprecated single-level aliases (still work; print a nudge)
+	"start":   true,
+	"status":  true,
+	"forward": true,
 }
 
 // passthroughCommands take a guest command after their own flags. For
@@ -69,7 +87,55 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newExecCmd())
 	root.AddCommand(newRunCmd())
 	root.AddCommand(newLogsCmd())
+
+	// Leaf commands: cobra owns the command tree; their own arg parsing
+	// stays in cmdXxx (DisableFlagParsing passes tokens through verbatim).
+	// Short text feeds the eventual `dew --help` tree; per-command --help
+	// is still served by main()'s namespace-aware interception for now.
+	root.AddCommand(legacyShim("up [dir]", "Start a dev environment (auto-detect project)", cmdUp))
+	root.AddCommand(legacyShim("down", "Stop the running dev VM", func([]string) error { return cmdDown() }))
+	root.AddCommand(legacyShim("build [dir]", "Package the current project for deployment", cmdBuild))
+	root.AddCommand(legacyShim("deploy <target>", "Deploy a built tarball to a remote server", cmdDeploy))
+	root.AddCommand(legacyShim("rollback <target>", "Roll back a remote deployment", cmdRollback))
+	root.AddCommand(legacyShim("share [port]", "Expose a local port via a public HTTPS URL", cmdShare))
+	root.AddCommand(legacyShim("services", "List services and their connection strings", cmdServices))
+	root.AddCommand(legacyShim("assets", "Manage cached VM images (pull/list/path)", cmdAssets))
+	root.AddCommand(legacyShim("auth", "Manage deploy credentials", cmdAuth))
+	root.AddCommand(legacyShim("env", "Manage deployment environment variables", cmdEnv))
+	root.AddCommand(legacyShim("serve", "Run the deploy receiver", cmdServe))
+	root.AddCommand(legacyShim("doctor", "Diagnose the local environment", cmdDoctor))
+	root.AddCommand(legacyShim("update", "Update dew to the latest release", func([]string) error { return selfupdate.Update(version) }))
+
+	// Deprecated single-level aliases — keep working, print a nudge.
+	root.AddCommand(legacyShim("start", "Deprecated: use `dew vm start`", func(a []string) error {
+		deprecationHint("start", "vm start")
+		return cmdStart(a)
+	}))
+	root.AddCommand(legacyShim("status", "Deprecated: use `dew vm status`", func(a []string) error {
+		deprecationHint("status", "vm status")
+		return cmdStatus(a)
+	}))
+	root.AddCommand(legacyShim("forward", "Deprecated: use `dew vm forward`", func(a []string) error {
+		deprecationHint("forward", "vm forward")
+		return cmdForward(a)
+	}))
 	return root
+}
+
+// legacyShim wraps a command whose flag/arg parsing still lives in its
+// cmdXxx handler. DisableFlagParsing makes cobra pass every token
+// through unchanged, so behavior is identical to the old switch dispatch
+// while the command joins the cobra tree. The first word of use is the
+// command name.
+func legacyShim(use, short string, run func([]string) error) *cobra.Command {
+	return &cobra.Command{
+		Use:                use,
+		Short:              short,
+		DisableFlagParsing: true,
+		RunE: func(_ *cobra.Command, args []string) error {
+			return run(args)
+		},
+	}
 }
 
 // newRunCmd is a thin shim: run shares the big parseFlags() parser with

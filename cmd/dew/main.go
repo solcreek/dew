@@ -6,8 +6,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,16 +24,16 @@ import (
 	"time"
 
 	"github.com/solcreek/dew/internal/daemon"
-	"github.com/solcreek/dew/internal/vmstate"
 	"github.com/solcreek/dew/internal/detect"
 	"github.com/solcreek/dew/internal/nmcache"
 	"github.com/solcreek/dew/internal/ocistage"
 	"github.com/solcreek/dew/internal/progress"
 	"github.com/solcreek/dew/internal/selfupdate"
-	"github.com/solcreek/dew/internal/services"
 	"github.com/solcreek/dew/internal/serialexec"
+	"github.com/solcreek/dew/internal/services"
 	"github.com/solcreek/dew/internal/vm"
 	"github.com/solcreek/dew/internal/vm/darwin"
+	"github.com/solcreek/dew/internal/vmstate"
 	vsockProto "github.com/solcreek/dew/internal/vsock"
 	"github.com/solcreek/dew/pkg/dewerr"
 )
@@ -545,85 +545,50 @@ func main() {
 	}
 
 	var err error
-	switch cmd {
-	case "vm":
-		err = cmdVM(subArgs)
-	case "start":
-		deprecationHint("start", "vm start")
-		err = cmdStart(subArgs)
-	case "run":
-		_, err = dispatchCobra("run", subArgs)
-	case "exec":
-		// Migrated to cobra (see cobra.go). Legacy cmdExec stays for
-		// internal callers like cmdLogs.
-		_, err = dispatchCobra("exec", subArgs)
-	case "install", "app", "apps":
-		// The pre-packaged apps catalog moved to a standalone tool in
-		// v0.7.20. The deprecation notice in v0.7.19 gave the heads-up;
-		// this is the removal. Subcommands respond with a clean usage
-		// error so scripts that survived the deprecation window fail
-		// fast and obvious.
-		err = dewerr.New(dewerr.CodeUsage,
-			"dew "+cmd+" was removed in v0.7.20.\n"+
-				"The pre-packaged apps catalog now lives in a separate tool.\n"+
-				"For arbitrary container workloads in dew, use: dew run --network -- <cmd>")
-	case "build":
-		err = cmdBuild(subArgs)
-	case "deploy":
-		err = cmdDeploy(subArgs)
-	case "rollback":
-		err = cmdRollback(subArgs)
-	case "share":
-		err = cmdShare(subArgs)
-	case "up":
-		err = cmdUp(subArgs)
-	case "services":
-		err = cmdServices(subArgs)
-	case "logs":
-		_, err = dispatchCobra("logs", subArgs)
-	case "down":
-		err = cmdDown()
-	case "assets":
-		err = cmdAssets(subArgs)
-	case "session":
-		// `dew session` shipped in earlier versions storing the VM
-		// handle in an in-process map. The CLI handed out an ID but
-		// the next process couldn't reach the VM — `dew session exec`
-		// always errored with "sessions are in-process only." The
-		// command was a documented lie. Surfacing it with a clear
-		// removal notice rather than fixing it half-way: the v0.8
-		// daemon work is the real solution.
-		err = dewerr.New(dewerr.CodeUsage,
-			"dew session was removed in v0.7.18 — it stored state in-process and `session exec` could never find the VM.\n"+
-				"For persistent VMs use `dew up` (project) or `dew vm start` (manual profile) — both register with the daemon and `dew exec` works against them.")
-	case "auth":
-		err = cmdAuth(subArgs)
-	case "env":
-		err = cmdEnv(subArgs)
-	case "serve":
-		err = cmdServe(subArgs)
-	case "server":
-		err = cmdServer(subArgs)
-	case "doctor":
-		err = cmdDoctor(subArgs)
-	case "update":
-		err = selfupdate.Update(version)
-	case "status":
-		deprecationHint("status", "vm status")
-		err = cmdStatus(subArgs)
-	case "forward":
-		deprecationHint("forward", "vm forward")
-		err = cmdForward(subArgs)
-	case "version", "--version", "-v":
-		fmt.Printf("dew %s\n", version)
-	case "help", "--help", "-h":
-		printUsage()
-	default:
-		err = dewerr.Newf(dewerr.CodeUsage, "unknown command %q", cmd)
-		if !flagJSON {
-			fmt.Fprintf(os.Stderr, "dew: %v\n", err)
+	// Migrated commands run through the cobra root (see cobra.go);
+	// everything else falls back to the legacy switch. The switch shrinks
+	// as commands migrate. dispatchCobra reports handled=false for
+	// anything not yet on cobra.
+	if handled, cerr := dispatchCobra(cmd, subArgs); handled {
+		err = cerr
+	} else {
+		switch cmd {
+		case "vm":
+			err = cmdVM(subArgs)
+		case "install", "app", "apps":
+			// The pre-packaged apps catalog moved to a standalone tool in
+			// v0.7.20. The deprecation notice in v0.7.19 gave the heads-up;
+			// this is the removal. Subcommands respond with a clean usage
+			// error so scripts that survived the deprecation window fail
+			// fast and obvious.
+			err = dewerr.New(dewerr.CodeUsage,
+				"dew "+cmd+" was removed in v0.7.20.\n"+
+					"The pre-packaged apps catalog now lives in a separate tool.\n"+
+					"For arbitrary container workloads in dew, use: dew run --network -- <cmd>")
+		case "session":
+			// `dew session` shipped in earlier versions storing the VM
+			// handle in an in-process map. The CLI handed out an ID but
+			// the next process couldn't reach the VM — `dew session exec`
+			// always errored with "sessions are in-process only." The
+			// command was a documented lie. Surfacing it with a clear
+			// removal notice rather than fixing it half-way: the v0.8
+			// daemon work is the real solution.
+			err = dewerr.New(dewerr.CodeUsage,
+				"dew session was removed in v0.7.18 — it stored state in-process and `session exec` could never find the VM.\n"+
+					"For persistent VMs use `dew up` (project) or `dew vm start` (manual profile) — both register with the daemon and `dew exec` works against them.")
+		case "server":
+			err = cmdServer(subArgs)
+		case "version", "--version", "-v":
+			fmt.Printf("dew %s\n", version)
+		case "help", "--help", "-h":
 			printUsage()
-			os.Exit(int(dewerr.CodeUsage))
+		default:
+			err = dewerr.Newf(dewerr.CodeUsage, "unknown command %q", cmd)
+			if !flagJSON {
+				fmt.Fprintf(os.Stderr, "dew: %v\n", err)
+				printUsage()
+				os.Exit(int(dewerr.CodeUsage))
+			}
 		}
 	}
 	if err != nil {
@@ -1511,7 +1476,9 @@ func execVsockStreamArgv(conn net.Conn, token, command string, args []string, ti
 		var done vsockProto.ExecDone
 		if json.Unmarshal(data, &done); done.ExitCode != 0 || done.Error != "" || len(data) < 50 {
 			// Check if this is actually a done message
-			var check struct{ Stream string `json:"stream"` }
+			var check struct {
+				Stream string `json:"stream"`
+			}
 			json.Unmarshal(data, &check)
 			if check.Stream == "" {
 				if flagEvents {
@@ -2036,74 +2003,74 @@ func cmdUp(args []string) error {
 			// further down handles flow.
 		} else {
 
-		emit(map[string]interface{}{"type": "install", "status": "starting", "cmd": proj.InstallCmd})
-		if spin != nil {
-			spin.Step("installing deps")
-		}
-		result, err, installMs := runInstall()
-
-		// Reactive fallback: if the first install failed with what looks
-		// like a missing-toolchain error AND we haven't tried installing
-		// the toolchain yet, install build-base + python3 and retry once.
-		// Catches projects where the native dep is transitive or uses an
-		// unlisted package name.
-		if !buildToolsTried &&
-			err == nil && result != nil && result.ExitCode != 0 &&
-			detect.ScanInstallStderrForNativeBuild(result.Stderr) {
-			if installBuildTools("npm install needs native compile") {
-				if spin != nil {
-					spin.Step("installing deps (retry)")
-				}
-				result, err, installMs = runInstall()
+			emit(map[string]interface{}{"type": "install", "status": "starting", "cmd": proj.InstallCmd})
+			if spin != nil {
+				spin.Step("installing deps")
 			}
-		}
+			result, err, installMs := runInstall()
 
-		if err != nil || (result != nil && result.ExitCode != 0) {
-			errMsg := ""
-			suggestion := ""
-			if result != nil {
-				errMsg = result.Stderr
-				switch {
-				case strings.Contains(errMsg, "peer dep") || strings.Contains(errMsg, "ERESOLVE"):
-					suggestion = "try adding --legacy-peer-deps to install command"
-				case detect.ScanInstallStderrForNativeBuild(errMsg):
-					if buildToolsTried {
-						suggestion = "build tools installed but compile still failed; check stderr above"
+			// Reactive fallback: if the first install failed with what looks
+			// like a missing-toolchain error AND we haven't tried installing
+			// the toolchain yet, install build-base + python3 and retry once.
+			// Catches projects where the native dep is transitive or uses an
+			// unlisted package name.
+			if !buildToolsTried &&
+				err == nil && result != nil && result.ExitCode != 0 &&
+				detect.ScanInstallStderrForNativeBuild(result.Stderr) {
+				if installBuildTools("npm install needs native compile") {
+					if spin != nil {
+						spin.Step("installing deps (retry)")
+					}
+					result, err, installMs = runInstall()
+				}
+			}
+
+			if err != nil || (result != nil && result.ExitCode != 0) {
+				errMsg := ""
+				suggestion := ""
+				if result != nil {
+					errMsg = result.Stderr
+					switch {
+					case strings.Contains(errMsg, "peer dep") || strings.Contains(errMsg, "ERESOLVE"):
+						suggestion = "try adding --legacy-peer-deps to install command"
+					case detect.ScanInstallStderrForNativeBuild(errMsg):
+						if buildToolsTried {
+							suggestion = "build tools installed but compile still failed; check stderr above"
+						} else {
+							suggestion = "looks like a missing-toolchain failure dew didn't catch; please file an issue with the package name"
+						}
+					}
+				}
+				emit(map[string]interface{}{
+					"type": "install", "status": "failed",
+					"elapsed_ms": installMs, "error": errMsg, "suggestion": suggestion,
+				})
+				if spin != nil {
+					if suggestion != "" {
+						spin.Fail(suggestion)
 					} else {
-						suggestion = "looks like a missing-toolchain failure dew didn't catch; please file an issue with the package name"
+						spin.Fail("install failed")
+					}
+				}
+			} else {
+				emit(map[string]interface{}{"type": "install", "status": "done", "elapsed_ms": installMs})
+				// Install succeeded; atomically commit the cache stamp.
+				// Failure here is non-fatal — the cache just stays in
+				// "in-progress" state, and the next boot will rebuild
+				// (crash-recovery path).
+				if cacheable {
+					if _, cerr := execInVMTimeout(nmcache.CommitCommand(cacheKey), 10*time.Second); cerr != nil {
+						emit(map[string]interface{}{
+							"type": "cache", "status": "commit-failed",
+							"error": cerr.Error(),
+						})
+					} else {
+						emit(map[string]interface{}{
+							"type": "cache", "status": "committed",
+						})
 					}
 				}
 			}
-			emit(map[string]interface{}{
-				"type": "install", "status": "failed",
-				"elapsed_ms": installMs, "error": errMsg, "suggestion": suggestion,
-			})
-			if spin != nil {
-				if suggestion != "" {
-					spin.Fail(suggestion)
-				} else {
-					spin.Fail("install failed")
-				}
-			}
-		} else {
-			emit(map[string]interface{}{"type": "install", "status": "done", "elapsed_ms": installMs})
-			// Install succeeded; atomically commit the cache stamp.
-			// Failure here is non-fatal — the cache just stays in
-			// "in-progress" state, and the next boot will rebuild
-			// (crash-recovery path).
-			if cacheable {
-				if _, cerr := execInVMTimeout(nmcache.CommitCommand(cacheKey), 10*time.Second); cerr != nil {
-					emit(map[string]interface{}{
-						"type": "cache", "status": "commit-failed",
-						"error": cerr.Error(),
-					})
-				} else {
-					emit(map[string]interface{}{
-						"type": "cache", "status": "committed",
-					})
-				}
-			}
-		}
 		} // end of else: non-cache-hit install
 	}
 
@@ -2259,7 +2226,7 @@ func cmdUp(args []string) error {
 						guestPort = p
 						url = fmt.Sprintf("http://localhost:%d/", hostPort)
 						emit(map[string]interface{}{
-							"type": "port-redetected",
+							"type":                "port-redetected",
 							"detected_guest_port": p, "host_port": freeHost,
 							"replaces_initial": proj.Port,
 						})
@@ -2292,7 +2259,7 @@ func cmdUp(args []string) error {
 		readyEvent := map[string]interface{}{
 			"type": "ready", "url": url, "port": hostPort,
 			"guest_port": guestPort,
-			"framework": proj.Framework, "elapsed_ms": totalMs,
+			"framework":  proj.Framework, "elapsed_ms": totalMs,
 		}
 		// emit() fires in either --events or --json mode (see the
 		// emit closure above). So one call is enough; no double-print.
@@ -2313,7 +2280,7 @@ func cmdUp(args []string) error {
 		timeoutEvent := map[string]interface{}{
 			"type": "timeout", "url": url, "port": hostPort,
 			"guest_port": guestPort,
-			"framework": proj.Framework, "elapsed_ms": totalMs,
+			"framework":  proj.Framework, "elapsed_ms": totalMs,
 			"hint": "server may still be starting, try opening the URL manually",
 		}
 		emit(timeoutEvent)
