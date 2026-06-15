@@ -7,12 +7,15 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/solcreek/dew/internal/vm"
@@ -209,7 +212,19 @@ func (s *State) AddForward(hostPort, guestPort int) (string, error) {
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", hostPort))
 	if err != nil {
-		return "", fmt.Errorf("forward listen %d: %w", hostPort, err)
+		if !isAddrInUse(err) {
+			return "", fmt.Errorf("forward listen %d: %w", hostPort, err)
+		}
+		// Requested host port is already taken (a common case: a local
+		// postgres on 5432). Rather than failing hard and making the
+		// caller pick another port by hand, fall back to an OS-assigned
+		// free port. The caller learns the real port from the returned
+		// address and the {host_port} in the forward-add response.
+		ln, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return "", fmt.Errorf("forward listen (fallback for :%d): %w", hostPort, err)
+		}
+		hostPort = ln.Addr().(*net.TCPAddr).Port
 	}
 	// IPv6 leg is best-effort. Some sandboxed environments have ::1
 	// disabled — we still want the IPv4 path to work in that case.
@@ -222,6 +237,10 @@ func (s *State) AddForward(hostPort, guestPort int) (string, error) {
 	}
 
 	entry := &ForwardEntry{HostPort: hostPort, GuestPort: guestPort, listener: ln, listener6: ln6}
+	// Key by the ACTUAL host port (which may differ from the requested
+	// one after a busy-port fallback) so ListForwards/RemoveForward
+	// operate on what's really bound.
+	key = fmt.Sprintf("%d:%d", hostPort, guestPort)
 	s.forwardMu.Lock()
 	s.forwards[key] = entry
 	s.forwardMu.Unlock()
@@ -305,6 +324,11 @@ func (s *State) proxyToGuest(tcpConn net.Conn, guestPort int) {
 		return
 	}
 	if !resp.OK {
+		// The guest couldn't reach the backend (container down, nothing
+		// listening, wrong port). Close the client connection promptly
+		// with a logged reason rather than leaving it to hang silently —
+		// silent hangs were the hardest forward failures to diagnose.
+		fmt.Fprintf(os.Stderr, "dew: forward to guest:%d failed: %s\n", guestPort, resp.Error)
 		return
 	}
 	done := make(chan struct{})
@@ -319,12 +343,29 @@ func (s *State) handleForwardAdd(conn net.Conn, req ExecRequest) {
 		json.NewEncoder(conn).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	// addr reflects the port actually bound, which may differ from the
+	// request after a busy-port fallback. Report both so the client can
+	// tell the user the real port (and that a fallback happened).
+	actualPort := req.HostPort
+	if _, p, e := net.SplitHostPort(addr); e == nil {
+		if n, e2 := strconv.Atoi(p); e2 == nil {
+			actualPort = n
+		}
+	}
 	json.NewEncoder(conn).Encode(map[string]any{
-		"ok":         true,
-		"host_port":  req.HostPort,
-		"guest_port": req.GuestPort,
-		"addr":       addr,
+		"ok":             true,
+		"host_port":      actualPort,
+		"requested_port": req.HostPort,
+		"guest_port":     req.GuestPort,
+		"addr":           addr,
 	})
+}
+
+// isAddrInUse reports whether err is an "address already in use"
+// bind failure (EADDRINUSE), so AddForward can fall back to a free
+// port instead of failing the whole forward.
+func isAddrInUse(err error) bool {
+	return errors.Is(err, syscall.EADDRINUSE)
 }
 
 func (s *State) handleForwardRemove(conn net.Conn, req ExecRequest) {
