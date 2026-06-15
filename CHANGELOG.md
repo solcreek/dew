@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.41] - 2026-06-15
+
 ### Fixed
 
 - **Upgrades no longer boot a stale kernel/initramfs (guest kernel
