@@ -58,6 +58,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`dew vm start --help` (and other two-level commands)** print help
   instead of `unknown flag`; subcommand help lookup is now
   namespace-aware.
+- **Release build**: bump the x86_64 Alpine `linux-virt` apk to
+  `6.12.93-r0`; the previously pinned `6.12.92-r0` was rotated off the
+  Alpine CDN, 404-ing the initramfs build.
 
 ## [0.7.39] - 2026-06-13
 
