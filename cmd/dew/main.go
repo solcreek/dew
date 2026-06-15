@@ -548,7 +548,9 @@ func main() {
 	case "run":
 		err = cmdRun(subArgs)
 	case "exec":
-		err = cmdExec(subArgs)
+		// Migrated to cobra (see cobra.go). Legacy cmdExec stays for
+		// internal callers like cmdLogs.
+		_, err = dispatchCobra("exec", subArgs)
 	case "install", "app", "apps":
 		// The pre-packaged apps catalog moved to a standalone tool in
 		// v0.7.20. The deprecation notice in v0.7.19 gave the heads-up;
@@ -2410,7 +2412,15 @@ func cmdExec(args []string) error {
 	if len(args) == 0 {
 		return dewerr.New(dewerr.CodeUsage, "usage: dew exec [--timeout DUR] <cmd...>")
 	}
+	return runExecRequest(args, wantJSON, timeoutMs)
+}
 
+// runExecRequest sends an exec request to the running VM's daemon and
+// renders the response. Split out of cmdExec so both the legacy flag
+// scanner and the cobra exec command (which parses --json/--timeout
+// natively) share one body. args is the guest command (argv form when
+// len>=2, shell string when len==1); wantJSON selects the envelope.
+func runExecRequest(args []string, wantJSON bool, timeoutMs int) error {
 	sockPath := daemon.SocketPath("")
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
