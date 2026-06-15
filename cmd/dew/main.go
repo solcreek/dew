@@ -553,8 +553,6 @@ func main() {
 		err = cerr
 	} else {
 		switch cmd {
-		case "vm":
-			err = cmdVM(subArgs)
 		case "install", "app", "apps":
 			// The pre-packaged apps catalog moved to a standalone tool in
 			// v0.7.20. The deprecation notice in v0.7.19 gave the heads-up;
@@ -576,8 +574,6 @@ func main() {
 			err = dewerr.New(dewerr.CodeUsage,
 				"dew session was removed in v0.7.18 — it stored state in-process and `session exec` could never find the VM.\n"+
 					"For persistent VMs use `dew up` (project) or `dew vm start` (manual profile) — both register with the daemon and `dew exec` works against them.")
-		case "server":
-			err = cmdServer(subArgs)
 		case "version", "--version", "-v":
 			fmt.Printf("dew %s\n", version)
 		case "help", "--help", "-h":

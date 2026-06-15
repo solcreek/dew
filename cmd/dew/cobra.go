@@ -38,6 +38,10 @@ var cobraCommands = map[string]bool{
 	"start":   true,
 	"status":  true,
 	"forward": true,
+	// namespaces — shimmed to cmdVM/cmdServer, which keep their own
+	// subcommand dispatch (and usage errors that vm_test.go pins).
+	"vm":     true,
+	"server": true,
 }
 
 // passthroughCommands take a guest command after their own flags. For
@@ -105,6 +109,12 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(legacyShim("serve", "Run the deploy receiver", cmdServe))
 	root.AddCommand(legacyShim("doctor", "Diagnose the local environment", cmdDoctor))
 	root.AddCommand(legacyShim("update", "Update dew to the latest release", func([]string) error { return selfupdate.Update(version) }))
+
+	// Namespaces. Shimmed to cmdVM/cmdServer, which keep their own
+	// subcommand dispatch (vm start/stop/status/forward,
+	// server create/list/destroy) and usage errors.
+	root.AddCommand(legacyShim("vm <start|stop|status|forward> [args...]", "Manage a long-lived VM", cmdVM))
+	root.AddCommand(legacyShim("server <create|list|destroy> [args...]", "Manage remote deploy targets", cmdServer))
 
 	// Deprecated single-level aliases — keep working, print a nudge.
 	root.AddCommand(legacyShim("start", "Deprecated: use `dew vm start`", func(a []string) error {
