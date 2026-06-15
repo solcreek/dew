@@ -139,6 +139,9 @@ Flags for scripted/agent use:
                          dew exits with the timeout code (104).
                          After ready, the process stays in the
                          foreground as usual.
+  --reset-disk           Delete the profile's persistent disk image
+                         before boot (rebuilds it fresh). Recovery for a
+                         stale/corrupt disk from a previous version.
 
 Wait-until-usable loop:
   dew vm start --profile standard --json --timeout 60s > events.ndjson &

@@ -1019,6 +1019,18 @@ func cmdStart(args []string) error {
 		return err
 	}
 
+	// --reset-disk: rebuild the persistent disk fresh (recovery for a
+	// stale/corrupt image from a previous version). See cmdUp.
+	if flagResetDisk && cfg.DiskPath != "" {
+		if err := os.Remove(cfg.DiskPath); err == nil {
+			if !flagJSON && !flagEvents {
+				fmt.Fprintf(os.Stderr, "dew: reset disk: %s\n", cfg.DiskPath)
+			}
+		} else if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "dew: could not reset disk %s: %v\n", cfg.DiskPath, err)
+		}
+	}
+
 	// Network on by default for `dew vm start` (and its legacy alias
 	// `dew start`). The help text has always claimed this; the
 	// implementation did not. Aligning the two — grove and any other
@@ -1118,6 +1130,9 @@ func cmdStart(args []string) error {
 			return dewerr.Newf(dewerr.CodeTimeout, "vm start: guest agent not ready within %s (--timeout) — run 'dew doctor' to check assets", flagTimeout)
 		}
 		fmt.Fprintf(os.Stderr, "dew: warning: token handshake failed, daemon may not work (run 'dew doctor' to check assets)\n")
+		if h := staleDiskHint(cfg.DiskPath, "dew vm start --reset-disk"); h != "" {
+			fmt.Fprintf(os.Stderr, "  %s\n", h)
+		}
 	}
 
 	// Start daemon socket AFTER token is set (so clients can exec immediately).
