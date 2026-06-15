@@ -1651,6 +1651,15 @@ func cmdUp(args []string) error {
 	cfg.VsockPort = uint32(vsockProto.DefaultPort)
 	cfg.CmdLine += " dew.share=project:/app"
 
+	// In machine-readable modes the serial console must not share stdout
+	// with the NDJSON lifecycle stream — interleaved kernel/boot lines
+	// (EXT4-fs, udhcpc, "Bridge firewalling registered") break `| jq`.
+	// Route the console to stderr so stdout carries structured events
+	// only (matches the convention dew vm start already uses).
+	if (flagJSON || flagEvents) && cfg.Console == nil {
+		cfg.Console = &vm.ConsoleFiles{In: os.Stdin, Out: os.Stderr}
+	}
+
 	token := generateToken()
 
 	var spin *progress.Spinner
