@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dew up --reset-disk` / `dew vm start --reset-disk`**: deletes the
+  profile's persistent disk image before boot so it's rebuilt fresh — a
+  one-command recovery for a stale or corrupt disk image left by a
+  previous version (resets VM state).
+
+### Fixed
+
+- **`dew assets pull <profile>` honors the positional profile.** It
+  previously only read `--profile`, so `dew assets pull standard`
+  silently pulled `minimal`, making it impossible to refresh a specific
+  profile's assets. The positional form now works (`--profile` still
+  wins if both are given).
+- **Stale-disk boot failures now point at the fix.** A stale disk on a
+  `--with`/standard profile is a valid image whose contents are
+  out of date, so the guest panics at `switch_root`
+  (`/init-stage2: Exec format error`) and the host sees only an agent
+  handshake timeout — the VZ Code=2 "delete the image" hint never
+  fired. dew now prints a recovery hint (naming `--reset-disk` and the
+  disk path) on the handshake-timeout path, and the VZ Code=2 error
+  also points at `--reset-disk`, so both stale-disk failure modes share
+  one recovery story.
+
 ## [0.7.41] - 2026-06-15
 
 ### Fixed
