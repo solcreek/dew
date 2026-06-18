@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.44] - 2026-06-18
+
 ### Fixed
 
 - **macOS 26 NAT warning no longer overstates the failure.** The
