@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **macOS 26 NAT warning no longer overstates the failure.** The
+  `--network` heads-up claimed outbound was broken and "won't reach the
+  internet" on every macOS 26 build. That was true of early 26.x but is
+  empirically false on current builds (26.5.1 reaches the public internet
+  fine, including DNS+TLS to `registry.npmjs.org` and `api.anthropic.com`).
+  The message is now conditional — outbound "may be unreliable on some
+  26.x builds" — and tells the user how to recognize the symptom rather
+  than asserting total failure.
+
 ## [0.7.43] - 2026-06-15
 
 ### Changed

@@ -129,23 +129,31 @@ func (d *DarwinVM) configureNetwork(config *vz.VirtualMachineConfiguration) erro
 		return nil
 	}
 	// macOS 26 deprecated the legacy NAT attachment we're calling here.
-	// VMs still boot, the guest gets a 192.168.64.x address, and the
-	// host gateway is reachable — but ALL outbound traffic times out
-	// (ICMP/DNS/TCP all fail to reach the public internet). Replacement
-	// is VZVmnetNetworkDeviceAttachment (Apple docs: VZVmnet...). The
-	// Code-Hex/vz library has open PRs adding it (#205, #218) but
-	// hasn't shipped. When that lands and we update the dep, we'll
-	// switch the implementation under here. Until then the VM boots
-	// and works for everything not requiring outbound (host shares
-	// via --share, vsock to the host, etc.). Warn on stderr so users
-	// hitting "curl: connection timeout" know it's not their fault.
+	// Early 26.x builds regressed it hard: VMs booted and got a
+	// 192.168.64.x address, but ALL outbound (ICMP/DNS/TCP) timed out.
+	// Apple has since (at least partially) repaired it — on 26.5.1 the
+	// guest reaches the public internet fine, including DNS+TLS to real
+	// hosts (verified: registry.npmjs.org and api.anthropic.com both
+	// reachable). We don't know the exact build the fix landed in, so we
+	// can't gate on a precise version boundary. The proper long-term fix
+	// is VZVmnetNetworkDeviceAttachment (Code-Hex/vz#205, #218); when that
+	// ships and we update the dep we'll switch the implementation here.
+	//
+	// Until then we keep a *conditional* heads-up on macOS 26 — not a
+	// claim of total failure (that's empirically false on current builds),
+	// just enough that a user hitting a real "connection timeout" on an
+	// affected build knows it's a known VZ issue, not their config. A
+	// runtime reachability probe was considered and rejected: it would add
+	// a per-run exec round-trip and would itself false-positive under
+	// --network-policy=restricted, on an offline host, or when the probe
+	// target is down.
 	if host := readHostInfo(); strings.HasPrefix(host.OSVersion, "26.") {
 		fmt.Fprintln(os.Stderr,
-			"  ⚠ Apple VZ NAT is broken on macOS 26 — guest outbound network won't reach the internet.")
+			"  ⚠ macOS 26 had an Apple VZ NAT regression; guest outbound may be unreliable on some 26.x builds.")
 		fmt.Fprintln(os.Stderr,
-			"    Tracking upstream Code-Hex/vz#218 (VZVmnetNetworkDeviceAttachment).")
+			"    If outbound times out (curl/apk/npm hang), it's likely this — see Code-Hex/vz#218 (VZVmnetNetworkDeviceAttachment).")
 		fmt.Fprintln(os.Stderr,
-			"    Workarounds: use --share <hostdir> for host files, vsock for host services.")
+			"    Workarounds: --share <hostdir> for host files, vsock for host services.")
 	}
 	natAttach, err := vz.NewNATNetworkDeviceAttachment()
 	if err != nil {
