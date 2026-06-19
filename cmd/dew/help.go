@@ -164,9 +164,21 @@ slated for removal in v0.9.x.
 
 Usage:
   dew down
+  dew vm stop [--name <vm>]
 
-No flags. Removes the daemon socket and shuts down the VM that
-dew up or dew vm start brought up.
+Removes the daemon socket and shuts down the VM that dew up or
+dew vm start brought up. Pass --name to stop a specific named VM;
+omit it for the default VM.
+`,
+	"list": `dew vm list — list running VMs
+
+Usage:
+  dew vm list [--json]
+
+Shows every VM with a daemon socket or a live state file — the
+default (unnamed) VM and any named VMs started with --name — with
+their status, profile, PID, and uptime. Crash leftovers (stale
+socket or dead state) are omitted.
 `,
 	"deploy": `dew deploy — push a built tarball to a remote dew server
 

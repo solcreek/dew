@@ -128,7 +128,7 @@ func newRootCmd() *cobra.Command {
 	// Namespaces. Shimmed to cmdVM/cmdServer, which keep their own
 	// subcommand dispatch (vm start/stop/status/forward,
 	// server create/list/destroy) and usage errors.
-	root.AddCommand(legacyShim("vm <start|stop|status|forward> [args...]", "Manage a long-lived VM", cmdVM))
+	root.AddCommand(legacyShim("vm <start|stop|status|list|forward> [args...]", "Manage long-lived VMs", cmdVM))
 	root.AddCommand(legacyShim("server <create|list|destroy> [args...]", "Manage remote deploy targets", cmdServer))
 
 	// Deprecated single-level aliases — keep working, print a nudge.

@@ -999,6 +999,18 @@ func popNameFlag(args []string) ([]string, error) {
 	return out, nil
 }
 
+// clearVMState removes the VM's lifecycle file and, for a named VM, its
+// now-empty <name>/ state directory, so stopped named VMs don't leave
+// dangling dirs under the state root. Best-effort: os.Remove leaves a
+// non-empty dir (and the shared default state root) untouched.
+func clearVMState(name string, pid int) {
+	dir := vmstate.DirFor(daemon.SocketDir(), name)
+	vmstate.Clear(dir, pid)
+	if name != "" {
+		os.Remove(dir)
+	}
+}
+
 // appendGuestParams plumbs the host-side flags that the guest's
 // init-stage2 reads from /proc/cmdline. Both cmdStart and cmdRun call
 // it so --share and --network-policy behave identically across them.
@@ -1105,7 +1117,7 @@ func cmdStart(args []string) error {
 		PID: os.Getpid(), Phase: vmstate.PhaseBooting, Mode: "start",
 		Profile: startProfile, StartedAt: startedAt,
 	})
-	defer vmstate.Clear(stateDir, os.Getpid())
+	defer clearVMState(flagVMName, os.Getpid())
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -1276,7 +1288,7 @@ func cmdRun(args []string) error {
 		PID: os.Getpid(), Phase: vmstate.PhaseBooting, Mode: "run",
 		Profile: profile, StartedAt: startedAt,
 	})
-	defer vmstate.Clear(stateDir, os.Getpid())
+	defer clearVMState(flagVMName, os.Getpid())
 
 	fmt.Fprintf(os.Stderr, "dew: booting VM\n")
 	start := time.Now()
@@ -1832,7 +1844,7 @@ func cmdUp(args []string) error {
 		PID: os.Getpid(), Phase: vmstate.PhaseBooting, Mode: "up",
 		Profile: cfgProfileName(), StartedAt: upStartedAt,
 	})
-	defer vmstate.Clear(stateDir, os.Getpid())
+	defer clearVMState(flagVMName, os.Getpid())
 
 	if err := d.Start(ctx); err != nil {
 		emit(map[string]interface{}{"type": "boot", "status": "failed", "error": err.Error()})
@@ -2394,6 +2406,16 @@ func cmdDown(args []string) error {
 		}
 	}
 	os.Remove(sockPath)
+
+	// The VM process is killed (SIGTERM) and doesn't run its own
+	// deferred cleanup, so stop drops the lifecycle record here — and,
+	// for a named VM, its now-empty <name>/ state dir. Best-effort:
+	// os.Remove leaves the shared default state root untouched.
+	stateDir := vmstate.DirFor(daemon.SocketDir(), flagVMName)
+	os.Remove(vmstate.Path(stateDir))
+	if flagVMName != "" {
+		os.Remove(stateDir)
+	}
 
 	if flagJSON {
 		enc := json.NewEncoder(os.Stdout)

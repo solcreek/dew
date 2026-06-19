@@ -28,7 +28,7 @@ import (
 func cmdVM(args []string) error {
 	if len(args) == 0 {
 		return dewerr.New(dewerr.CodeUsage,
-			"usage: dew vm <start|stop|status|forward> [--name <vm>] [args...]")
+			"usage: dew vm <start|stop|status|list|forward> [--name <vm>] [args...]")
 	}
 	switch args[0] {
 	case "start":
@@ -37,6 +37,8 @@ func cmdVM(args []string) error {
 		return cmdDown(args[1:])
 	case "status":
 		return cmdStatus(args[1:])
+	case "list", "ls":
+		return cmdList(args[1:])
 	case "forward":
 		return cmdForward(args[1:])
 	default:

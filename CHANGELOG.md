@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Named VMs: run several at once with `--name`.** `dew vm
+  start|stop|status|forward` and `dew exec` accept `--name <vm>` to
+  target a VM with its own daemon socket (`<name>.sock`) and state
+  directory (`<name>/`). Omitting `--name` targets the default VM, so
+  existing usage is unchanged. Names are restricted to letters, digits,
+  `-` and `_`.
+- **`dew vm list`** enumerates running VMs (the default and any named
+  ones) with status, profile, PID, and uptime. Supports `--json`.
+
+### Fixed
+
+- **`dew vm stop` cleans up VM state.** Stopping a VM now removes its
+  lifecycle record, including a named VM's now-empty state directory,
+  instead of leaving it behind under the state root.
+
 ## [0.7.44] - 2026-06-18
 
 ### Fixed
