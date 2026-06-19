@@ -122,3 +122,10 @@ func TestHandleExec_StreamingStdin(t *testing.T) {
 		t.Fatal("timed out — relay likely deadlocked")
 	}
 }
+
+func TestBuildVsockExec_ForwardsTTYFields(t *testing.T) {
+	got := buildVsockExec(ExecRequest{Argv: []string{"/bin/sh"}, Stream: true, TTY: true, Rows: 24, Cols: 80}, "tok")
+	if !got.TTY || got.Rows != 24 || got.Cols != 80 {
+		t.Errorf("TTY/Rows/Cols not propagated: %+v", got)
+	}
+}

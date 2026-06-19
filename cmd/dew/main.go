@@ -22,7 +22,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/solcreek/dew/internal/daemon"
 	"github.com/solcreek/dew/internal/detect"
@@ -2440,6 +2443,7 @@ func cmdExec(args []string) error {
 	wantJSON := flagJSON
 	var timeoutMs int
 	var interactive bool
+	var tty bool
 	filtered := args[:0]
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -2450,6 +2454,14 @@ func cmdExec(args []string) error {
 		}
 		if a == "--interactive" || a == "-i" {
 			interactive = true
+			continue
+		}
+		if a == "--tty" || a == "-t" {
+			tty = true
+			continue
+		}
+		if a == "-it" || a == "-ti" {
+			interactive, tty = true, true
 			continue
 		}
 		if a == "--timeout" {
@@ -2468,10 +2480,10 @@ func cmdExec(args []string) error {
 	}
 	args = filtered
 	if len(args) == 0 {
-		return dewerr.New(dewerr.CodeUsage, "usage: dew exec [-i] [--timeout DUR] <cmd...>")
+		return dewerr.New(dewerr.CodeUsage, "usage: dew exec [-it] [--timeout DUR] <cmd...>")
 	}
-	if interactive {
-		return runExecStreaming(args, timeoutMs)
+	if interactive || tty {
+		return runExecStreaming(args, timeoutMs, tty)
 	}
 	return runExecRequest(args, wantJSON, timeoutMs)
 }
@@ -2548,7 +2560,7 @@ func runExecRequest(args []string, wantJSON bool, timeoutMs int) error {
 // `echo cmd | dew exec -i ...` pipes input through. Mirrors the
 // non-streaming guest-exit-code passthrough (os.Exit) so callers — a
 // shell, an SSH front door — see the guest's real exit status.
-func runExecStreaming(args []string, timeoutMs int) error {
+func runExecStreaming(args []string, timeoutMs int, tty bool) error {
 	sockPath := daemon.SocketPath(flagVMName)
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
@@ -2565,23 +2577,79 @@ func runExecStreaming(args []string, timeoutMs int) error {
 	req.Stream = true
 	req.Stdin = true
 	req.TimeoutMs = timeoutMs
+
+	// TTY mode: request a guest pty, send the initial window size, and put
+	// our own terminal in raw mode so keystrokes pass through untouched.
+	// Terminal bytes are binary → base64 on the wire (see protocol.go).
+	stdinFd := int(os.Stdin.Fd())
+	var oldState *term.State
+	if tty && term.IsTerminal(stdinFd) {
+		req.TTY = true
+		if w, h, e := term.GetSize(stdinFd); e == nil {
+			req.Cols, req.Rows = uint16(w), uint16(h)
+		}
+		if st, e := term.MakeRaw(stdinFd); e == nil {
+			oldState = st
+		}
+	} else if tty {
+		req.TTY = true // -t without a real terminal: still allocate a pty
+	}
+	restore := func() {
+		if oldState != nil {
+			_ = term.Restore(stdinFd, oldState)
+			oldState = nil
+		}
+	}
+	defer restore()
+
+	enc := func(b []byte) string {
+		if req.TTY {
+			return base64.StdEncoding.EncodeToString(b)
+		}
+		return string(b)
+	}
+	dec := func(s string) []byte {
+		if req.TTY {
+			b, _ := base64.StdEncoding.DecodeString(s)
+			return b
+		}
+		return []byte(s)
+	}
+
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return dewerr.Wrap(err, dewerr.CodeNetwork, "send")
 	}
 
-	// Forward our stdin to the daemon as InputChunk frames until EOF.
+	// One serialized writer for all host→guest frames (stdin + resizes).
+	var sendMu sync.Mutex
+	jenc := json.NewEncoder(conn)
+	send := func(v any) error { sendMu.Lock(); defer sendMu.Unlock(); return jenc.Encode(v) }
+
+	// Window-resize → InputChunk{Winch}.
+	if req.TTY {
+		winch := make(chan os.Signal, 1)
+		signal.Notify(winch, syscall.SIGWINCH)
+		go func() {
+			for range winch {
+				if w, h, e := term.GetSize(stdinFd); e == nil {
+					_ = send(vsockProto.InputChunk{Winch: true, Rows: uint16(h), Cols: uint16(w)})
+				}
+			}
+		}()
+	}
+
+	// Forward our stdin until EOF.
 	go func() {
-		enc := json.NewEncoder(conn)
 		buf := make([]byte, 32*1024)
 		for {
 			n, rerr := os.Stdin.Read(buf)
 			if n > 0 {
-				if encErr := enc.Encode(vsockProto.InputChunk{Data: string(buf[:n])}); encErr != nil {
+				if send(vsockProto.InputChunk{Data: enc(buf[:n])}) != nil {
 					return
 				}
 			}
 			if rerr != nil {
-				_ = enc.Encode(vsockProto.InputChunk{EOF: true})
+				_ = send(vsockProto.InputChunk{EOF: true})
 				return
 			}
 		}
@@ -2595,16 +2663,17 @@ func runExecStreaming(args []string, timeoutMs int) error {
 		if len(line) > 0 {
 			var chunk vsockProto.OutputChunk
 			if json.Unmarshal(line, &chunk) == nil && chunk.Stream != "" {
-				if chunk.Stream == "stderr" {
-					fmt.Fprint(os.Stderr, chunk.Data)
+				if chunk.Stream == "stderr" && !req.TTY {
+					os.Stderr.Write(dec(chunk.Data))
 				} else {
-					fmt.Print(chunk.Data)
+					os.Stdout.Write(dec(chunk.Data))
 				}
 			} else {
 				var done vsockProto.ExecDone
 				_ = json.Unmarshal(line, &done)
 				exitCode = done.ExitCode
 				if done.Error != "" {
+					restore()
 					fmt.Fprintf(os.Stderr, "dew: %s\n", done.Error)
 				}
 				break
@@ -2614,8 +2683,10 @@ func runExecStreaming(args []string, timeoutMs int) error {
 			break
 		}
 	}
-	// Passthrough guest exit (mirror docker exec / kubectl exec).
+	// Passthrough guest exit (mirror docker exec / kubectl exec). Restore
+	// the terminal first — os.Exit skips deferred restore.
 	if exitCode != 0 {
+		restore()
 		os.Exit(exitCode)
 	}
 	return nil

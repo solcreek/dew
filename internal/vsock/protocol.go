@@ -43,15 +43,28 @@ type ExecRequest struct {
 	// exec timeout, since they run until stdin closes or the process
 	// exits. Only meaningful together with Stream.
 	Stdin bool `json:"stdin,omitempty"`
+	// TTY allocates a pseudo-terminal in the guest and runs the command
+	// attached to it (a single merged output stream, isatty true, job
+	// control, line editing). Implies Stdin. Rows/Cols are the initial
+	// window size; resizes arrive as InputChunk{Winch:true}. In TTY mode
+	// InputChunk.Data and OutputChunk.Data are base64 (terminal bytes are
+	// binary and not safe to carry raw in a JSON string).
+	TTY  bool   `json:"tty,omitempty"`
+	Rows uint16 `json:"rows,omitempty"`
+	Cols uint16 `json:"cols,omitempty"`
 }
 
-// InputChunk carries stdin bytes from host to guest during a streaming
-// exec. EOF (with empty Data) signals the host closed stdin, so the
-// guest can close the process's stdin and let it finish.
+// InputChunk carries stdin from host to guest during a streaming exec.
+// EOF (empty Data) signals the host closed stdin. Winop (Winch=true)
+// carries a terminal resize (Rows/Cols) instead of data. In TTY mode
+// Data is base64-encoded.
 type InputChunk struct {
-	Type string `json:"type,omitempty"`
-	Data string `json:"data,omitempty"`
-	EOF  bool   `json:"eof,omitempty"`
+	Type  string `json:"type,omitempty"`
+	Data  string `json:"data,omitempty"`
+	EOF   bool   `json:"eof,omitempty"`
+	Winch bool   `json:"winch,omitempty"`
+	Rows  uint16 `json:"rows,omitempty"`
+	Cols  uint16 `json:"cols,omitempty"`
 }
 
 type ExecResponse struct {
