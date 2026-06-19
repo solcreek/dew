@@ -112,7 +112,7 @@ func newRootCmd() *cobra.Command {
 	// Short text feeds the eventual `dew --help` tree; per-command --help
 	// is still served by main()'s namespace-aware interception for now.
 	root.AddCommand(legacyShim("up [dir]", "Start a dev environment (auto-detect project)", cmdUp))
-	root.AddCommand(legacyShim("down", "Stop the running dev VM", func([]string) error { return cmdDown() }))
+	root.AddCommand(legacyShim("down", "Stop the running dev VM", cmdDown))
 	root.AddCommand(legacyShim("build [dir]", "Package the current project for deployment", cmdBuild))
 	root.AddCommand(legacyShim("deploy <target>", "Deploy a built tarball to a remote server", cmdDeploy))
 	root.AddCommand(legacyShim("rollback <target>", "Roll back a remote deployment", cmdRollback))
@@ -235,6 +235,7 @@ func newLogsCmd() *cobra.Command {
 func newExecCmd() *cobra.Command {
 	var jsonOut bool
 	var timeout time.Duration
+	var vmName string
 	c := &cobra.Command{
 		Use:   "exec [flags] <cmd...>",
 		Short: "Execute a command in the running VM",
@@ -257,11 +258,16 @@ func newExecCmd() *cobra.Command {
 				// (selfupdate skip, error envelope) behave as before.
 				flagJSON = true
 			}
+			if err := validateVMName(vmName); vmName != "" && err != nil {
+				return err
+			}
+			flagVMName = vmName
 			return runExecRequest(args, jsonOut || flagJSON, int(timeout/time.Millisecond))
 		},
 	}
 	c.Flags().BoolVar(&jsonOut, "json", false, "emit a JSON result envelope on stdout")
 	c.Flags().DurationVar(&timeout, "timeout", 0, "guest exec timeout, e.g. 5m or 300s (default: agent's 30s)")
+	c.Flags().StringVar(&vmName, "name", "", "target a named VM (default: the unnamed VM)")
 	// THE load-bearing line: stop parsing dew flags at the first
 	// positional so a guest command's own flags pass through untouched.
 	c.Flags().SetInterspersed(false)

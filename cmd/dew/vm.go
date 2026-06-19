@@ -21,16 +21,20 @@ import (
 // Both are valid first-class entry points; the namespace makes the
 // distinction visible at the CLI surface instead of hidden in flag
 // defaults.
+//
+// Each verb accepts `--name <vm>` to target a named, concurrently
+// running VM (its own <name>.sock and <name>/ state dir). Omitting it
+// targets the default unnamed VM, so existing callers are unaffected.
 func cmdVM(args []string) error {
 	if len(args) == 0 {
 		return dewerr.New(dewerr.CodeUsage,
-			"usage: dew vm <start|stop|status|forward> [args...]")
+			"usage: dew vm <start|stop|status|forward> [--name <vm>] [args...]")
 	}
 	switch args[0] {
 	case "start":
 		return cmdStart(args[1:])
 	case "stop":
-		return cmdDown()
+		return cmdDown(args[1:])
 	case "status":
 		return cmdStatus(args[1:])
 	case "forward":

@@ -130,6 +130,11 @@ so dew exec can attach to it. Networking is on by default; pass
 (or its alias dew down) to stop.
 
 Flags for scripted/agent use:
+  --name NAME            Run a named VM alongside others, at its own
+                         socket (<name>.sock) and state dir. Omit to use
+                         the default VM. Pass the same --name to
+                         dew vm stop|status|forward and dew exec to
+                         target it. Names: letters, digits, '-' or '_'.
   --json / --events      Emit one NDJSON ready event on stdout once
                          the daemon socket accepts connections:
                          {"type":"ready","socket":...,"pid":...,

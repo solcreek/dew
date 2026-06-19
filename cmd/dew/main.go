@@ -56,6 +56,14 @@ var flagProfile string
 var flagServicesOnly bool
 var flagResetDisk bool
 
+// flagVMName selects which VM a command targets. Empty is the default
+// (unnamed) VM, preserving the historical single-VM layout
+// (default.sock + vm-state.json). A non-empty name maps to its own
+// socket (<name>.sock) and state dir (<name>/), so several named VMs
+// can run concurrently. Set by parseFlags (start/run/up) and by
+// popNameFlag (status/stop/forward/exec).
+var flagVMName string
+
 // flagTimeout is the overall wall-clock budget for `dew run`
 // (boot + agent wait + exec). Zero means no overall bound; each
 // stage keeps its own default deadline.
@@ -740,6 +748,7 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 	flagWith = ""
 	flagServicesOnly = false
 	flagResetDisk = false
+	flagVMName = ""
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -855,6 +864,15 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, fmt.Errorf("--profile requires a name")
 			}
 			flagProfile = args[i]
+		case "--name":
+			i++
+			if i >= len(args) {
+				return cfg, nil, dewerr.New(dewerr.CodeUsage, "--name requires a VM name")
+			}
+			if err := validateVMName(args[i]); err != nil {
+				return cfg, nil, err
+			}
+			flagVMName = args[i]
 		case "--disk":
 			i++
 			if i >= len(args) {
@@ -928,6 +946,57 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 	}
 
 	return cfg, remaining, nil
+}
+
+// validateVMName guards the VM name before it becomes a filesystem path
+// component (<name>.sock and a <name>/ state dir under the dew state
+// directory). Restricting to a small safe charset prevents path
+// traversal and collisions — important because a front door may derive
+// the name from an untrusted source (e.g. an SSH username).
+func validateVMName(name string) error {
+	switch {
+	case name == "":
+		return dewerr.New(dewerr.CodeUsage, "--name requires a non-empty VM name")
+	case name == "default":
+		// "default" is the reserved on-disk name for the unnamed VM
+		// (default.sock); taking it explicitly would alias two notions
+		// of the same VM. Plain `dew vm ...` already targets it.
+		return dewerr.New(dewerr.CodeUsage, `"default" is reserved; omit --name to target the default VM`)
+	case len(name) > 64:
+		return dewerr.Newf(dewerr.CodeUsage, "--name too long (%d chars, max 64)", len(name))
+	}
+	for _, r := range name {
+		ok := r == '-' || r == '_' ||
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !ok {
+			return dewerr.Newf(dewerr.CodeUsage, "invalid VM name %q: use letters, digits, '-' or '_'", name)
+		}
+	}
+	return nil
+}
+
+// popNameFlag extracts a `--name <vm>` pair from args for the commands
+// that don't run parseFlags (status/stop/forward/exec), sets flagVMName,
+// and returns args with the pair removed. flagVMName is reset first so a
+// name never leaks across commands in a reused process (e.g. tests).
+func popNameFlag(args []string) ([]string, error) {
+	flagVMName = ""
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--name" {
+			i++
+			if i >= len(args) {
+				return nil, dewerr.New(dewerr.CodeUsage, "--name requires a VM name")
+			}
+			if err := validateVMName(args[i]); err != nil {
+				return nil, err
+			}
+			flagVMName = args[i]
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out, nil
 }
 
 // appendGuestParams plumbs the host-side flags that the guest's
@@ -1029,7 +1098,7 @@ func cmdStart(args []string) error {
 	// foreground indefinitely — the VM lives and dies with it.
 	budget := newRunBudget(flagTimeout)
 
-	stateDir := daemon.SocketDir()
+	stateDir := vmstate.DirFor(daemon.SocketDir(), flagVMName)
 	startProfile := cfgProfileName()
 	startedAt := time.Now().UTC()
 	_ = vmstate.Write(stateDir, vmstate.State{
@@ -1057,7 +1126,7 @@ func cmdStart(args []string) error {
 	fmt.Fprintf(os.Stderr, "dew: VM running (%s)\n", time.Since(start).Round(time.Millisecond))
 
 	// Remove stale socket from previous run
-	os.Remove(daemon.SocketPath(""))
+	os.Remove(daemon.SocketPath(flagVMName))
 
 	// Wait for guest agent and inject auth token. Wall-clock deadline,
 	// not attempt count — see the cmdRun agent wait for why.
@@ -1095,7 +1164,7 @@ func cmdStart(args []string) error {
 		VM:         d,
 		Token:      token,
 		VsockPort:  cfg.VsockPort,
-		SocketPath: daemon.SocketPath(""),
+		SocketPath: daemon.SocketPath(flagVMName),
 	}
 	if err := dmn.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "dew: daemon: %v\n", err)
@@ -1200,7 +1269,7 @@ func cmdRun(args []string) error {
 		return dewerr.Newf(dewerr.CodeTimeout, "run: timed out after %s during %s (--timeout)", flagTimeout, stage)
 	}
 
-	stateDir := daemon.SocketDir()
+	stateDir := vmstate.DirFor(daemon.SocketDir(), flagVMName)
 	profile := cfgProfileName()
 	startedAt := time.Now().UTC()
 	_ = vmstate.Write(stateDir, vmstate.State{
@@ -1741,7 +1810,7 @@ func cmdUp(args []string) error {
 	}
 
 	// Remove stale socket
-	os.Remove(daemon.SocketPath(""))
+	os.Remove(daemon.SocketPath(flagVMName))
 
 	d, err := darwin.New(cfg)
 	if err != nil {
@@ -1757,7 +1826,7 @@ func cmdUp(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	stateDir := daemon.SocketDir()
+	stateDir := vmstate.DirFor(daemon.SocketDir(), flagVMName)
 	upStartedAt := time.Now().UTC()
 	_ = vmstate.Write(stateDir, vmstate.State{
 		PID: os.Getpid(), Phase: vmstate.PhaseBooting, Mode: "up",
@@ -1809,7 +1878,7 @@ func cmdUp(args []string) error {
 
 	dmn := &daemon.State{
 		VM: d, Token: token, VsockPort: cfg.VsockPort,
-		SocketPath: daemon.SocketPath(""),
+		SocketPath: daemon.SocketPath(flagVMName),
 	}
 	dmn.Start()
 	_ = vmstate.Write(stateDir, vmstate.State{
@@ -2281,13 +2350,17 @@ func cmdUp(args []string) error {
 	return d.Stop(context.Background())
 }
 
-func cmdDown() error {
-	for _, a := range os.Args[2:] {
+func cmdDown(args []string) error {
+	args, err := popNameFlag(args)
+	if err != nil {
+		return err
+	}
+	for _, a := range args {
 		if a == "--json" {
 			flagJSON = true
 		}
 	}
-	sockPath := daemon.SocketPath("")
+	sockPath := daemon.SocketPath(flagVMName)
 	if _, err := os.Stat(sockPath); err != nil {
 		if flagJSON {
 			enc := json.NewEncoder(os.Stdout)
@@ -2332,6 +2405,10 @@ func cmdDown() error {
 }
 
 func cmdExec(args []string) error {
+	args, err := popNameFlag(args)
+	if err != nil {
+		return err
+	}
 	// Strip --json so it isn't joined into the guest command.
 	// Also consume --timeout DURATION so callers can override the
 	// guest agent's 30s default. Without this, a `dew exec nerdctl
@@ -2374,7 +2451,7 @@ func cmdExec(args []string) error {
 // natively) share one body. args is the guest command (argv form when
 // len>=2, shell string when len==1); wantJSON selects the envelope.
 func runExecRequest(args []string, wantJSON bool, timeoutMs int) error {
-	sockPath := daemon.SocketPath("")
+	sockPath := daemon.SocketPath(flagVMName)
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
 		return dewerr.Wrapf(err, dewerr.CodeConflict, "no running VM (socket %s)", sockPath)

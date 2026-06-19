@@ -22,6 +22,10 @@ import (
 // without restarting the VM is the load-bearing UX win — `grove
 // install` calls this immediately after an app comes up.
 func cmdForward(args []string) error {
+	args, err := popNameFlag(args)
+	if err != nil {
+		return err
+	}
 	if len(args) == 0 {
 		return dewerr.New(dewerr.CodeUsage, "usage: dew forward add|remove|list ...")
 	}
@@ -153,7 +157,7 @@ func cmdForwardList(args []string) error {
 // VM is running so callers see the same "no running VM" hint shape
 // as `dew exec`.
 func sendDaemonRequest(req daemon.ExecRequest) (map[string]any, error) {
-	sockPath := daemon.SocketPath("")
+	sockPath := daemon.SocketPath(flagVMName)
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
 		return nil, dewerr.Wrapf(err, dewerr.CodeConflict, "no running VM (socket %s)", sockPath)

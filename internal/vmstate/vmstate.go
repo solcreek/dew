@@ -46,6 +46,18 @@ func Path(dir string) string {
 	return filepath.Join(dir, fileName)
 }
 
+// DirFor returns the per-VM state directory: base for the default
+// (unnamed) VM, base/<name> for a named one. Each VM keeps its own
+// vm-state.json so concurrent named VMs don't clobber each other's
+// lifecycle record — Write creates the directory on demand. The empty
+// name preserves the historical base/vm-state.json layout.
+func DirFor(base, name string) string {
+	if name == "" {
+		return base
+	}
+	return filepath.Join(base, name)
+}
+
 // Write publishes s atomically (temp file + rename) so a concurrent
 // reader never sees a partial JSON document.
 func Write(dir string, s State) error {

@@ -60,6 +60,56 @@ func TestClear_OnlyOwner(t *testing.T) {
 	}
 }
 
+// DirFor keeps the default VM at the base dir (back-compat with the
+// historical single vm-state.json) and gives each named VM its own
+// subdirectory.
+func TestDirFor(t *testing.T) {
+	base := "/state/dew"
+	if got := DirFor(base, ""); got != base {
+		t.Errorf("DirFor(default) = %q, want %q", got, base)
+	}
+	if got, want := DirFor(base, "alice"), base+"/alice"; got != want {
+		t.Errorf("DirFor(alice) = %q, want %q", got, want)
+	}
+}
+
+// Two named VMs (and the default) must not clobber each other's
+// lifecycle record — the whole point of per-name state dirs.
+func TestDirFor_IsolatesNamedState(t *testing.T) {
+	base := t.TempDir()
+
+	write := func(name string, pid int) {
+		if err := Write(DirFor(base, name), State{PID: pid, Phase: PhaseRunning, Mode: "start"}); err != nil {
+			t.Fatalf("write %q: %v", name, err)
+		}
+	}
+	write("", 100)
+	write("alice", 200)
+	write("bob", 300)
+
+	for name, wantPID := range map[string]int{"": 100, "alice": 200, "bob": 300} {
+		got, ok := Read(DirFor(base, name))
+		if !ok {
+			t.Fatalf("no state for %q", name)
+		}
+		if got.PID != wantPID {
+			t.Errorf("state for %q: PID = %d, want %d", name, got.PID, wantPID)
+		}
+	}
+
+	// Clearing one VM must leave the others intact.
+	Clear(DirFor(base, "alice"), 200)
+	if _, ok := Read(DirFor(base, "alice")); ok {
+		t.Error("alice state survived Clear")
+	}
+	if _, ok := Read(DirFor(base, "bob")); !ok {
+		t.Error("clearing alice also removed bob")
+	}
+	if _, ok := Read(DirFor(base, "")); !ok {
+		t.Error("clearing alice also removed the default VM")
+	}
+}
+
 func TestAlive(t *testing.T) {
 	if !Alive(os.Getpid()) {
 		t.Error("our own pid reported dead")

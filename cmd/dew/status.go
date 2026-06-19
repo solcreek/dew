@@ -28,7 +28,10 @@ import (
 //
 // Exit is always 0 — "not running" is a legitimate state, not an error.
 func cmdStatus(args []string) error {
-	sockPath := daemon.SocketPath("")
+	if _, err := popNameFlag(args); err != nil {
+		return err
+	}
+	sockPath := daemon.SocketPath(flagVMName)
 
 	_, statErr := os.Stat(sockPath)
 	socketPresent := statErr == nil
@@ -42,11 +45,12 @@ func cmdStatus(args []string) error {
 		}
 	}
 
-	st, hasState := vmstate.Read(daemon.SocketDir())
+	stateDir := vmstate.DirFor(daemon.SocketDir(), flagVMName)
+	st, hasState := vmstate.Read(stateDir)
 	if hasState && !vmstate.Alive(st.PID) {
 		// Crash leftover: the owning process is gone. Self-heal so the
 		// next status call doesn't re-evaluate it.
-		vmstate.Clear(daemon.SocketDir(), st.PID)
+		vmstate.Clear(stateDir, st.PID)
 		hasState = false
 	}
 
@@ -103,6 +107,5 @@ func cmdStatus(args []string) error {
 		fmt.Printf("dew: not running\n")
 		fmt.Printf("  Start: dew vm start --profile standard\n")
 	}
-	_ = args // status takes no arguments today; reserve for future filters
 	return nil
 }
