@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dew exec -t` / `--tty` allocates a real pseudo-terminal in the
+  guest.** Combined with `-i` (`dew exec -it -- /bin/sh`) this is a full
+  interactive terminal: programs see a TTY (isatty), job control and line
+  editing work, the local terminal is put in raw mode, and window resizes
+  propagate (SIGWINCH → guest `TIOCSWINSZ`). Terminal bytes are carried
+  base64 over the streaming protocol since they are binary; non-TTY exec
+  is unchanged. Requires the matching guest agent (shipped in the
+  initramfs).
+
 ## [0.7.46] - 2026-06-19
 
 ### Added

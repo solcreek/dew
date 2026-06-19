@@ -237,6 +237,7 @@ func newExecCmd() *cobra.Command {
 	var timeout time.Duration
 	var vmName string
 	var interactive bool
+	var tty bool
 	c := &cobra.Command{
 		Use:   "exec [flags] <cmd...>",
 		Short: "Execute a command in the running VM",
@@ -244,9 +245,10 @@ func newExecCmd() *cobra.Command {
 			"`dew vm start`). With 2+ arguments the command runs as argv with no\n" +
 			"shell wrap; a single string is run via /bin/sh -c. Flags after the\n" +
 			"command belong to the command, not to dew.\n\n" +
-			"With -i/--interactive, stdin is streamed into the guest and output\n" +
-			"is streamed back live — use it for a shell (`dew exec -i -- /bin/sh`)\n" +
-			"or to pipe input (`echo cmd | dew exec -i -- /bin/sh`).",
+			"With -i/--interactive, stdin is streamed into the guest. With\n" +
+			"-t/--tty, a pseudo-terminal is allocated in the guest (isatty, job\n" +
+			"control, resize) and the local terminal is put in raw mode. Use\n" +
+			"`dew exec -it -- /bin/sh` for a full interactive shell.",
 		// Custom Args + flag-error funcs return dewerr.CodeUsage so
 		// main()'s exit-code mapper gives usage errors code 2 (parity with
 		// the legacy parser), not the generic code 1 cobra would yield.
@@ -266,8 +268,8 @@ func newExecCmd() *cobra.Command {
 				return err
 			}
 			flagVMName = vmName
-			if interactive {
-				return runExecStreaming(args, int(timeout/time.Millisecond))
+			if interactive || tty {
+				return runExecStreaming(args, int(timeout/time.Millisecond), tty)
 			}
 			return runExecRequest(args, jsonOut || flagJSON, int(timeout/time.Millisecond))
 		},
@@ -276,6 +278,7 @@ func newExecCmd() *cobra.Command {
 	c.Flags().DurationVar(&timeout, "timeout", 0, "guest exec timeout, e.g. 5m or 300s (default: agent's 30s)")
 	c.Flags().StringVar(&vmName, "name", "", "target a named VM (default: the unnamed VM)")
 	c.Flags().BoolVarP(&interactive, "interactive", "i", false, "stream stdin/stdout for an interactive session (e.g. a shell)")
+	c.Flags().BoolVarP(&tty, "tty", "t", false, "allocate a pseudo-terminal in the guest (use with -i, e.g. -it, for a full shell)")
 	// THE load-bearing line: stop parsing dew flags at the first
 	// positional so a guest command's own flags pass through untouched.
 	c.Flags().SetInterspersed(false)

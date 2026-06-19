@@ -7,6 +7,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/creack/pty"
 	"github.com/mdlayher/vsock"
 	"github.com/solcreek/dew/internal/agentauth"
 	"github.com/solcreek/dew/internal/guestenv"
@@ -230,7 +232,7 @@ func executeStreaming(conn net.Conn, req protocol.ExecRequest) {
 		cancel  context.CancelFunc
 		timeout time.Duration
 	)
-	if req.Stdin {
+	if req.Stdin || req.TTY {
 		ctx, cancel = context.WithCancel(context.Background())
 	} else {
 		timeout = 30 * time.Second
@@ -247,6 +249,13 @@ func executeStreaming(conn net.Conn, req protocol.ExecRequest) {
 	}
 	setExecUser(cmd)
 	cmd.Env = guestenv.ExecEnv(os.Environ(), req.Env)
+
+	// TTY mode runs the command on a pseudo-terminal: one merged output
+	// stream, isatty true, job control. Bytes are base64 on the wire.
+	if req.TTY {
+		runPTY(conn, cmd, req)
+		return
+	}
 
 	stdoutPipe, _ := cmd.StdoutPipe()
 	stderrPipe, _ := cmd.StderrPipe()
@@ -316,6 +325,70 @@ func executeStreaming(conn net.Conn, req protocol.ExecRequest) {
 		errMsg = fmt.Sprintf("timeout after %s", timeout)
 	}
 
+	protocol.WriteJSON(conn, &protocol.ExecDone{ExitCode: exitCode, Error: errMsg})
+}
+
+// runPTY runs cmd attached to a pseudo-terminal. Output is one merged
+// raw stream; input carries stdin bytes and window resizes. Terminal
+// bytes are binary, so InputChunk/OutputChunk Data is base64 in TTY mode.
+func runPTY(conn net.Conn, cmd *exec.Cmd, req protocol.ExecRequest) {
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		protocol.WriteJSON(conn, &protocol.ExecDone{ExitCode: -1, Error: err.Error()})
+		return
+	}
+	defer ptmx.Close()
+	if req.Rows > 0 || req.Cols > 0 {
+		_ = pty.Setsize(ptmx, &pty.Winsize{Rows: req.Rows, Cols: req.Cols})
+	}
+
+	// host → pty: stdin bytes (base64) and window-size changes.
+	go func() {
+		for {
+			var in protocol.InputChunk
+			if err := protocol.ReadJSON(conn, &in); err != nil {
+				return
+			}
+			if in.Winch {
+				_ = pty.Setsize(ptmx, &pty.Winsize{Rows: in.Rows, Cols: in.Cols})
+				continue
+			}
+			if in.Data != "" {
+				if b, derr := base64.StdEncoding.DecodeString(in.Data); derr == nil {
+					ptmx.Write(b)
+				}
+			}
+			if in.EOF {
+				return
+			}
+		}
+	}()
+
+	// pty → host: raw bytes, base64-framed.
+	buf := make([]byte, 32*1024)
+	for {
+		n, rerr := ptmx.Read(buf)
+		if n > 0 {
+			chunk := protocol.OutputChunk{Stream: "stdout", Data: base64.StdEncoding.EncodeToString(buf[:n])}
+			if werr := protocol.WriteJSON(conn, &chunk); werr != nil {
+				break
+			}
+		}
+		if rerr != nil {
+			break // pty EOF: the shell exited
+		}
+	}
+
+	exitCode := 0
+	errMsg := ""
+	if err := cmd.Wait(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			exitCode = ee.ExitCode()
+		} else {
+			exitCode = -1
+			errMsg = err.Error()
+		}
+	}
 	protocol.WriteJSON(conn, &protocol.ExecDone{ExitCode: exitCode, Error: errMsg})
 }
 

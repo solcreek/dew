@@ -305,3 +305,31 @@ func TestWriteReadJSON_InputChunk(t *testing.T) {
 		t.Errorf("second frame = %+v, want eof=true empty data", eof)
 	}
 }
+
+func TestWriteReadJSON_TTYFields(t *testing.T) {
+	var buf bytes.Buffer
+	req := ExecRequest{Command: "/bin/sh", Stream: true, Stdin: true, TTY: true, Rows: 24, Cols: 80}
+	if err := WriteJSON(&buf, &req); err != nil {
+		t.Fatal(err)
+	}
+	var got ExecRequest
+	if err := ReadJSON(&buf, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.TTY || got.Rows != 24 || got.Cols != 80 {
+		t.Errorf("TTY fields lost: %+v", got)
+	}
+
+	// A winch InputChunk carries a resize, not data.
+	buf.Reset()
+	if err := WriteJSON(&buf, &InputChunk{Winch: true, Rows: 40, Cols: 120}); err != nil {
+		t.Fatal(err)
+	}
+	var in InputChunk
+	if err := ReadJSON(&buf, &in); err != nil {
+		t.Fatal(err)
+	}
+	if !in.Winch || in.Rows != 40 || in.Cols != 120 {
+		t.Errorf("winch fields lost: %+v", in)
+	}
+}

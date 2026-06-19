@@ -81,6 +81,9 @@ type ExecRequest struct {
 	Argv      []string `json:"argv,omitempty"`
 	Stream    bool     `json:"stream,omitempty"`
 	Stdin     bool     `json:"stdin,omitempty"` // forward client stdin into the streaming exec
+	TTY       bool     `json:"tty,omitempty"`   // allocate a pty in the guest
+	Rows      uint16   `json:"rows,omitempty"`  // initial tty window size
+	Cols      uint16   `json:"cols,omitempty"`
 	TimeoutMs int      `json:"timeout_ms,omitempty"`
 
 	// forward mode (kind = "forward-*")
@@ -112,24 +115,21 @@ func SocketPath(name string) string {
 // Shell mode (req.Command set, Argv empty): /bin/sh -c <Command>.
 // Legacy path for clients that send a single shell string.
 func buildVsockExec(req ExecRequest, token string) vsockProto.ExecRequest {
-	if len(req.Argv) > 0 {
-		return vsockProto.ExecRequest{
-			Token:     token,
-			Command:   req.Argv[0],
-			Args:      req.Argv[1:],
-			Stream:    req.Stream,
-			Stdin:     req.Stdin,
-			TimeoutMs: req.TimeoutMs,
-		}
-	}
-	return vsockProto.ExecRequest{
+	out := vsockProto.ExecRequest{
 		Token:     token,
-		Command:   "/bin/sh",
-		Args:      []string{"-c", req.Command},
 		Stream:    req.Stream,
 		Stdin:     req.Stdin,
+		TTY:       req.TTY,
+		Rows:      req.Rows,
+		Cols:      req.Cols,
 		TimeoutMs: req.TimeoutMs,
 	}
+	if len(req.Argv) > 0 {
+		out.Command, out.Args = req.Argv[0], req.Argv[1:]
+	} else {
+		out.Command, out.Args = "/bin/sh", []string{"-c", req.Command}
+	}
+	return out
 }
 
 // Start begins listening on a Unix socket, proxying exec requests
