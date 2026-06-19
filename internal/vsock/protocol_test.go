@@ -280,3 +280,28 @@ func TestSetTokenRequest(t *testing.T) {
 		t.Errorf("Token = %q", got.Token)
 	}
 }
+
+func TestWriteReadJSON_InputChunk(t *testing.T) {
+	var buf bytes.Buffer
+	want := InputChunk{Data: "line of stdin\n"}
+	if err := WriteJSON(&buf, &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteJSON(&buf, &InputChunk{EOF: true}); err != nil {
+		t.Fatal(err)
+	}
+	var data InputChunk
+	if err := ReadJSON(&buf, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Data != want.Data || data.EOF {
+		t.Errorf("first frame = %+v, want data=%q eof=false", data, want.Data)
+	}
+	var eof InputChunk
+	if err := ReadJSON(&buf, &eof); err != nil {
+		t.Fatal(err)
+	}
+	if !eof.EOF || eof.Data != "" {
+		t.Errorf("second frame = %+v, want eof=true empty data", eof)
+	}
+}

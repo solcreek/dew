@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -2438,12 +2439,17 @@ func cmdExec(args []string) error {
 	// download with an unhelpful "timeout after 30s" stderr line.
 	wantJSON := flagJSON
 	var timeoutMs int
+	var interactive bool
 	filtered := args[:0]
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--json" {
 			wantJSON = true
 			flagJSON = true
+			continue
+		}
+		if a == "--interactive" || a == "-i" {
+			interactive = true
 			continue
 		}
 		if a == "--timeout" {
@@ -2462,7 +2468,10 @@ func cmdExec(args []string) error {
 	}
 	args = filtered
 	if len(args) == 0 {
-		return dewerr.New(dewerr.CodeUsage, "usage: dew exec [--timeout DUR] <cmd...>")
+		return dewerr.New(dewerr.CodeUsage, "usage: dew exec [-i] [--timeout DUR] <cmd...>")
+	}
+	if interactive {
+		return runExecStreaming(args, timeoutMs)
 	}
 	return runExecRequest(args, wantJSON, timeoutMs)
 }
@@ -2529,6 +2538,85 @@ func runExecRequest(args []string, wantJSON bool, timeoutMs int) error {
 	// Shell mode: passthrough guest exit (mirror docker exec / kubectl exec).
 	if resp.ExitCode != 0 {
 		os.Exit(resp.ExitCode)
+	}
+	return nil
+}
+
+// runExecStreaming runs an interactive exec: it streams the guest's
+// stdout/stderr back live AND forwards this process's stdin into the
+// guest, so `dew exec -i ... -- /bin/sh` is a usable session and
+// `echo cmd | dew exec -i ...` pipes input through. Mirrors the
+// non-streaming guest-exit-code passthrough (os.Exit) so callers — a
+// shell, an SSH front door — see the guest's real exit status.
+func runExecStreaming(args []string, timeoutMs int) error {
+	sockPath := daemon.SocketPath(flagVMName)
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		return dewerr.Wrapf(err, dewerr.CodeConflict, "no running VM (socket %s)", sockPath)
+	}
+	defer conn.Close()
+
+	var req daemon.ExecRequest
+	if len(args) >= 2 {
+		req = daemon.ExecRequest{Argv: args}
+	} else {
+		req = daemon.ExecRequest{Command: args[0]}
+	}
+	req.Stream = true
+	req.Stdin = true
+	req.TimeoutMs = timeoutMs
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
+		return dewerr.Wrap(err, dewerr.CodeNetwork, "send")
+	}
+
+	// Forward our stdin to the daemon as InputChunk frames until EOF.
+	go func() {
+		enc := json.NewEncoder(conn)
+		buf := make([]byte, 32*1024)
+		for {
+			n, rerr := os.Stdin.Read(buf)
+			if n > 0 {
+				if encErr := enc.Encode(vsockProto.InputChunk{Data: string(buf[:n])}); encErr != nil {
+					return
+				}
+			}
+			if rerr != nil {
+				_ = enc.Encode(vsockProto.InputChunk{EOF: true})
+				return
+			}
+		}
+	}()
+
+	// Relay output frames (one JSON object per line) until ExecDone.
+	r := bufio.NewReader(conn)
+	exitCode := 0
+	for {
+		line, rerr := r.ReadBytes('\n')
+		if len(line) > 0 {
+			var chunk vsockProto.OutputChunk
+			if json.Unmarshal(line, &chunk) == nil && chunk.Stream != "" {
+				if chunk.Stream == "stderr" {
+					fmt.Fprint(os.Stderr, chunk.Data)
+				} else {
+					fmt.Print(chunk.Data)
+				}
+			} else {
+				var done vsockProto.ExecDone
+				_ = json.Unmarshal(line, &done)
+				exitCode = done.ExitCode
+				if done.Error != "" {
+					fmt.Fprintf(os.Stderr, "dew: %s\n", done.Error)
+				}
+				break
+			}
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	// Passthrough guest exit (mirror docker exec / kubectl exec).
+	if exitCode != 0 {
+		os.Exit(exitCode)
 	}
 	return nil
 }

@@ -37,6 +37,21 @@ type ExecRequest struct {
 	Env       []string `json:"env,omitempty"`
 	TimeoutMs int      `json:"timeout_ms,omitempty"`
 	Stream    bool     `json:"stream,omitempty"`
+	// Stdin opts the streaming exec into receiving stdin: after the
+	// request, the host sends InputChunk frames the guest feeds to the
+	// process's stdin. Interactive sessions (a shell) also disable the
+	// exec timeout, since they run until stdin closes or the process
+	// exits. Only meaningful together with Stream.
+	Stdin bool `json:"stdin,omitempty"`
+}
+
+// InputChunk carries stdin bytes from host to guest during a streaming
+// exec. EOF (with empty Data) signals the host closed stdin, so the
+// guest can close the process's stdin and let it finish.
+type InputChunk struct {
+	Type string `json:"type,omitempty"`
+	Data string `json:"data,omitempty"`
+	EOF  bool   `json:"eof,omitempty"`
 }
 
 type ExecResponse struct {

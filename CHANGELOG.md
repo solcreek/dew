@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dew exec -i` / `--interactive` streams stdin into the guest.** The
+  streaming exec path is now full-duplex: stdin is forwarded to the guest
+  process and stdout/stderr stream back live, so `dew exec -i -- /bin/sh`
+  is a usable session and `echo cmd | dew exec -i -- /bin/sh` pipes input.
+  Interactive sessions also run without the batch exec timeout. Requires
+  the matching guest agent (shipped in the initramfs).
+
 ## [0.7.45] - 2026-06-19
 
 ### Added

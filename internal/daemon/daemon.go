@@ -80,6 +80,7 @@ type ExecRequest struct {
 	Command   string   `json:"command,omitempty"`
 	Argv      []string `json:"argv,omitempty"`
 	Stream    bool     `json:"stream,omitempty"`
+	Stdin     bool     `json:"stdin,omitempty"` // forward client stdin into the streaming exec
 	TimeoutMs int      `json:"timeout_ms,omitempty"`
 
 	// forward mode (kind = "forward-*")
@@ -117,6 +118,7 @@ func buildVsockExec(req ExecRequest, token string) vsockProto.ExecRequest {
 			Command:   req.Argv[0],
 			Args:      req.Argv[1:],
 			Stream:    req.Stream,
+			Stdin:     req.Stdin,
 			TimeoutMs: req.TimeoutMs,
 		}
 	}
@@ -125,6 +127,7 @@ func buildVsockExec(req ExecRequest, token string) vsockProto.ExecRequest {
 		Command:   "/bin/sh",
 		Args:      []string{"-c", req.Command},
 		Stream:    req.Stream,
+		Stdin:     req.Stdin,
 		TimeoutMs: req.TimeoutMs,
 	}
 }
@@ -175,7 +178,7 @@ func (s *State) handleClient(conn net.Conn) {
 
 	switch req.Kind {
 	case "", "exec":
-		s.handleExec(conn, req)
+		s.handleExec(conn, dec, req)
 	case "forward-add":
 		s.handleForwardAdd(conn, req)
 	case "forward-remove":
@@ -383,7 +386,7 @@ func (s *State) handleForwardList(conn net.Conn) {
 	})
 }
 
-func (s *State) handleExec(conn net.Conn, req ExecRequest) {
+func (s *State) handleExec(conn net.Conn, dec *json.Decoder, req ExecRequest) {
 	// Connect to guest agent via vsock
 	vsockConn, err := s.VM.VsockConnect(s.VsockPort)
 	if err != nil {
@@ -401,6 +404,26 @@ func (s *State) handleExec(conn net.Conn, req ExecRequest) {
 	}
 
 	if req.Stream {
+		// Full-duplex when stdin is requested: relay the client's stdin
+		// frames (already JSON-framed by the CLI on the unix conn) to the
+		// guest over vsock, concurrently with relaying output back. The
+		// goroutine ends when the client closes the conn or sends EOF.
+		if req.Stdin {
+			go func() {
+				for {
+					var in vsockProto.InputChunk
+					if err := dec.Decode(&in); err != nil {
+						return
+					}
+					if err := vsockProto.WriteJSON(vsockConn, &in); err != nil {
+						return
+					}
+					if in.EOF {
+						return
+					}
+				}
+			}()
+		}
 		// Relay streaming chunks to client
 		for {
 			header := make([]byte, 4)
@@ -415,7 +438,9 @@ func (s *State) handleExec(conn net.Conn, req ExecRequest) {
 			conn.Write(data)
 			conn.Write([]byte("\n"))
 
-			var check struct{ Stream string `json:"stream"` }
+			var check struct {
+				Stream string `json:"stream"`
+			}
 			json.Unmarshal(data, &check)
 			if check.Stream == "" {
 				return

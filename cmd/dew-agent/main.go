@@ -39,6 +39,7 @@ const syncInterval = 10 * time.Second
 func isAuthorized(givenToken string) bool {
 	return agentauth.IsAuthorized(givenToken, authToken, tokenSet)
 }
+
 var execUser string
 
 func main() {
@@ -161,6 +162,11 @@ func handleConn(conn net.Conn) {
 			}
 			if req.Stream {
 				executeStreaming(conn, req)
+				// A streaming exec owns the connection for its lifetime
+				// (the host opens a fresh vsock conn per exec). Return so
+				// the read loop can't race the stdin reader goroutine for
+				// the next frame; defer conn.Close() unblocks it.
+				return
 			} else {
 				resp := executeCommand(req)
 				if err := protocol.WriteJSON(conn, &resp); err != nil {
@@ -216,11 +222,23 @@ func executeCommand(req protocol.ExecRequest) protocol.ExecResponse {
 }
 
 func executeStreaming(conn net.Conn, req protocol.ExecRequest) {
-	timeout := 30 * time.Second
-	if req.TimeoutMs > 0 {
-		timeout = time.Duration(req.TimeoutMs) * time.Millisecond
+	// An interactive (stdin-attached) session runs until stdin closes or
+	// the process exits, so it must not be bounded by the exec timeout
+	// that batch commands use.
+	var (
+		ctx     context.Context
+		cancel  context.CancelFunc
+		timeout time.Duration
+	)
+	if req.Stdin {
+		ctx, cancel = context.WithCancel(context.Background())
+	} else {
+		timeout = 30 * time.Second
+		if req.TimeoutMs > 0 {
+			timeout = time.Duration(req.TimeoutMs) * time.Millisecond
+		}
+		ctx, cancel = context.WithTimeout(context.Background(), timeout)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, req.Command, req.Args...)
@@ -233,9 +251,37 @@ func executeStreaming(conn net.Conn, req protocol.ExecRequest) {
 	stdoutPipe, _ := cmd.StdoutPipe()
 	stderrPipe, _ := cmd.StderrPipe()
 
+	// When the host opted into stdin, wire a pipe and feed it from
+	// InputChunk frames arriving on the same conn (vsock is full-duplex,
+	// so reading stdin here while writing output below is safe).
+	var stdinPipe io.WriteCloser
+	if req.Stdin {
+		stdinPipe, _ = cmd.StdinPipe()
+	}
+
 	if err := cmd.Start(); err != nil {
 		protocol.WriteJSON(conn, &protocol.ExecDone{ExitCode: -1, Error: err.Error()})
 		return
+	}
+
+	if stdinPipe != nil {
+		go func() {
+			defer stdinPipe.Close()
+			for {
+				var in protocol.InputChunk
+				if err := protocol.ReadJSON(conn, &in); err != nil {
+					return // conn closed/errored → EOF the process stdin
+				}
+				if in.Data != "" {
+					if _, err := io.WriteString(stdinPipe, in.Data); err != nil {
+						return
+					}
+				}
+				if in.EOF {
+					return
+				}
+			}
+		}()
 	}
 
 	var wg sync.WaitGroup
