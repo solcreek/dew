@@ -114,8 +114,15 @@ func (f *File) validate() error {
 			return fmt.Errorf("%s: duplicate service name %q", Filename, s.Name)
 		case s.Image == "":
 			return fmt.Errorf("%s: service %q is missing an image", Filename, s.Name)
-		case s.Port < 0 || s.Port > 65535:
-			return fmt.Errorf("%s: service %q port %d out of range", Filename, s.Name, s.Port)
+		case s.Port < 1 || s.Port > 65535:
+			// Every service is forwarded and health-gated on its port, so a
+			// missing/zero port would silently hang the readiness probe for
+			// 30s. Require it up front for a clear error instead.
+			return fmt.Errorf("%s: service %q needs a port in 1..65535 (got %d)", Filename, s.Name, s.Port)
+		case s.Data != "" && !strings.HasPrefix(s.Data, "/"):
+			// data is the OCI bind-mount destination inside the container,
+			// which must be an absolute path.
+			return fmt.Errorf("%s: service %q data path %q must be absolute", Filename, s.Name, s.Data)
 		}
 		seen[s.Name] = true
 		for _, e := range s.Env {
