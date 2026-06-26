@@ -484,7 +484,15 @@ if [ "$DETACH" = "1" ]; then
         exit 1
     fi
 else
-    exec crun run -b "$RUN/bundle" "$NAME"
+    # Run in the foreground, then flush before returning. The host tears the
+    # VM down ungracefully (no guest shutdown), so without this sync a -v
+    # volume's writes can still be in the guest page cache and are lost — a
+    # short `dew run --image ... -v vol:/data` that writes then exits would
+    # silently drop the data. Not exec'd, so the sync runs after crun returns.
+    crun run -b "$RUN/bundle" "$NAME"
+    rc=$?
+    sync
+    exit "$rc"
 fi
 OCIRUN_EOF
     chmod 755 "$WORK_DIR/usr/local/bin/dew-oci-run"
