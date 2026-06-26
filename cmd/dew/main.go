@@ -29,6 +29,7 @@ import (
 
 	"github.com/solcreek/dew/internal/daemon"
 	"github.com/solcreek/dew/internal/detect"
+	"github.com/solcreek/dew/internal/dewfile"
 	"github.com/solcreek/dew/internal/disklock"
 	"github.com/solcreek/dew/internal/nmcache"
 	"github.com/solcreek/dew/internal/ocistage"
@@ -69,6 +70,10 @@ var flagDryRun bool
 var flagProfile string
 var flagServicesOnly bool
 var flagResetDisk bool
+
+// flagInit makes `dew up --init` write a starter dew.toml for the detected
+// project and exit, instead of booting.
+var flagInit bool
 
 // flagVMName selects which VM a command targets. Empty is the default
 // (unnamed) VM, preserving the historical single-VM layout
@@ -823,6 +828,7 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 	flagWith = ""
 	flagServicesOnly = false
 	flagResetDisk = false
+	flagInit = false
 	flagVMName = ""
 
 	for i := 0; i < len(args); i++ {
@@ -1024,6 +1030,8 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 			flagJSON = true
 		case "--dry-run":
 			flagDryRun = true
+		case "--init":
+			flagInit = true
 		case "--reset-disk":
 			flagResetDisk = true
 		default:
@@ -1825,12 +1833,19 @@ type serviceFailure struct {
 	suggestion string
 }
 
-// stageServices resolves each --with name, pulls+stages its image into
-// stageRoot/<name> on the host (content-addressed cache), and returns the
-// staged services plus any failures. A service with a DataDir gets a persistent
-// bind mount on the guest's ext4 disk so its data survives restarts.
+// stageServices resolves each --with name against the built-in registry and
+// stages the resolved images. Unknown names become failures. Kept as the
+// entry point for the registry-only `--with` paths (`dew run`, `dew up`).
 func stageServices(ctx context.Context, names []string, stageRoot string) ([]stagedService, []serviceFailure) {
-	var staged []stagedService
+	svcs, failures := resolveServiceNames(names)
+	staged, stageFailures := stageServiceList(ctx, svcs, stageRoot)
+	return staged, append(failures, stageFailures...)
+}
+
+// resolveServiceNames looks each --with name up in the built-in registry,
+// returning the resolved Service values and a failure for every unknown name.
+func resolveServiceNames(names []string) ([]services.Service, []serviceFailure) {
+	var svcs []services.Service
 	var failures []serviceFailure
 	for _, raw := range names {
 		name := strings.TrimSpace(raw)
@@ -1841,10 +1856,53 @@ func stageServices(ctx context.Context, names []string, stageRoot string) ([]sta
 		if svc == nil {
 			failures = append(failures, serviceFailure{
 				name: name, reason: "unknown service",
-				suggestion: "available: " + strings.Join(services.Names(), ", "),
+				suggestion: "available: " + strings.Join(services.Names(), ", ") +
+					" — or define one in dew.toml",
 			})
 			continue
 		}
+		svcs = append(svcs, *svc)
+	}
+	return svcs, failures
+}
+
+// combineServices merges dew.toml services with the built-in --with
+// services into a single ordered set. dew.toml entries come first and win on
+// a name collision (the registry default is dropped for that name); unknown
+// --with names become failures. This is what lets `dew up` compose arbitrary
+// dew.toml images alongside the curated `--with` shortcuts in one VM.
+func combineServices(tomlSvcs []services.Service, withNames []string) ([]services.Service, []serviceFailure) {
+	svcs := append([]services.Service(nil), tomlSvcs...)
+	seen := make(map[string]bool, len(svcs))
+	for _, s := range svcs {
+		seen[s.Name] = true
+	}
+	var failures []serviceFailure
+	if len(withNames) > 0 {
+		named, nf := resolveServiceNames(withNames)
+		failures = append(failures, nf...)
+		for _, s := range named {
+			if seen[s.Name] {
+				continue // dew.toml definition overrides the registry default
+			}
+			seen[s.Name] = true
+			svcs = append(svcs, s)
+		}
+	}
+	return svcs, failures
+}
+
+// stageServiceList pulls+stages each already-resolved service image into
+// stageRoot/<name> on the host (content-addressed cache) and returns the
+// staged services plus any failures. A service with a DataDir gets a
+// persistent bind mount on the guest's ext4 disk so its data survives
+// restarts. This is the shared path for both built-in `--with` services and
+// arbitrary dew.toml services.
+func stageServiceList(ctx context.Context, svcs []services.Service, stageRoot string) ([]stagedService, []serviceFailure) {
+	var staged []stagedService
+	var failures []serviceFailure
+	for i := range svcs {
+		svc := svcs[i]
 		var data *ocistage.Bind
 		dataArg := ""
 		if svc.DataDir != "" {
@@ -1870,6 +1928,62 @@ func stageServices(ctx context.Context, names []string, stageRoot string) ([]sta
 	return staged, failures
 }
 
+// splitNonEmpty splits a comma-separated list, trimming spaces and dropping
+// empty fields, so "" yields nil (not [""]) and "a, ,b" yields ["a","b"].
+func splitNonEmpty(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// applyDewfileOverrides lets a dew.toml override the detected profile and dev
+// workflow. Only non-empty fields override, so a partial dew.toml still
+// inherits the rest from auto-detection.
+func applyDewfileOverrides(f *dewfile.File, p *detect.Project) {
+	if f.Project.Profile != "" {
+		p.Profile = f.Project.Profile
+	}
+	if f.Dev.Install != "" {
+		p.InstallCmd = f.Dev.Install
+	}
+	if f.Dev.Command != "" {
+		p.DevCmd = f.Dev.Command
+	}
+	if f.Dev.Port != 0 {
+		p.Port = f.Dev.Port
+	}
+}
+
+// runUpInit writes a starter dew.toml for the project in dir, then returns
+// without booting (`dew up --init`). It refuses to clobber an existing file.
+// Detection is best-effort: an unrecognized dir still gets a valid,
+// mostly-commented template to fill in.
+func runUpInit(dir string) error {
+	if dewfile.Exists(dir) {
+		return dewerr.Newf(dewerr.CodeUsage, "%s already exists in %s", dewfile.Filename, dir)
+	}
+	proj, derr := detect.Detect(dir)
+	if derr != nil || proj == nil {
+		proj = &detect.Project{}
+	}
+	content := dewfile.Starter(proj.Profile, proj.InstallCmd, proj.DevCmd, proj.Port)
+	path := dewfile.Path(dir)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", dewfile.Filename, err)
+	}
+	fmt.Fprintf(os.Stderr, "  wrote %s\n", path)
+	if proj.Framework != "" {
+		fmt.Fprintf(os.Stderr, "  detected %s — review it, then run `dew up`.\n", proj.Framework)
+	} else {
+		fmt.Fprintf(os.Stderr, "  edit it (profile, dev command, services), then run `dew up`.\n")
+	}
+	return nil
+}
+
 func cmdUp(args []string) error {
 	parsedCfg, remaining, err := parseFlags(args)
 	if err != nil {
@@ -1880,15 +1994,34 @@ func cmdUp(args []string) error {
 		dir = remaining[0]
 	}
 
+	// `dew up --init`: write a starter dew.toml for the detected project and
+	// exit without booting. Detection is best-effort so it also works in a
+	// dir with nothing detected yet.
+	if flagInit {
+		return runUpInit(dir)
+	}
+
+	// dew.toml, when present, is the canonical project descriptor: it
+	// overrides the detected profile/dev workflow and can compose arbitrary
+	// OCI services into the same VM. Absent, nothing changes — auto-detection
+	// stays the no-config default.
+	df, err := dewfile.Load(dir)
+	if err != nil {
+		return err
+	}
+	var tomlSvcs []services.Service
+	if df != nil {
+		tomlSvcs = df.ServiceList()
+	}
+
 	var proj *detect.Project
 	if flagServicesOnly {
-		// Services-only: no project, no dev server — just boot a VM and
-		// bring up the requested --with services. Lets users run
-		// `dew up --services-only --with postgres` for a throwaway DB
-		// without inventing a fake package.json. node has the ext4 disk +
-		// overlayfs crun needs.
-		if flagWith == "" {
-			return fmt.Errorf("--services-only requires --with <service> (e.g. dew up --services-only --with postgres)")
+		// Services-only: no project, no dev server — just boot a VM and bring
+		// up the requested services. Accepts --with registry services and/or
+		// dew.toml [[service]] entries, so neither requires a fake
+		// package.json. node has the ext4 disk + overlayfs crun needs.
+		if flagWith == "" && len(tomlSvcs) == 0 {
+			return fmt.Errorf("--services-only requires --with <service> or a dew.toml [[service]] (e.g. dew up --services-only --with postgres)")
 		}
 		proj = &detect.Project{Profile: "node"}
 	} else {
@@ -1896,13 +2029,16 @@ func cmdUp(args []string) error {
 		if err != nil {
 			return err
 		}
-		if proj.Framework == "" && proj.Runtime == "" {
+		if df != nil {
+			applyDewfileOverrides(df, proj)
+		}
+		if proj.Framework == "" && proj.Runtime == "" && proj.DevCmd == "" && len(tomlSvcs) == 0 {
 			// "Floor = works" — don't punish first contact. Surface multiple
 			// exits so beginners + agents have a parseable next step. Error
 			// code `no_project_detected` is grep-able for agents. Every
 			// suggested command below must work today; never point at planned
 			// commands that don't yet exist.
-			return fmt.Errorf("no project detected in %s [no_project_detected]\n\nQuick options:\n  • dew up --profile minimal       — boot a minimal Linux VM here\n  • dew vm start --profile minimal — same, returns immediately, use 'dew exec' afterwards\n  • dew app run code               — run an OSS app like VS Code\n\nDocs: https://dewvm.dev/start", dir)
+			return fmt.Errorf("no project detected in %s [no_project_detected]\n\nQuick options:\n  • dew up --init                  — write a starter dew.toml here\n  • dew up --profile minimal       — boot a minimal Linux VM here\n  • dew vm start --profile minimal — same, returns immediately, use 'dew exec' afterwards\n  • dew app run code               — run an OSS app like VS Code\n\nDocs: https://dewvm.dev/start", dir)
 		}
 	}
 
@@ -1919,10 +2055,24 @@ func cmdUp(args []string) error {
 		"dev_cmd": proj.DevCmd, "install_cmd": proj.InstallCmd,
 	})
 
+	// Names of every service we'll bring up: built-in --with names plus any
+	// dew.toml [[service]] names. Used for display and the services-only
+	// ready event (which previously only knew about --with).
+	svcNames := splitNonEmpty(flagWith)
+	for _, s := range tomlSvcs {
+		svcNames = append(svcNames, s.Name)
+	}
+
+	// servicesMode is the ending discriminator: bring services up and wait,
+	// with no dev server. True when the user asked for --services-only, or
+	// when there's simply no dev command to run (e.g. a dew.toml that only
+	// defines services). flagServicesOnly stays the raw user flag.
+	servicesMode := flagServicesOnly || proj.DevCmd == ""
+
 	if !flagJSON && !flagEvents {
 		fmt.Fprintf(os.Stderr, "\n  💧 dew up\n\n")
-		if flagServicesOnly {
-			fmt.Fprintf(os.Stderr, "  services-only: %s\n\n", flagWith)
+		if servicesMode {
+			fmt.Fprintf(os.Stderr, "  services: %s\n\n", strings.Join(svcNames, ", "))
 		} else {
 			fmt.Fprintf(os.Stderr, "  detected: %s", proj.Framework)
 			if proj.PackageMgr != "" {
@@ -1934,10 +2084,11 @@ func cmdUp(args []string) error {
 
 	absDir, _ := filepath.Abs(dir)
 	flagProfile = proj.Profile
-	// --with services run via crun (host-pulled rootfs + overlay), which needs
-	// an ext4 disk + overlayfs. Every non-minimal profile has that; only a
-	// diskless minimal needs upgrading (to node).
-	if flagWith != "" && flagProfile == "minimal" {
+	// Services run via crun (host-pulled rootfs + overlay), which needs an
+	// ext4 disk + overlayfs. Every non-minimal profile has that; a diskless
+	// minimal — or an unset profile from a services-only dew.toml — is
+	// upgraded to node.
+	if (flagWith != "" || len(tomlSvcs) > 0) && (flagProfile == "minimal" || flagProfile == "") {
 		flagProfile = "node"
 	}
 
@@ -1958,7 +2109,7 @@ func cmdUp(args []string) error {
 			"port":          proj.Port,
 			"cpus":          parsedCfg.CPUs,
 			"memory_mb":     parsedCfg.MemoryMB,
-			"with_services": flagWith,
+			"with_services": strings.Join(svcNames, ","),
 			"would_boot":    false,
 		}
 		if flagJSON || flagEvents {
@@ -1977,8 +2128,8 @@ func cmdUp(args []string) error {
 			if proj.Port > 0 {
 				fmt.Fprintf(os.Stderr, "    port:    %d → host %d\n", proj.Port, proj.Port)
 			}
-			if flagWith != "" {
-				fmt.Fprintf(os.Stderr, "    with:    %s\n", flagWith)
+			if len(svcNames) > 0 {
+				fmt.Fprintf(os.Stderr, "    services: %s\n", strings.Join(svcNames, ", "))
 			}
 			fmt.Fprintf(os.Stderr, "\n  No VM started. No changes made.\n\n")
 		}
@@ -2062,14 +2213,18 @@ func cmdUp(args []string) error {
 	// (baked into the initramfs) runs them in the guest — no containerd.
 	var stagedSvcs []stagedService
 	var svcFailures []serviceFailure
-	if flagWith != "" {
+	if flagWith != "" || len(tomlSvcs) > 0 {
 		stageRoot := filepath.Join(dewDataDir(), "oci-stage", strconv.Itoa(os.Getpid()))
 		os.RemoveAll(stageRoot)
 		defer os.RemoveAll(stageRoot)
 		if spin != nil {
 			spin.Step("pulling service images")
 		}
-		stagedSvcs, svcFailures = stageServices(context.Background(), strings.Split(flagWith, ","), stageRoot)
+		svcs, combineFailures := combineServices(tomlSvcs, splitNonEmpty(flagWith))
+		svcFailures = append(svcFailures, combineFailures...)
+		var stageFailures []serviceFailure
+		stagedSvcs, stageFailures = stageServiceList(context.Background(), svcs, stageRoot)
+		svcFailures = append(svcFailures, stageFailures...)
 		if len(stagedSvcs) > 0 {
 			cfg.SharedDirs = append(cfg.SharedDirs, vm.SharedDir{Tag: "oci-stage", HostPath: stageRoot, ReadOnly: true})
 			cfg.CmdLine += " dew.share=oci-stage:/oci-stage"
@@ -2481,15 +2636,16 @@ func cmdUp(args []string) error {
 		emit(startedEv)
 	}
 
-	// Services-only: there's no dev server to start or port to probe.
-	// The services above were already health-gated, so emit a top-level
-	// ready (independent of any dev-server port) and wait for ^C. This
-	// also fixes the "ready never fires without a bound dev port" gap for
-	// the no-dev-server case.
-	if flagServicesOnly {
+	// Services-only: there's no dev server to start or port to probe — either
+	// the user asked for --services-only, or there's simply no dev command
+	// (e.g. a dew.toml that only defines services). The services above were
+	// already health-gated, so emit a top-level ready (independent of any
+	// dev-server port) and wait for ^C. This also fixes the "ready never fires
+	// without a bound dev port" gap for the no-dev-server case.
+	if servicesMode {
 		emit(map[string]interface{}{
 			"type": "ready", "mode": "services-only",
-			"services":   strings.Split(flagWith, ","),
+			"services":   svcNames,
 			"elapsed_ms": time.Since(start).Milliseconds(),
 		})
 		if !flagJSON && !flagEvents {

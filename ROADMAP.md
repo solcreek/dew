@@ -22,9 +22,14 @@ the lead, to keep the headline aligned with the agent-first surface.
 Auto-detection from `package.json` / `requirements.txt` works for
 common cases but doesn't survive across machines, doesn't pin
 runtime versions, and doesn't compose multiple runtimes in one
-project. `dew.toml` will be the canonical project descriptor;
+project. `dew.toml` is the canonical project descriptor;
 auto-detection remains the no-config fallback. `dew up --init`
 materializes a starting `dew.toml` for the detected runtime.
+
+Shipped: profile + dev workflow overrides and `[[service]]` entries
+that compose arbitrary OCI images into one VM. Still planned:
+pinning runtime versions (Node/Python) so an environment is fully
+reproducible across machines.
 
 ### Cold first-run under 30s
 

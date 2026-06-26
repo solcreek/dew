@@ -57,11 +57,37 @@ Auto-detects your project and starts a dev environment with hot reload.
 ```bash
 cd my-vite-app
 dew up                               # detect, boot, install, start
-dew up --with postgres,redis          # dev with services
+dew up --with postgres,redis          # dev with built-in services
 dew down                             # stop
 ```
 
 Supports: Vite, Next.js, Astro, Nuxt, SvelteKit, Django, Flask, FastAPI, static HTML.
+
+For arbitrary services (any OCI image) in the same VM, add a `dew.toml`
+(`dew up --init` writes a starter). Auto-detection still works without it.
+
+```toml
+# dew.toml
+[project]
+profile = "node"
+
+[dev]
+command = "npm run dev"
+port = 3000
+
+[[service]]
+name = "redis"
+image = "redis:7-alpine"
+port = 6379
+
+[[service]]
+name = "mailpit"
+image = "axllent/mailpit:latest"
+port = 8025
+```
+
+`dew up` then boots the project and its services in one VM; containers use
+the VM network, so the dev server reaches them on `localhost`.
 
 ### Share instantly
 

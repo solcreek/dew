@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`dew.toml` project descriptor: compose arbitrary OCI services in one
+  VM.** `dew up` now reads an optional `dew.toml` that pins the profile and
+  dev workflow and declares `[[service]]` entries — any image, with ports,
+  env, persistent `data`, and extra `args`. They run in the same VM as the
+  project (containers use the VM network, so the dev server reaches them on
+  localhost). Auto-detection stays the no-config default; dew.toml overrides
+  it where set. `--with` (built-in services) and dew.toml services compose,
+  with dew.toml winning on a name collision. `--services-only` now accepts
+  dew.toml services too.
+- **`dew up --init`** writes a starter `dew.toml` for the detected project
+  (won't overwrite an existing one).
 - **Concurrent named VMs are fully isolated, disk included.** A `--name`
   VM now gets its own `<profile>-<name>.img`, alongside the per-name
   socket and state dir it already had. Two named VMs (or a default plus a
