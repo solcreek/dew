@@ -2729,13 +2729,15 @@ func cmdUp(args []string) error {
 	for i := 0; i < 30; i++ {
 		time.Sleep(500 * time.Millisecond)
 
-		// Re-detect the real port until we've found one different
-		// from the provisional guess; then stop scanning the log to
-		// avoid pointless exec calls every tick.
+		// Re-detect the real port until we've found one different from the
+		// provisional guess AND successfully forwarded it; then stop scanning
+		// the log to avoid pointless exec calls every tick. detected is set
+		// only on a successful forward, so a transient pickFreeHostPort /
+		// AddForward failure retries next tick instead of permanently stranding
+		// us on a stale (or :0) URL.
 		if !detected {
 			if p := readDetectedDevPort(d, token, cfg.VsockPort); p > 0 && p != guestPort {
-				freeHost, _, perr := pickFreeHostPort(p, 50)
-				if perr == nil {
+				if freeHost, _, perr := pickFreeHostPort(p, 50); perr == nil {
 					if _, err := dmn.AddForward(freeHost, p); err == nil {
 						hostPort = freeHost
 						guestPort = p
@@ -2748,12 +2750,18 @@ func cmdUp(args []string) error {
 						if !flagJSON && !flagEvents {
 							fmt.Fprintf(os.Stderr, "  detected actual dev port: %d → %s\n", p, url)
 						}
+						detected = true
 					}
 				}
-				detected = true
 			}
 		}
 
+		// No host port to hit yet (a dev command with no known/forwarded
+		// port) — skip the probe so we don't GET http://localhost:0/ and
+		// keep waiting for redetection to land a real one.
+		if hostPort <= 0 {
+			continue
+		}
 		resp, err := http.Get(url)
 		if err == nil {
 			resp.Body.Close()
