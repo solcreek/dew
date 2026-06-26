@@ -33,6 +33,37 @@ func TestSplitNonEmpty(t *testing.T) {
 	}
 }
 
+func TestPickProfile(t *testing.T) {
+	// An explicit --profile wins over the detected/dew.toml profile.
+	if got := pickProfile("standard", "node"); got != "standard" {
+		t.Errorf("user profile = %q, want standard", got)
+	}
+	// No --profile → fall back to the resolved (detected/dew.toml) profile.
+	if got := pickProfile("", "node"); got != "node" {
+		t.Errorf("fallback = %q, want node", got)
+	}
+	if got := pickProfile("", ""); got != "" {
+		t.Errorf("both empty = %q, want empty", got)
+	}
+}
+
+func TestMergeNames(t *testing.T) {
+	// dew.toml names lead; a --with name duplicating one is dropped (no
+	// "redis, redis").
+	got := mergeNames([]string{"redis", "mailpit"}, []string{"redis", "postgres"})
+	want := []string{"redis", "mailpit", "postgres"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("mergeNames = %v, want %v", got, want)
+	}
+	// Empty inputs.
+	if got := mergeNames(nil, nil); len(got) != 0 {
+		t.Errorf("mergeNames(nil,nil) = %v, want empty", got)
+	}
+	if got := mergeNames(nil, []string{"a", "a"}); strings.Join(got, "|") != "a" {
+		t.Errorf("mergeNames dedup within second = %v, want [a]", got)
+	}
+}
+
 func TestApplyDewfileOverrides(t *testing.T) {
 	// Non-empty dew.toml fields override detection; empty fields are left.
 	proj := &detect.Project{

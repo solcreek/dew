@@ -1940,6 +1940,36 @@ func splitNonEmpty(s string) []string {
 	return out
 }
 
+// pickProfile resolves the profile to boot: an explicit user --profile wins
+// over the detected/dew.toml profile, matching the documented precedence.
+func pickProfile(userProfile, detected string) string {
+	if userProfile != "" {
+		return userProfile
+	}
+	return detected
+}
+
+// mergeNames concatenates two name lists, dropping duplicates and keeping
+// first-seen order, so the leading list (dew.toml services) wins — matching
+// how combineServices resolves name collisions.
+func mergeNames(first, second []string) []string {
+	seen := make(map[string]bool, len(first)+len(second))
+	var out []string
+	for _, n := range first {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	for _, n := range second {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // applyDewfileOverrides lets a dew.toml override the detected profile and dev
 // workflow. Only non-empty fields override, so a partial dew.toml still
 // inherits the rest from auto-detection.
@@ -2055,13 +2085,15 @@ func cmdUp(args []string) error {
 		"dev_cmd": proj.DevCmd, "install_cmd": proj.InstallCmd,
 	})
 
-	// Names of every service we'll bring up: built-in --with names plus any
-	// dew.toml [[service]] names. Used for display and the services-only
-	// ready event (which previously only knew about --with).
-	svcNames := splitNonEmpty(flagWith)
+	// Names of every service we'll bring up, for display, dry-run, and the
+	// services-only ready event. dew.toml names lead and duplicates are
+	// dropped — matching combineServices' dew.toml-wins ordering — so a
+	// dew.toml service overriding a --with one isn't listed twice.
+	var tomlNames []string
 	for _, s := range tomlSvcs {
-		svcNames = append(svcNames, s.Name)
+		tomlNames = append(tomlNames, s.Name)
 	}
+	svcNames := mergeNames(tomlNames, splitNonEmpty(flagWith))
 
 	// servicesMode is the ending discriminator: bring services up and wait,
 	// with no dev server. True when the user asked for --services-only, or
@@ -2083,7 +2115,11 @@ func cmdUp(args []string) error {
 	}
 
 	absDir, _ := filepath.Abs(dir)
-	flagProfile = proj.Profile
+	// Profile precedence: an explicit `dew up --profile X` wins over the
+	// detected/dew.toml profile (as the help promises). flagProfile holds the
+	// user's --profile here (empty if unset); fall back to what detection +
+	// dew.toml resolved to.
+	flagProfile = pickProfile(flagProfile, proj.Profile)
 	// Services run via crun (host-pulled rootfs + overlay), which needs an
 	// ext4 disk + overlayfs. Every non-minimal profile has that; a diskless
 	// minimal — or an unset profile from a services-only dew.toml — is
