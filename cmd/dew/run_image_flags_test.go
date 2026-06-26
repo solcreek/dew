@@ -37,3 +37,31 @@ func TestParseFlags_Env(t *testing.T) {
 		}
 	})
 }
+
+// parseFlags must turn repeatable -p/--publish HOST:CONTAINER into
+// cfg.Forwards (HostPort:GuestPort), matching --forward's transport.
+func TestParseFlags_Publish(t *testing.T) {
+	t.Run("repeatable --publish and -p map to Forwards", func(t *testing.T) {
+		cfg, _, err := parseFlags([]string{
+			"--image", "nginx", "--publish", "8080:80", "-p", "5432:5432",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(cfg.Forwards) != 2 {
+			t.Fatalf("Forwards = %v, want 2 entries", cfg.Forwards)
+		}
+		if cfg.Forwards[0].HostPort != 8080 || cfg.Forwards[0].GuestPort != 80 {
+			t.Fatalf("Forwards[0] = %+v, want 8080->80", cfg.Forwards[0])
+		}
+		if cfg.Forwards[1].HostPort != 5432 || cfg.Forwards[1].GuestPort != 5432 {
+			t.Fatalf("Forwards[1] = %+v, want 5432->5432", cfg.Forwards[1])
+		}
+	})
+
+	t.Run("malformed value is rejected", func(t *testing.T) {
+		if _, _, err := parseFlags([]string{"-p", "notaport"}); err == nil {
+			t.Fatal("-p notaport should error")
+		}
+	})
+}

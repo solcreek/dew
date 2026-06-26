@@ -692,8 +692,12 @@ Network:
 Containers:
   --image REF   (dew run) Pull an OCI image on the host and run it in the VM
                 via crun. A trailing -- <cmd> overrides the image entrypoint.
-                dew run does not auto-forward ports — add --forward, or use
-                dew up --with for managed services.
+                dew run does not auto-forward ports — add --publish/-p (or
+                --forward), or use dew up --with for managed services.
+  --publish, -p HOST:CONTAINER
+                Repeatable. Forward host port HOST to the container's
+                CONTAINER port (the container runs --net=host, so this is
+                --forward by another name). Example: -p 8080:80
   --env, -e KEY=VALUE
                 (dew run --image) Repeatable. Appended to the image's own
                 env in the container. Example: -e LOG_LEVEL=debug
@@ -930,6 +934,19 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, fmt.Errorf("--env: expected KEY=VALUE, got %q", args[i])
 			}
 			flagEnv = append(flagEnv, args[i])
+		case "--publish", "-p":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--publish requires hostPort:containerPort")
+			}
+			// crun runs --net=host, so the container binds its port on the VM
+			// network: publishing is just a host->guest forward whose guest
+			// port is the container port. Reuse the --forward parser/transport.
+			fwd, ferr := parseForward(args[i])
+			if ferr != nil {
+				return cfg, nil, fmt.Errorf("--publish: expected hostPort:containerPort, got %q", args[i])
+			}
+			cfg.Forwards = append(cfg.Forwards, fwd)
 		case "--stream":
 			flagStream = true
 		case "--events":
