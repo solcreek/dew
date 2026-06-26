@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.49] - 2026-06-26
+
 ### Added
 
 - **`dew.toml` project descriptor: compose arbitrary OCI services in one
