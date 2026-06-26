@@ -65,3 +65,51 @@ func TestParseFlags_Publish(t *testing.T) {
 		}
 	})
 }
+
+func TestParseVolume(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantSrc  string
+		wantDest string
+		wantErr  bool
+	}{
+		{"pgdata:/var/lib/postgresql/data", "/var/lib/dew/volumes/pgdata", "/var/lib/postgresql/data", false},
+		{"/srv/cache:/cache", "/srv/cache", "/cache", false},
+		{"name-only", "", "", true},          // no colon
+		{"data:relative/path", "", "", true}, // dest not absolute
+		{"../escape:/x", "", "", true},       // unsafe name
+		{":/x", "", "", true},                // empty name
+		{"x:", "", "", true},                 // empty dest
+	}
+	for _, c := range cases {
+		src, dest, err := parseVolume(c.in)
+		if (err != nil) != c.wantErr {
+			t.Errorf("parseVolume(%q) err=%v, wantErr=%v", c.in, err, c.wantErr)
+			continue
+		}
+		if c.wantErr {
+			continue
+		}
+		if src != c.wantSrc || dest != c.wantDest {
+			t.Errorf("parseVolume(%q) = (%q,%q), want (%q,%q)", c.in, src, dest, c.wantSrc, c.wantDest)
+		}
+	}
+}
+
+// -v/--volume requires --image, caps at one, and validates at parse time.
+func TestParseFlags_Volume(t *testing.T) {
+	t.Run("single volume parses", func(t *testing.T) {
+		if _, _, err := parseFlags([]string{"--image", "postgres", "-v", "pgdata:/data"}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(flagVolumes) != 1 || flagVolumes[0] != "pgdata:/data" {
+			t.Fatalf("flagVolumes = %v, want [pgdata:/data]", flagVolumes)
+		}
+	})
+
+	t.Run("invalid volume rejected at parse time", func(t *testing.T) {
+		if _, _, err := parseFlags([]string{"-v", "bad:relative"}); err == nil {
+			t.Fatal("-v bad:relative should error")
+		}
+	})
+}

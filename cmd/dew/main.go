@@ -59,6 +59,11 @@ var flagPlatform string
 // flagEnv collects repeatable -e/--env KEY=VAL pairs for `dew run --image`.
 // They are appended to the image's own env in the OCI spec.
 var flagEnv []string
+
+// flagVolumes collects -v/--volume values for `dew run --image`. Each is a
+// "name:/path" or "/guest:/path" bind mount. Only one is supported for now
+// (the guest dew-oci-run launcher takes a single --data dir).
+var flagVolumes []string
 var flagDryRun bool
 var flagProfile string
 var flagServicesOnly bool
@@ -701,6 +706,11 @@ Containers:
   --env, -e KEY=VALUE
                 (dew run --image) Repeatable. Appended to the image's own
                 env in the container. Example: -e LOG_LEVEL=debug
+  --volume, -v NAME:/path | /guest:/path
+                (dew run --image) Persistent bind mount. NAME maps to
+                /var/lib/dew/volumes/NAME on the VM's disk and survives
+                across runs. One volume per run for now. Example:
+                -v pgdata:/var/lib/postgresql/data
   --platform OS/ARCH
                 Image platform to pull (default: the guest arch). Set
                 linux/amd64 with --rosetta to run an amd64 image.
@@ -761,6 +771,7 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 	flagImage = ""
 	flagPlatform = ""
 	flagEnv = nil
+	flagVolumes = nil
 	flagWith = ""
 	flagServicesOnly = false
 	flagResetDisk = false
@@ -947,6 +958,15 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, fmt.Errorf("--publish: expected hostPort:containerPort, got %q", args[i])
 			}
 			cfg.Forwards = append(cfg.Forwards, fwd)
+		case "--volume", "-v":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--volume requires name:/path or /host:/path")
+			}
+			if _, _, verr := parseVolume(args[i]); verr != nil {
+				return cfg, nil, verr
+			}
+			flagVolumes = append(flagVolumes, args[i])
 		case "--stream":
 			flagStream = true
 		case "--events":
@@ -1250,10 +1270,18 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	// -e/--env only feeds the OCI spec, so it's meaningless without --image.
-	// Erroring beats silently dropping the vars the user expected to be set.
+	// -e/--env and -v/--volume only feed the OCI spec, so they're meaningless
+	// without --image. Erroring beats silently dropping what the user set.
 	if len(flagEnv) > 0 && flagImage == "" {
 		return fmt.Errorf("--env is only supported with --image")
+	}
+	if len(flagVolumes) > 0 && flagImage == "" {
+		return fmt.Errorf("--volume is only supported with --image")
+	}
+	// The guest dew-oci-run launcher takes a single --data bind, so cap at one
+	// for now rather than silently mounting only the last.
+	if len(flagVolumes) > 1 {
+		return fmt.Errorf("only one --volume is supported for now")
 	}
 	// --image runs the container via crun overlay, which needs an ext4 disk.
 	// Default to the node profile when the user didn't pick a disk profile.
@@ -1283,17 +1311,32 @@ func cmdRun(args []string) error {
 			stageCtx, cancel = context.WithTimeout(stageCtx, budget.window(flagTimeout))
 			defer cancel()
 		}
+		// A single -v/--volume becomes a persistent bind on the guest ext4
+		// disk: dew-oci-run --data mkdir's the source, and ociSpec writes the
+		// mount into config.json. Pre-validated at parse time.
+		var data *ocistage.Bind
+		var dataArg string
+		if len(flagVolumes) == 1 {
+			src, dest, _ := parseVolume(flagVolumes[0])
+			data = &ocistage.Bind{Source: src, Destination: dest}
+			dataArg = src + ":" + dest
+		}
 		if _, err := ocistage.Stage(stageCtx, flagImage, ocistage.Options{
 			StageDir: filepath.Join(stageRoot, "app"),
 			Name:     "app",
 			Cmd:      cmdArgs,
 			Env:      flagEnv,      // extra -e/--env vars appended to the image env
+			Data:     data,         // optional -v/--volume persistent bind mount
 			Platform: flagPlatform, // empty = guest arch; set e.g. linux/amd64 with --rosetta
 		}); err != nil {
 			return fmt.Errorf("stage image: %w", err)
 		}
 		cfg.SharedDirs = append(cfg.SharedDirs, vm.SharedDir{Tag: "oci-stage", HostPath: stageRoot, ReadOnly: true})
-		cmdArgs = []string{"dew-oci-run", "/oci-stage/app", "app"}
+		cmdArgs = []string{"dew-oci-run"}
+		if dataArg != "" {
+			cmdArgs = append(cmdArgs, "--data", dataArg)
+		}
+		cmdArgs = append(cmdArgs, "/oci-stage/app", "app")
 	}
 
 	if len(cmdArgs) == 0 {
@@ -2911,6 +2954,37 @@ func parseForward(s string) (vm.PortForward, error) {
 		return vm.PortForward{}, fmt.Errorf("--forward: invalid ports %q", s)
 	}
 	return vm.PortForward{HostPort: host, GuestPort: guest}, nil
+}
+
+// parseVolume parses a -v/--volume value into a guest source path and an
+// in-container destination for the `dew run --image` bind mount. Two forms:
+//
+//	name:/path      named persistent volume at /var/lib/dew/volumes/<name>
+//	/guest:/path    an explicit absolute guest path
+//
+// The destination must be absolute. A bare name must be a safe identifier
+// because it becomes a guest path component and is passed to the guest
+// dew-oci-run launcher (which mkdir's it), so disallow separators/traversal.
+func parseVolume(s string) (src, dest string, err error) {
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("--volume: expected name:/path or /host:/path, got %q", s)
+	}
+	left, dst := parts[0], parts[1]
+	if !strings.HasPrefix(dst, "/") {
+		return "", "", fmt.Errorf("--volume: container path must be absolute, got %q", dst)
+	}
+	if strings.HasPrefix(left, "/") {
+		return left, dst, nil
+	}
+	for _, r := range left {
+		ok := r == '-' || r == '_' ||
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !ok {
+			return "", "", fmt.Errorf("--volume: invalid volume name %q (use letters, digits, '-' or '_')", left)
+		}
+	}
+	return "/var/lib/dew/volumes/" + left, dst, nil
 }
 
 // parseShare accepts three forms:
