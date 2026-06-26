@@ -1430,6 +1430,23 @@ func cmdRun(args []string) error {
 		})
 	}
 
+	// Port forwards (-p/--publish, --forward) for `dew run`. Unlike
+	// `dew vm start`, run has no daemon socket, but AddForward only needs the
+	// VM + vsock token to stand up a host listener that proxies into the guest,
+	// so reuse it directly. Listeners live for the duration of the run (e.g. a
+	// foreground server image) and are reclaimed when the process exits. Gated
+	// on tokenSent because the guest proxy leg authenticates with the token.
+	if tokenSent && len(cfg.Forwards) > 0 {
+		fwd := &daemon.State{VM: d, Token: token, VsockPort: cfg.VsockPort}
+		for _, f := range cfg.Forwards {
+			if _, ferr := fwd.AddForward(f.HostPort, f.GuestPort); ferr != nil {
+				fmt.Fprintf(os.Stderr, "dew: %v\n", ferr)
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "dew: forwarding 127.0.0.1:%d → guest:%d\n", f.HostPort, f.GuestPort)
+		}
+	}
+
 	// argv-or-shell decision: 2+ args → exec argv directly (no
 	// outer sh -c wrap). Single arg → shell-wrap so users can still
 	// pass `dew run "echo a; echo b"`. See argvOrShellWrap.
