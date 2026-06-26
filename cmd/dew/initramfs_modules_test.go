@@ -10,11 +10,10 @@ import (
 	"testing"
 )
 
-// /lib/modules on the persistent disk must be refreshed from the initramfs on
-// every boot, not just first boot. Otherwise a kernel-APK bump in the
-// initramfs leaves stale modules behind, every modprobe silently fails, and
-// the user sees mystery "operation not supported" errors from CNI/containerd.
-func TestInitramfsBuildScript_RefreshesKernelModulesEveryBoot(t *testing.T) {
+// readBuildScript returns the contents of initramfs/build.sh for the
+// build-script contract tests.
+func readBuildScript(t *testing.T) string {
+	t.Helper()
 	repoRoot, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
@@ -23,25 +22,49 @@ func TestInitramfsBuildScript_RefreshesKernelModulesEveryBoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read build.sh: %v", err)
 	}
-	script := string(data)
+	return string(data)
+}
 
-	// Sentinel comment marks the always-on refresh block. Find it, then verify
-	// it lives OUTSIDE the first-boot-only branch (i.e., not gated by
-	// `! -f /mnt/root/.dew-initialized`).
-	marker := "DEW_REFRESH_KMODULES"
+// assertMarkerOutsideFirstBoot fails if the sentinel marker is missing, or if it
+// sits inside the first-boot-only branch (gated by `! -f .dew-initialized`)
+// rather than the always-on refresh block below it — which would mean the
+// refresh runs once and never reaches an upgraded disk. failMsg names the drift.
+func assertMarkerOutsideFirstBoot(t *testing.T, script, marker, failMsg string) {
+	t.Helper()
 	markerIdx := strings.Index(script, marker)
 	if markerIdx == -1 {
-		t.Fatalf("init script missing %q marker for the always-on module refresh block", marker)
+		t.Fatalf("init script missing %q marker for the always-on refresh block", marker)
 	}
 	firstBootIdx := strings.Index(script, "! -f /mnt/root/.dew-initialized")
+	if firstBootIdx == -1 {
+		t.Fatal("could not locate first-boot block start — test needs updating")
+	}
 	endFirstBoot := strings.Index(script[firstBootIdx:], "    fi\n")
-	if firstBootIdx == -1 || endFirstBoot == -1 {
-		t.Fatal("could not locate first-boot block boundaries — test needs updating")
+	if endFirstBoot == -1 {
+		t.Fatal("could not locate first-boot block end — test needs updating")
 	}
-	firstBootEnd := firstBootIdx + endFirstBoot
-	if markerIdx > firstBootIdx && markerIdx < firstBootEnd {
-		t.Errorf("module refresh is inside the first-boot block — must run on every boot to avoid kernel/module drift")
+	if firstBootEnd := firstBootIdx + endFirstBoot; markerIdx > firstBootIdx && markerIdx < firstBootEnd {
+		t.Error(failMsg)
 	}
+}
+
+// /lib/modules on the persistent disk must be refreshed from the initramfs on
+// every boot, not just first boot. Otherwise a kernel-APK bump in the
+// initramfs leaves stale modules behind, every modprobe silently fails, and
+// the user sees mystery "operation not supported" errors from CNI/containerd.
+func TestInitramfsBuildScript_RefreshesKernelModulesEveryBoot(t *testing.T) {
+	assertMarkerOutsideFirstBoot(t, readBuildScript(t), "DEW_REFRESH_KMODULES",
+		"module refresh is inside the first-boot block — must run on every boot to avoid kernel/module drift")
+}
+
+// /usr/local/bin on the persistent disk (crun, dew-oci-run, dew-agent,
+// dew-httpd) must be refreshed from the initramfs on EVERY boot, not just first
+// boot. Otherwise an initramfs upgrade that adds or replaces one of those
+// binaries never reaches an already-initialized disk, and `dew run --image` /
+// `dew up --with` fail with a bare "exit -1". Mirrors the kernel-module guard.
+func TestInitramfsBuildScript_RefreshesLocalBinEveryBoot(t *testing.T) {
+	assertMarkerOutsideFirstBoot(t, readBuildScript(t), "DEW_REFRESH_LOCALBIN",
+		"/usr/local/bin refresh is inside the first-boot block — must run on every boot or initramfs binary upgrades never reach an existing disk")
 }
 
 // Alpine 3.21's linux-virt aarch64 kernel ships in EFI zboot format
@@ -63,11 +86,11 @@ func TestInitramfsBuildScript_StripsAArch64ZBootWrapper(t *testing.T) {
 	script := string(data)
 
 	for _, want := range []string{
-		`= "MZ"`,           // detection
-		`"zimg"`,           // zboot marker check
-		"EFI zboot",        // human-readable signal
-		`b'ARM\x64'`,       // post-extract magic check (ensures we caught a broken extract)
-		"gzip.decompress",  // payload decompression
+		`= "MZ"`,          // detection
+		`"zimg"`,          // zboot marker check
+		"EFI zboot",       // human-readable signal
+		`b'ARM\x64'`,      // post-extract magic check (ensures we caught a broken extract)
+		"gzip.decompress", // payload decompression
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("build.sh missing %q — zboot strip path may be broken; Apple Silicon boot will fail with VZErrorDomain Code=1", want)

@@ -484,7 +484,15 @@ if [ "$DETACH" = "1" ]; then
         exit 1
     fi
 else
-    exec crun run -b "$RUN/bundle" "$NAME"
+    # Run in the foreground, then flush before returning. The host tears the
+    # VM down ungracefully (no guest shutdown), so without this sync a -v
+    # volume's writes can still be in the guest page cache and are lost — a
+    # short `dew run --image ... -v vol:/data` that writes then exits would
+    # silently drop the data. Not exec'd, so the sync runs after crun returns.
+    crun run -b "$RUN/bundle" "$NAME"
+    rc=$?
+    sync
+    exit "$rc"
 fi
 OCIRUN_EOF
     chmod 755 "$WORK_DIR/usr/local/bin/dew-oci-run"
@@ -595,6 +603,23 @@ if [ -b /dev/vda ]; then
     chmod 755 /mnt/root/init-stage2
     [ -f /.dew-node-profile ] && cp /.dew-node-profile /mnt/root/.dew-node-profile
     [ -f /.dew-python-profile ] && cp /.dew-python-profile /mnt/root/.dew-python-profile
+    sync
+
+    # Refresh dew's shipped binaries every boot — DEW_REFRESH_LOCALBIN
+    # crun, dew-oci-run, dew-agent and dew-httpd live in /usr/local/bin in the
+    # initramfs, but the disk rootfs is only populated on FIRST boot (above).
+    # Without this, upgrading the initramfs to add or replace one of them (as
+    # happened when the crun OCI path first shipped) never reaches an
+    # already-initialized disk: `dew run --image` and `dew up --with` then fail
+    # with a bare "exit -1" because crun/dew-oci-run aren't on the disk. Same
+    # class of bug the kernel-module refresh below guards against. No rm before
+    # the copy: shipped binaries are refreshed in place (a same-named guest file
+    # is overwritten by the shipped one, which is the intent) while extra files
+    # the guest added under /usr/local/bin are left untouched.
+    if [ -d /usr/local/bin ]; then
+        mkdir -p /mnt/root/usr/local/bin
+        cp -a /usr/local/bin/. /mnt/root/usr/local/bin/ 2>/dev/null || true
+    fi
     sync
 
     # Refresh kernel modules every boot — DEW_REFRESH_KMODULES

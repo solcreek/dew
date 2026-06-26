@@ -55,6 +55,15 @@ var flagEvents bool
 var flagWith string
 var flagImage string
 var flagPlatform string
+
+// flagEnv collects repeatable -e/--env KEY=VAL pairs for `dew run --image`.
+// They are appended to the image's own env in the OCI spec.
+var flagEnv []string
+
+// flagVolumes collects -v/--volume values for `dew run --image`. Each is a
+// "name:/path" or "/guest:/path" bind mount. Only one is supported for now
+// (the guest dew-oci-run launcher takes a single --data dir).
+var flagVolumes []string
 var flagDryRun bool
 var flagProfile string
 var flagServicesOnly bool
@@ -688,14 +697,29 @@ Network:
 Containers:
   --image REF   (dew run) Pull an OCI image on the host and run it in the VM
                 via crun. A trailing -- <cmd> overrides the image entrypoint.
-                dew run does not auto-forward ports — add --forward, or use
-                dew up --with for managed services.
+                dew run does not auto-forward ports — add --publish/-p (or
+                --forward), or use dew up --with for managed services.
+  --publish, -p HOST:CONTAINER
+                Repeatable. Forward host port HOST to the container's
+                CONTAINER port (the container runs --net=host, so this is
+                --forward by another name). Example: -p 8080:80
+  --env, -e KEY=VALUE
+                (dew run --image) Repeatable. Appended to the image's own
+                env in the container. Example: -e LOG_LEVEL=debug
+  --volume, -v NAME:/path | /guest:/path
+                (dew run --image) Persistent bind mount. NAME maps to
+                /var/lib/dew/volumes/NAME on the VM's disk and survives
+                across runs. One volume per run for now. Example:
+                -v pgdata:/var/lib/postgresql/data
   --platform OS/ARCH
                 Image platform to pull (default: the guest arch). Set
                 linux/amd64 with --rosetta to run an amd64 image.
-  --with NAMES  (dew up) Comma-separated predefined services to run alongside
-                the project (e.g. postgres,redis). Each is pulled on the host,
-                run via crun, and its port forwarded.
+  --with NAMES  (dew up, dew run) Comma-separated predefined services to run
+                alongside the project/image (e.g. postgres,redis). Each is
+                pulled on the host, run via crun, health-gated, and its port
+                forwarded. With dew run they come up before the foreground
+                command, reachable on the VM's localhost (e.g. dew run
+                --image myapp --with postgres).
 
 Compatibility:
   --rosetta     Apple Silicon only. Mounts Apple's Rosetta translator into
@@ -749,6 +773,8 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 	flagTimeout = 0
 	flagImage = ""
 	flagPlatform = ""
+	flagEnv = nil
+	flagVolumes = nil
 	flagWith = ""
 	flagServicesOnly = false
 	flagResetDisk = false
@@ -913,6 +939,37 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, fmt.Errorf("--platform requires an os/arch (e.g. linux/amd64)")
 			}
 			flagPlatform = args[i]
+		case "--env", "-e":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--env requires KEY=VALUE")
+			}
+			if !strings.Contains(args[i], "=") {
+				return cfg, nil, fmt.Errorf("--env: expected KEY=VALUE, got %q", args[i])
+			}
+			flagEnv = append(flagEnv, args[i])
+		case "--publish", "-p":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--publish requires hostPort:containerPort")
+			}
+			// crun runs --net=host, so the container binds its port on the VM
+			// network: publishing is just a host->guest forward whose guest
+			// port is the container port. Reuse the --forward parser/transport.
+			fwd, ferr := parseForward(args[i])
+			if ferr != nil {
+				return cfg, nil, fmt.Errorf("--publish: expected hostPort:containerPort, got %q", args[i])
+			}
+			cfg.Forwards = append(cfg.Forwards, fwd)
+		case "--volume", "-v":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--volume requires name:/path or /guest:/path")
+			}
+			if _, _, verr := parseVolume(args[i]); verr != nil {
+				return cfg, nil, verr
+			}
+			flagVolumes = append(flagVolumes, args[i])
 		case "--stream":
 			flagStream = true
 		case "--events":
@@ -1059,15 +1116,7 @@ func cmdStart(args []string) error {
 
 	// --reset-disk: rebuild the persistent disk fresh (recovery for a
 	// stale/corrupt image from a previous version). See cmdUp.
-	if flagResetDisk && cfg.DiskPath != "" {
-		if err := os.Remove(cfg.DiskPath); err == nil {
-			if !flagJSON && !flagEvents {
-				fmt.Fprintf(os.Stderr, "dew: reset disk: %s\n", cfg.DiskPath)
-			}
-		} else if !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "dew: could not reset disk %s: %v\n", cfg.DiskPath, err)
-		}
-	}
+	resetDiskBeforeBoot(cfg.DiskPath)
 
 	// Network on by default for `dew vm start` (and its legacy alias
 	// `dew start`). The help text has always claimed this; the
@@ -1216,44 +1265,86 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	// --image runs the container via crun overlay, which needs an ext4 disk.
-	// Default to the node profile when the user didn't pick a disk profile.
-	if flagImage != "" && (flagProfile == "" || flagProfile == "minimal") {
+	// -e/--env and -v/--volume only feed the OCI spec, so they're meaningless
+	// without --image. Erroring beats silently dropping what the user set.
+	if len(flagEnv) > 0 && flagImage == "" {
+		return fmt.Errorf("--env is only supported with --image")
+	}
+	if len(flagVolumes) > 0 && flagImage == "" {
+		return fmt.Errorf("--volume is only supported with --image")
+	}
+	// The guest dew-oci-run launcher takes a single --data bind, so cap at one
+	// for now rather than silently mounting only the last.
+	if len(flagVolumes) > 1 {
+		return fmt.Errorf("only one --volume is supported for now")
+	}
+	// --image and --with run containers via crun overlay, which needs an ext4
+	// disk. Default to the node profile when the user didn't pick a disk one.
+	if (flagImage != "" || flagWith != "") && (flagProfile == "" || flagProfile == "minimal") {
 		flagProfile = "node"
 	}
 	if err := resolveAssets(&cfg); err != nil {
 		return err
 	}
 
+	// --reset-disk: rebuild the persistent disk fresh before boot. cmdStart and
+	// cmdUp honor this; cmdRun parsed the flag but never acted on it, so the
+	// documented recovery for a stale disk silently did nothing here — and a
+	// stale disk is exactly what strands an old /usr/local/bin for `--image`.
+	resetDiskBeforeBoot(cfg.DiskPath)
+
 	// One wall-clock budget spans host-side staging + boot + agent wait + exec,
 	// so --timeout bounds the whole run (and cancels a slow registry pull).
 	budget := newRunBudget(flagTimeout)
 
-	// --image <ref>: pull+stage an arbitrary OCI image on the host, share its
-	// bundle at /oci-stage, and run it in the guest via crun (dew-oci-run). Any
-	// `-- <cmd>` overrides the image entrypoint. Foreground so output streams
-	// and the container's exit code propagates.
-	if flagImage != "" {
+	// --image / --with stage OCI bundles on the host into a single share
+	// (/oci-stage) that the guest launches via crun (dew-oci-run). --image is
+	// the foreground container (a trailing `-- <cmd>` overrides its entrypoint,
+	// and its exit code propagates); --with services run detached and are
+	// brought up before the foreground command so it can reach them on the VM's
+	// localhost. Services launch after boot in the post-token block below.
+	var stagedSvcs []stagedService
+	var svcFailures []serviceFailure
+	if flagImage != "" || flagWith != "" {
 		stageRoot := filepath.Join(dewDataDir(), "oci-stage", strconv.Itoa(os.Getpid()))
 		os.RemoveAll(stageRoot)
 		defer os.RemoveAll(stageRoot)
-		fmt.Fprintf(os.Stderr, "dew: staging image %s\n", flagImage)
 		stageCtx := context.Background()
 		if flagTimeout > 0 {
 			var cancel context.CancelFunc
 			stageCtx, cancel = context.WithTimeout(stageCtx, budget.window(flagTimeout))
 			defer cancel()
 		}
-		if _, err := ocistage.Stage(stageCtx, flagImage, ocistage.Options{
-			StageDir: filepath.Join(stageRoot, "app"),
-			Name:     "app",
-			Cmd:      cmdArgs,
-			Platform: flagPlatform, // empty = guest arch; set e.g. linux/amd64 with --rosetta
-		}); err != nil {
-			return fmt.Errorf("stage image: %w", err)
+		if flagImage != "" {
+			fmt.Fprintf(os.Stderr, "dew: staging image %s\n", flagImage)
+			// A single -v/--volume becomes a persistent bind on the guest ext4
+			// disk: dew-oci-run --data mkdir's the source, and ociSpec writes
+			// the mount into config.json. Pre-validated at parse time.
+			var data *ocistage.Bind
+			if len(flagVolumes) == 1 {
+				src, dest, _ := parseVolume(flagVolumes[0])
+				data = &ocistage.Bind{Source: src, Destination: dest}
+			}
+			if _, err := ocistage.Stage(stageCtx, flagImage, ocistage.Options{
+				StageDir: filepath.Join(stageRoot, "app"),
+				Name:     "app",
+				Cmd:      cmdArgs,
+				Env:      flagEnv,      // extra -e/--env vars appended to the image env
+				Data:     data,         // optional -v/--volume persistent bind mount
+				Platform: flagPlatform, // empty = guest arch; set e.g. linux/amd64 with --rosetta
+			}); err != nil {
+				return fmt.Errorf("stage image: %w", err)
+			}
+			cmdArgs = []string{"dew-oci-run"}
+			if data != nil {
+				cmdArgs = append(cmdArgs, "--data", data.Source+":"+data.Destination)
+			}
+			cmdArgs = append(cmdArgs, "/oci-stage/app", "app")
+		}
+		if flagWith != "" {
+			stagedSvcs, svcFailures = stageServices(stageCtx, strings.Split(flagWith, ","), stageRoot)
 		}
 		cfg.SharedDirs = append(cfg.SharedDirs, vm.SharedDir{Tag: "oci-stage", HostPath: stageRoot, ReadOnly: true})
-		cmdArgs = []string{"dew-oci-run", "/oci-stage/app", "app"}
 	}
 
 	if len(cmdArgs) == 0 {
@@ -1345,6 +1436,91 @@ func cmdRun(args []string) error {
 			PID: os.Getpid(), Phase: vmstate.PhaseRunning, Mode: "run",
 			Profile: profile, StartedAt: startedAt,
 		})
+	}
+
+	// Post-token wiring for `dew run`: port forwards (-p/--publish, --forward)
+	// and --with services. Unlike `dew vm start`, run has no daemon socket, but
+	// AddForward only needs the VM + vsock token to stand up a host listener
+	// that proxies into the guest, so reuse it directly. Listeners live for the
+	// duration of the run and are reclaimed when the process exits. Gated on
+	// tokenSent because the guest proxy and exec legs authenticate with it.
+	if tokenSent && (len(cfg.Forwards) > 0 || len(stagedSvcs) > 0) {
+		fwd := &daemon.State{VM: d, Token: token, VsockPort: cfg.VsockPort}
+		for _, f := range cfg.Forwards {
+			addr, ferr := fwd.AddForward(f.HostPort, f.GuestPort)
+			if ferr != nil {
+				fmt.Fprintf(os.Stderr, "dew: %v\n", ferr)
+				continue
+			}
+			// AddForward falls back to a free host port when the requested one
+			// is busy — report the port it actually bound so the forward is
+			// discoverable, not the one we asked for.
+			hostPort := forwardedPort(addr, f.HostPort)
+			if hostPort != f.HostPort {
+				fmt.Fprintf(os.Stderr, "dew: host :%d busy → forwarding 127.0.0.1:%d → guest:%d\n", f.HostPort, hostPort, f.GuestPort)
+			} else {
+				fmt.Fprintf(os.Stderr, "dew: forwarding 127.0.0.1:%d → guest:%d\n", hostPort, f.GuestPort)
+			}
+		}
+
+		// --with services: launch each detached via crun, health-gate its
+		// listen port, then forward it so both the foreground command (over the
+		// VM's localhost) and the host can reach it. Mirrors cmdUp's loop, but
+		// runs each guest command over a fresh vsock conn instead of a daemon.
+		runGuest := func(cmdline string) (*RunResult, error) {
+			conn, cerr := connectVsock(d, cfg.VsockPort)
+			if cerr != nil {
+				return nil, cerr
+			}
+			defer conn.Close()
+			ec, ea := argvOrShellWrap([]string{cmdline})
+			return execVsockConnArgv(conn, token, ec, ea, budget.guestTimeout())
+		}
+		for _, f := range svcFailures {
+			fmt.Fprintf(os.Stderr, "dew: service %s failed: %s\n", f.name, f.reason)
+		}
+		for _, s := range stagedSvcs {
+			launch := "dew-oci-run --detach"
+			if s.dataArg != "" {
+				launch += " --data " + s.dataArg
+			}
+			launch += " " + s.bundle + " " + s.name
+			res, rerr := runGuest(launch)
+			if rerr != nil || (res != nil && res.ExitCode != 0) {
+				reason := "container failed to start"
+				if rerr != nil {
+					reason = rerr.Error()
+				} else if res != nil && strings.TrimSpace(res.Stderr) != "" {
+					reason = strings.TrimSpace(res.Stderr)
+				}
+				fmt.Fprintf(os.Stderr, "dew: service %s failed: %s\n", s.name, reason)
+				continue
+			}
+			// dew-oci-run only confirms crun is "running", not that the service
+			// bound its port — poll the guest's IPv4 LISTEN socket before
+			// forwarding, so a service that came up then died isn't advertised.
+			ready := waitGuestReady(func() bool {
+				pr, perr := runGuest(services.ListenProbeCmd(s.port))
+				return perr == nil && pr != nil && pr.ExitCode == 0
+			}, 30, time.Second)
+			if !ready {
+				fmt.Fprintf(os.Stderr, "dew: service %s did not start accepting connections within 30s\n", s.name)
+				continue
+			}
+			hostFwd := s.port
+			if addr, aerr := fwd.AddForward(s.port, s.port); aerr != nil {
+				fmt.Fprintf(os.Stderr, "dew: forward %d: %v\n", s.port, aerr)
+			} else {
+				hostFwd = forwardedPort(addr, s.port)
+			}
+			msg := fmt.Sprintf("dew: service %s ready on 127.0.0.1:%d", s.name, hostFwd)
+			if svc := services.Lookup(s.name); svc != nil {
+				if cs := services.ConnString(*svc, hostFwd); cs != "" {
+					msg += " (" + cs + ")"
+				}
+			}
+			fmt.Fprintln(os.Stderr, msg)
+		}
 	}
 
 	// argv-or-shell decision: 2+ args → exec argv directly (no
@@ -2186,10 +2362,8 @@ func cmdUp(args []string) error {
 		hostFwd := s.port
 		if addr, err := dmn.AddForward(s.port, s.port); err != nil {
 			fmt.Fprintf(os.Stderr, "dew: forward %d: %v\n", s.port, err)
-		} else if _, p, e := net.SplitHostPort(addr); e == nil {
-			if n, e2 := strconv.Atoi(p); e2 == nil {
-				hostFwd = n
-			}
+		} else {
+			hostFwd = forwardedPort(addr, s.port)
 		}
 		cfg.Forwards = append(cfg.Forwards, vm.PortForward{HostPort: hostFwd, GuestPort: s.port})
 		if hostFwd != s.port && !flagJSON && !flagEvents {
@@ -2871,6 +3045,68 @@ func parseForward(s string) (vm.PortForward, error) {
 		return vm.PortForward{}, fmt.Errorf("--forward: invalid ports %q", s)
 	}
 	return vm.PortForward{HostPort: host, GuestPort: guest}, nil
+}
+
+// forwardedPort returns the host port an AddForward result actually bound to,
+// or fallback if the address can't be parsed. AddForward may bind a different
+// port than requested (it falls back to a free one when the host port is busy),
+// so callers read the real port from the returned address.
+func forwardedPort(addr string, fallback int) int {
+	if _, p, err := net.SplitHostPort(addr); err == nil {
+		if n, err2 := strconv.Atoi(p); err2 == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+// resetDiskBeforeBoot deletes cfg.DiskPath when --reset-disk was passed, so the
+// next boot rebuilds it fresh from the current initramfs (recovery for a stale
+// or corrupt profile disk). A missing disk is fine; any other removal error is
+// reported but non-fatal. cmdUp has its own variant that also emits a disk
+// event into its progress stream, so it doesn't call this.
+func resetDiskBeforeBoot(diskPath string) {
+	if !flagResetDisk || diskPath == "" {
+		return
+	}
+	if err := os.Remove(diskPath); err == nil {
+		if !flagJSON && !flagEvents {
+			fmt.Fprintf(os.Stderr, "dew: reset disk: %s\n", diskPath)
+		}
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "dew: could not reset disk %s: %v\n", diskPath, err)
+	}
+}
+
+// parseVolume parses a -v/--volume value into a guest source path and an
+// in-container destination for the `dew run --image` bind mount. Two forms:
+//
+//	name:/path      named persistent volume at /var/lib/dew/volumes/<name>
+//	/guest:/path    an explicit absolute guest path
+//
+// The destination must be absolute. A bare name must be a safe identifier
+// because it becomes a guest path component and is passed to the guest
+// dew-oci-run launcher (which mkdir's it), so disallow separators/traversal.
+func parseVolume(s string) (src, dest string, err error) {
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("--volume: expected name:/path or /guest:/path, got %q", s)
+	}
+	left, dst := parts[0], parts[1]
+	if !strings.HasPrefix(dst, "/") {
+		return "", "", fmt.Errorf("--volume: container path must be absolute, got %q", dst)
+	}
+	if strings.HasPrefix(left, "/") {
+		return left, dst, nil
+	}
+	for _, r := range left {
+		ok := r == '-' || r == '_' ||
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !ok {
+			return "", "", fmt.Errorf("--volume: invalid volume name %q (use letters, digits, '-' or '_')", left)
+		}
+	}
+	return "/var/lib/dew/volumes/" + left, dst, nil
 }
 
 // parseShare accepts three forms:

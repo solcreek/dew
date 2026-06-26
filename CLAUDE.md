@@ -13,7 +13,7 @@ go test ./internal/detect/ -run TestDetect_Vite -v   # single test
 # Initramfs profiles (run from repo root)
 bash initramfs/build.sh minimal    # 5MB, exec-only
 bash initramfs/build.sh node       # 31MB, Node.js + npm + build-base
-bash initramfs/build.sh standard   # 129MB, + containerd/nerdctl/runc/CNI
+bash initramfs/build.sh standard   # node tier + larger RAM/disk; OCI via crun (no daemon)
 
 # Turbo kernel (Docker required)
 bash kernel/build.sh
@@ -67,9 +67,9 @@ All communication uses length-prefixed JSON over vsock (no SSH). Auth token inje
 `initramfs/build.sh` generates both `/init` and `/init-stage2`:
 
 1. **`/init`** — early boot: mount filesystems, modprobe, detect disk. If disk present → `mkfs.ext4` (first boot) → `switch_root /mnt/root /init-stage2`. If no disk → exec `/init-stage2` directly.
-2. **`/init-stage2`** — networking (DHCP + DNS fallback), virtiofs mounts (from kernel cmdline `dew.share=tag:/path`), cgroup limits, Node.js install (node profile, first boot only), containerd start (standard profile), dew-agent start.
+2. **`/init-stage2`** — networking (DHCP + DNS fallback), virtiofs mounts (from kernel cmdline `dew.share=tag:/path`), cgroup limits, Node.js install (node profile, first boot only), dew-agent start. There is no in-guest container daemon: OCI images run on demand via crun (the host-pull + overlay `dew-oci-run` path), not containerd/nerdctl.
 
-Standard/node profiles use `switch_root` to ext4 disk because containerd's overlayfs needs a real filesystem (not tmpfs).
+Standard/node profiles use `switch_root` to ext4 disk because crun's overlay rootfs needs a real filesystem for its upperdir (tmpfs is rejected as an overlay upperdir).
 
 ### Profiles and defaults
 
