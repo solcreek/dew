@@ -29,6 +29,7 @@ import (
 
 	"github.com/solcreek/dew/internal/daemon"
 	"github.com/solcreek/dew/internal/detect"
+	"github.com/solcreek/dew/internal/disklock"
 	"github.com/solcreek/dew/internal/nmcache"
 	"github.com/solcreek/dew/internal/ocistage"
 	"github.com/solcreek/dew/internal/progress"
@@ -159,7 +160,22 @@ func dewDataDir() string {
 // bundlers (esbuild worker threads, tsx) blow past 1 GB during boot.
 // Explicit --cpus / --memory overrides win because the caller set them
 // to non-default values before this runs.
-func applyProfileDefaults(cfg *vm.Config, profile, dataDir string) {
+// profileDiskPath returns the persistent disk image path for a profile.
+// A named VM (--name) gets its own image ("<profile>-<name>.img") so it is
+// fully isolated from the default VM and from other named VMs — disk,
+// socket, and state dir all keyed by name. This is what makes concurrent
+// named VMs actually work: before this, every VM of a profile shared one
+// "<profile>.img", and the second to boot was rejected by VZ (Code=2)
+// because the first held the image. Without a name the historical
+// "<profile>.img" is kept so existing default-VM disks are reused.
+func profileDiskPath(dataDir, profile, vmName string) string {
+	if vmName == "" {
+		return filepath.Join(dataDir, profile+".img")
+	}
+	return filepath.Join(dataDir, profile+"-"+vmName+".img")
+}
+
+func applyProfileDefaults(cfg *vm.Config, profile, dataDir, vmName string) {
 	switch profile {
 	case "node":
 		if cfg.CPUs == 1 {
@@ -169,7 +185,7 @@ func applyProfileDefaults(cfg *vm.Config, profile, dataDir string) {
 			cfg.MemoryMB = 2048
 		}
 		if cfg.DiskPath == "" {
-			cfg.DiskPath = filepath.Join(dataDir, "node.img")
+			cfg.DiskPath = profileDiskPath(dataDir, "node", vmName)
 			cfg.DiskGB = 4
 		}
 	case "python":
@@ -180,7 +196,7 @@ func applyProfileDefaults(cfg *vm.Config, profile, dataDir string) {
 			cfg.MemoryMB = 2048
 		}
 		if cfg.DiskPath == "" {
-			cfg.DiskPath = filepath.Join(dataDir, "python.img")
+			cfg.DiskPath = profileDiskPath(dataDir, "python", vmName)
 			cfg.DiskGB = 4
 		}
 	case "standard":
@@ -191,7 +207,7 @@ func applyProfileDefaults(cfg *vm.Config, profile, dataDir string) {
 			cfg.MemoryMB = 2048
 		}
 		if cfg.DiskPath == "" {
-			cfg.DiskPath = filepath.Join(dataDir, "standard.img")
+			cfg.DiskPath = profileDiskPath(dataDir, "standard", vmName)
 			cfg.DiskGB = 10
 		}
 	}
@@ -210,7 +226,7 @@ func resolveAssets(cfg *vm.Config) error {
 		profile = "minimal"
 	}
 
-	applyProfileDefaults(cfg, profile, dataDir)
+	applyProfileDefaults(cfg, profile, dataDir, flagVMName)
 
 	if cfg.Kernel == "" {
 		cfg.Kernel = assetCachePath(dataDir, kernelAssetName())
@@ -448,6 +464,35 @@ func staleDiskHint(diskPath, rebuildCmd string) string {
 			"  or delete it manually (resets VM state):\n"+
 			"    rm %s",
 		rebuildCmd, diskPath)
+}
+
+// acquireDiskLock reserves the VM's persistent disk image so a second dew
+// VM can't attach the same image concurrently. Diskless profiles (minimal)
+// return a nil lock and no error. On contention it returns a usage error
+// that points at the supported ways to run a second VM — instead of letting
+// the boot fail later with VZ's opaque Code=2, which dew would otherwise
+// misattribute to a stale image and advise `rm` (destroying the first VM's
+// data). A non-contention lock error is non-fatal: VZ still enforces its
+// own exclusivity, so we warn and let the caller proceed unlocked.
+func acquireDiskLock(diskPath string) (*disklock.Lock, error) {
+	if diskPath == "" {
+		return nil, nil
+	}
+	lk, err := disklock.Acquire(diskPath)
+	switch {
+	case errors.Is(err, disklock.ErrInUse):
+		return nil, dewerr.Newf(dewerr.CodeUsage,
+			"disk image %s is already in use by another running dew VM.\n"+
+				"  Run a second VM concurrently by giving it its own name (and disk):\n"+
+				"    dew run --name <name> ...      (or: dew vm start --name <name>)\n"+
+				"  or point this one at a different disk:\n"+
+				"    --disk <path>",
+			diskPath)
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "dew: warning: could not lock disk %s: %v\n", diskPath, err)
+		return nil, nil
+	}
+	return lk, nil
 }
 
 func cmdAssets(args []string) error {
@@ -1114,6 +1159,16 @@ func cmdStart(args []string) error {
 		return err
 	}
 
+	// Reserve the disk so a second VM on the same profile disk (e.g. another
+	// unnamed `dew vm start`) fails fast instead of corrupting boot. Acquired
+	// before --reset-disk so a reset can't delete an image another VM holds.
+	// Held for the foreground lifetime of this VM.
+	diskLock, err := acquireDiskLock(cfg.DiskPath)
+	if err != nil {
+		return err
+	}
+	defer diskLock.Release()
+
 	// --reset-disk: rebuild the persistent disk fresh (recovery for a
 	// stale/corrupt image from a previous version). See cmdUp.
 	resetDiskBeforeBoot(cfg.DiskPath)
@@ -1291,6 +1346,16 @@ func cmdRun(args []string) error {
 	// cmdUp honor this; cmdRun parsed the flag but never acted on it, so the
 	// documented recovery for a stale disk silently did nothing here — and a
 	// stale disk is exactly what strands an old /usr/local/bin for `--image`.
+	//
+	// Reserve the disk before staging/boot (and before --reset-disk deletes
+	// it) so a second concurrent `dew run` on the same profile disk fails fast
+	// with guidance, not VZ's opaque Code=2 — and --reset-disk can't nuke an
+	// image another VM is actively using. Held until this foreground run exits.
+	diskLock, err := acquireDiskLock(cfg.DiskPath)
+	if err != nil {
+		return err
+	}
+	defer diskLock.Release()
 	resetDiskBeforeBoot(cfg.DiskPath)
 
 	// One wall-clock budget spans host-side staging + boot + agent wait + exec,
@@ -1950,6 +2015,16 @@ func cmdUp(args []string) error {
 	}
 	cfg.VsockPort = uint32(vsockProto.DefaultPort)
 	cfg.CmdLine += " dew.share=project:/app"
+
+	// Reserve the disk before boot (and before --reset-disk deletes it) so a
+	// second `dew up`/`dew run` sharing this profile disk fails fast with
+	// --name/--disk guidance rather than VZ's opaque Code=2, and a reset can't
+	// nuke an image another VM holds. Held for the foreground lifetime of up.
+	diskLock, err := acquireDiskLock(cfg.DiskPath)
+	if err != nil {
+		return err
+	}
+	defer diskLock.Release()
 
 	// --reset-disk: delete the persistent disk image before boot so it's
 	// rebuilt fresh from the current initramfs. The one-command recovery

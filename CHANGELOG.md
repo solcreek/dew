@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Concurrent named VMs are fully isolated, disk included.** A `--name`
+  VM now gets its own `<profile>-<name>.img`, alongside the per-name
+  socket and state dir it already had. Two named VMs (or a default plus a
+  named one) can run at the same time without fighting over one
+  `<profile>.img`.
+
+### Fixed
+
+- **Concurrent VMs no longer collide on the shared profile disk with a
+  misleading recovery hint.** Starting a second VM on the same disk failed
+  VZ boot with an opaque "storage device attachment is invalid", which dew
+  blamed on a stale image and told you to `rm` — destroying the *first*
+  VM's data. dew now reserves the disk before boot (advisory lock) and, on
+  contention, fails fast pointing at `--name`/`--disk` instead. The stale
+  image advice only fires when the disk really is unusable.
+
 ## [0.7.48] - 2026-06-26
 
 ### Added
