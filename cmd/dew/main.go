@@ -2189,7 +2189,7 @@ func cmdUp(args []string) error {
 		// real forward dynamically. We also shift the host side if
 		// preferred is busy — matches grove's anti-collision logic
 		// so a stray dev server on the host doesn't break dew up.
-		Forwards: []vm.PortForward{provisionalForward(proj.Port)},
+		Forwards: initialForwards(proj.Port),
 		SharedDirs: []vm.SharedDir{
 			{Tag: "project", HostPath: absDir, ReadOnly: false},
 		},
@@ -2630,7 +2630,7 @@ func cmdUp(args []string) error {
 		// event would advertise a port nothing is listening on.
 		hostFwd := s.port
 		if addr, err := dmn.AddForward(s.port, s.port); err != nil {
-			fmt.Fprintf(os.Stderr, "dew: forward %d: %v\n", s.port, err)
+			fmt.Fprintf(os.Stderr, "dew: forward %s :%d: %v\n", s.name, s.port, err)
 		} else {
 			hostFwd = forwardedPort(addr, s.port)
 		}
@@ -2716,7 +2716,13 @@ func cmdUp(args []string) error {
 	// Without this, a Vite app whose vite.config.ts sets port=3000
 	// would have us forward 5173 forever and the agent could never
 	// reach the dev server.
-	hostPort := cfg.Forwards[0].HostPort
+	// cfg.Forwards is empty when there was no provisional forward to add
+	// (a dev command with no known port); fall back to the guest port so the
+	// probe URL is still well-formed instead of panicking on Forwards[0].
+	hostPort := proj.Port
+	if len(cfg.Forwards) > 0 {
+		hostPort = cfg.Forwards[0].HostPort
+	}
 	guestPort := proj.Port
 	url := fmt.Sprintf("http://localhost:%d/", hostPort)
 	detected := false
