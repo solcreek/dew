@@ -465,10 +465,15 @@ cp "$BUNDLE/config.json" "$RUN/bundle/config.json"
 # is refused) instead of resolving it locally — breaking same-VM config like
 # REDIS_URL=redis://localhost:6379. Write a Docker-style hosts file (into the
 # per-run overlay upper, so the image is untouched) and hand the container the
-# guest's resolver so its outbound DNS works too. Both are best-effort.
-mkdir -p "$RUN/merged/etc"
-printf '127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n' > "$RUN/merged/etc/hosts" 2>/dev/null || true
-cp /etc/resolv.conf "$RUN/merged/etc/resolv.conf" 2>/dev/null || true
+# guest's resolver so its outbound DNS works too. Grouped with stderr silenced
+# and `|| true` so it stays truly best-effort under `set -e`: an unwritable
+# overlay must neither abort the launch nor print a redirect-open error (which
+# the shell emits before a per-command 2>/dev/null would take effect).
+{
+    mkdir -p "$RUN/merged/etc" &&
+    printf '127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n' > "$RUN/merged/etc/hosts" &&
+    cp /etc/resolv.conf "$RUN/merged/etc/resolv.conf"
+} 2>/dev/null || true
 
 if [ "$DETACH" = "1" ]; then
     LOG="/var/log/dew-oci-$NAME.log"
