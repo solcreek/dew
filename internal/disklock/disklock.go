@@ -45,7 +45,10 @@ func Acquire(diskPath string) (*Lock, error) {
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
+		// A held lock surfaces as EWOULDBLOCK on darwin; POSIX also permits
+		// EAGAIN (the two are the same value on Linux but distinct on some
+		// Unixes), so treat either as "in use" rather than a generic error.
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
 			return nil, ErrInUse
 		}
 		return nil, err
