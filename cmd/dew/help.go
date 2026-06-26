@@ -29,20 +29,30 @@ managers install into a cached /app/node_modules that survives
 ` + "`dew down`" + ` (see CHANGELOG v0.7.17 for cache details). Use ` + "`dew exec`" + `
 to run commands against the running VM after ` + "`dew up`" + `.
 
+A dew.toml in the project directory is the canonical descriptor: it
+pins the profile and dev workflow and can compose arbitrary OCI
+services into the same VM. Auto-detection stays the no-config
+default. ` + "`dew up --init`" + ` writes a starter dew.toml.
+
 Flags:
+  --init        Write a starter dew.toml for the detected project and
+                exit (won't overwrite an existing one).
   --profile minimal|node|python|standard
-                Override auto-detected profile.
+                Override auto-detected profile (and dew.toml).
   --with <services>
-                Comma-separated services to start (postgres, redis,
-                mysql, mongo, minio).
+                Comma-separated built-in services to start (postgres,
+                redis, mysql, mongo, minio). For arbitrary images,
+                define [[service]] entries in dew.toml instead. The two
+                compose; dew.toml wins on a name collision.
   --services-only
-                Boot only the --with services; skip project detection
-                and the dev server. Requires --with. (alias: --no-dev)
+                Boot only the services; skip project detection and the
+                dev server. Requires --with or dew.toml [[service]].
+                (alias: --no-dev)
   --reset-disk  Delete the profile's persistent disk image before boot
                 (rebuilds it fresh). Recovery for a stale/corrupt disk
                 from a previous version. Resets VM state.
   --dry-run     Print the plan (project, profile, install/dev
-                commands, ports) and exit without booting.
+                commands, ports, services) and exit without booting.
   --json        Emit lifecycle events as NDJSON; final {"type":"ready"}
                 event carries url/port/framework.
   --events      Same as --json but streamed (NDJSON-only output).
@@ -52,8 +62,10 @@ Flags:
 
 Examples:
   dew up                              # auto-detect this directory
+  dew up --init                       # write a starter dew.toml
   dew up ./apps/web                   # different project dir
-  dew up --with postgres,redis        # add services
+  dew up --with postgres,redis        # add built-in services
+  dew up                              # dew.toml: project + its OCI services
   dew up --dry-run --json | jq        # preview without booting
 `,
 	"run": `dew run — execute a command in an ephemeral VM

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dew.toml` project descriptor: compose arbitrary OCI services in one
+  VM.** `dew up` now reads an optional `dew.toml` that pins the profile and
+  dev workflow and declares `[[service]]` entries — any image, with ports,
+  env, persistent `data`, and extra `args`. They run in the same VM as the
+  project (containers use the VM network, so the dev server reaches them on
+  localhost). Auto-detection stays the no-config default; dew.toml overrides
+  it where set. `--with` (built-in services) and dew.toml services compose,
+  with dew.toml winning on a name collision. `--services-only` now accepts
+  dew.toml services too.
+- **`dew up --init`** writes a starter `dew.toml` for the detected project
+  (won't overwrite an existing one).
+- **Concurrent named VMs are fully isolated, disk included.** A `--name`
+  VM now gets its own `<profile>-<name>.img`, alongside the per-name
+  socket and state dir it already had. Two named VMs (or a default plus a
+  named one) can run at the same time without fighting over one
+  `<profile>.img`.
+
+### Fixed
+
+- **Concurrent VMs no longer collide on the shared profile disk with a
+  misleading recovery hint.** Starting a second VM on the same disk failed
+  VZ boot with an opaque "storage device attachment is invalid", which dew
+  blamed on a stale image and told you to `rm` — destroying the *first*
+  VM's data. dew now reserves the disk before boot (advisory lock) and, on
+  contention, fails fast pointing at `--name`/`--disk` instead. The stale
+  image advice only fires when the disk really is unusable.
+
 ## [0.7.48] - 2026-06-26
 
 ### Added

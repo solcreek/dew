@@ -29,7 +29,7 @@ func TestApplyProfileDefaults_RealWorkProfiles(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.profile, func(t *testing.T) {
 			cfg := vm.Config{CPUs: 1, MemoryMB: 512}
-			applyProfileDefaults(&cfg, c.profile, "/data")
+			applyProfileDefaults(&cfg, c.profile, "/data", "")
 			if cfg.CPUs != c.wantCPUs {
 				t.Errorf("CPUs = %d, want %d", cfg.CPUs, c.wantCPUs)
 			}
@@ -46,6 +46,17 @@ func TestApplyProfileDefaults_RealWorkProfiles(t *testing.T) {
 	}
 }
 
+// A named VM gets its own per-name disk ("<profile>-<name>.img") so
+// concurrent named VMs are fully isolated — disk, socket, and state dir
+// all keyed by name. The default unnamed VM keeps "<profile>.img".
+func TestApplyProfileDefaults_NamedDisk(t *testing.T) {
+	cfg := vm.Config{CPUs: 1, MemoryMB: 512}
+	applyProfileDefaults(&cfg, "node", "/data", "redis")
+	if want := filepath.Join("/data", "node-redis.img"); cfg.DiskPath != want {
+		t.Errorf("named DiskPath = %q, want %q", cfg.DiskPath, want)
+	}
+}
+
 // minimal must NOT auto-bump — `dew run`-style ephemeral commands
 // would otherwise grab 4 host cores + 2 GB for nothing. Same applies
 // to unknown profile names: leave the caller's config alone.
@@ -53,7 +64,7 @@ func TestApplyProfileDefaults_MinimalStaysLight(t *testing.T) {
 	for _, p := range []string{"minimal", "", "unknown"} {
 		t.Run(p, func(t *testing.T) {
 			cfg := vm.Config{CPUs: 1, MemoryMB: 512}
-			applyProfileDefaults(&cfg, p, "/data")
+			applyProfileDefaults(&cfg, p, "/data", "")
 			if cfg.CPUs != 1 || cfg.MemoryMB != 512 {
 				t.Errorf("profile %q changed defaults: CPUs=%d MemoryMB=%d",
 					p, cfg.CPUs, cfg.MemoryMB)
@@ -71,7 +82,7 @@ func TestApplyProfileDefaults_MinimalStaysLight(t *testing.T) {
 // the parseFlags-zero of 1 / 512.
 func TestApplyProfileDefaults_RespectsExplicitOverrides(t *testing.T) {
 	cfg := vm.Config{CPUs: 2, MemoryMB: 4096, DiskPath: "/custom/disk.img", DiskGB: uint(8)}
-	applyProfileDefaults(&cfg, "node", "/data")
+	applyProfileDefaults(&cfg, "node", "/data", "redis")
 	if cfg.CPUs != 2 {
 		t.Errorf("CPUs overridden: got %d, want 2", cfg.CPUs)
 	}
