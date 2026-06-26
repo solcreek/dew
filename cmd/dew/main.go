@@ -55,6 +55,10 @@ var flagEvents bool
 var flagWith string
 var flagImage string
 var flagPlatform string
+
+// flagEnv collects repeatable -e/--env KEY=VAL pairs for `dew run --image`.
+// They are appended to the image's own env in the OCI spec.
+var flagEnv []string
 var flagDryRun bool
 var flagProfile string
 var flagServicesOnly bool
@@ -690,6 +694,9 @@ Containers:
                 via crun. A trailing -- <cmd> overrides the image entrypoint.
                 dew run does not auto-forward ports — add --forward, or use
                 dew up --with for managed services.
+  --env, -e KEY=VALUE
+                (dew run --image) Repeatable. Appended to the image's own
+                env in the container. Example: -e LOG_LEVEL=debug
   --platform OS/ARCH
                 Image platform to pull (default: the guest arch). Set
                 linux/amd64 with --rosetta to run an amd64 image.
@@ -749,6 +756,7 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 	flagTimeout = 0
 	flagImage = ""
 	flagPlatform = ""
+	flagEnv = nil
 	flagWith = ""
 	flagServicesOnly = false
 	flagResetDisk = false
@@ -913,6 +921,15 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, fmt.Errorf("--platform requires an os/arch (e.g. linux/amd64)")
 			}
 			flagPlatform = args[i]
+		case "--env", "-e":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--env requires KEY=VALUE")
+			}
+			if !strings.Contains(args[i], "=") {
+				return cfg, nil, fmt.Errorf("--env: expected KEY=VALUE, got %q", args[i])
+			}
+			flagEnv = append(flagEnv, args[i])
 		case "--stream":
 			flagStream = true
 		case "--events":
@@ -1216,6 +1233,11 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
+	// -e/--env only feeds the OCI spec, so it's meaningless without --image.
+	// Erroring beats silently dropping the vars the user expected to be set.
+	if len(flagEnv) > 0 && flagImage == "" {
+		return fmt.Errorf("--env is only supported with --image")
+	}
 	// --image runs the container via crun overlay, which needs an ext4 disk.
 	// Default to the node profile when the user didn't pick a disk profile.
 	if flagImage != "" && (flagProfile == "" || flagProfile == "minimal") {
@@ -1248,6 +1270,7 @@ func cmdRun(args []string) error {
 			StageDir: filepath.Join(stageRoot, "app"),
 			Name:     "app",
 			Cmd:      cmdArgs,
+			Env:      flagEnv,      // extra -e/--env vars appended to the image env
 			Platform: flagPlatform, // empty = guest arch; set e.g. linux/amd64 with --rosetta
 		}); err != nil {
 			return fmt.Errorf("stage image: %w", err)
