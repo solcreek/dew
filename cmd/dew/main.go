@@ -2630,7 +2630,7 @@ func cmdUp(args []string) error {
 		// event would advertise a port nothing is listening on.
 		hostFwd := s.port
 		if addr, err := dmn.AddForward(s.port, s.port); err != nil {
-			fmt.Fprintf(os.Stderr, "dew: forward %s :%d: %v\n", s.name, s.port, err)
+			fmt.Fprintf(os.Stderr, "dew: forward %s:%d: %v\n", s.name, s.port, err)
 		} else {
 			hostFwd = forwardedPort(addr, s.port)
 		}
