@@ -714,9 +714,12 @@ Containers:
   --platform OS/ARCH
                 Image platform to pull (default: the guest arch). Set
                 linux/amd64 with --rosetta to run an amd64 image.
-  --with NAMES  (dew up) Comma-separated predefined services to run alongside
-                the project (e.g. postgres,redis). Each is pulled on the host,
-                run via crun, and its port forwarded.
+  --with NAMES  (dew up, dew run) Comma-separated predefined services to run
+                alongside the project/image (e.g. postgres,redis). Each is
+                pulled on the host, run via crun, health-gated, and its port
+                forwarded. With dew run they come up before the foreground
+                command, reachable on the VM's localhost (e.g. dew run
+                --image myapp --with postgres).
 
 Compatibility:
   --rosetta     Apple Silicon only. Mounts Apple's Rosetta translator into
@@ -1283,9 +1286,9 @@ func cmdRun(args []string) error {
 	if len(flagVolumes) > 1 {
 		return fmt.Errorf("only one --volume is supported for now")
 	}
-	// --image runs the container via crun overlay, which needs an ext4 disk.
-	// Default to the node profile when the user didn't pick a disk profile.
-	if flagImage != "" && (flagProfile == "" || flagProfile == "minimal") {
+	// --image and --with run containers via crun overlay, which needs an ext4
+	// disk. Default to the node profile when the user didn't pick a disk one.
+	if (flagImage != "" || flagWith != "") && (flagProfile == "" || flagProfile == "minimal") {
 		flagProfile = "node"
 	}
 	if err := resolveAssets(&cfg); err != nil {
@@ -1310,47 +1313,56 @@ func cmdRun(args []string) error {
 	// so --timeout bounds the whole run (and cancels a slow registry pull).
 	budget := newRunBudget(flagTimeout)
 
-	// --image <ref>: pull+stage an arbitrary OCI image on the host, share its
-	// bundle at /oci-stage, and run it in the guest via crun (dew-oci-run). Any
-	// `-- <cmd>` overrides the image entrypoint. Foreground so output streams
-	// and the container's exit code propagates.
-	if flagImage != "" {
+	// --image / --with stage OCI bundles on the host into a single share
+	// (/oci-stage) that the guest launches via crun (dew-oci-run). --image is
+	// the foreground container (a trailing `-- <cmd>` overrides its entrypoint,
+	// and its exit code propagates); --with services run detached and are
+	// brought up before the foreground command so it can reach them on the VM's
+	// localhost. Services launch after boot in the post-token block below.
+	var stagedSvcs []stagedService
+	var svcFailures []serviceFailure
+	if flagImage != "" || flagWith != "" {
 		stageRoot := filepath.Join(dewDataDir(), "oci-stage", strconv.Itoa(os.Getpid()))
 		os.RemoveAll(stageRoot)
 		defer os.RemoveAll(stageRoot)
-		fmt.Fprintf(os.Stderr, "dew: staging image %s\n", flagImage)
 		stageCtx := context.Background()
 		if flagTimeout > 0 {
 			var cancel context.CancelFunc
 			stageCtx, cancel = context.WithTimeout(stageCtx, budget.window(flagTimeout))
 			defer cancel()
 		}
-		// A single -v/--volume becomes a persistent bind on the guest ext4
-		// disk: dew-oci-run --data mkdir's the source, and ociSpec writes the
-		// mount into config.json. Pre-validated at parse time.
-		var data *ocistage.Bind
-		var dataArg string
-		if len(flagVolumes) == 1 {
-			src, dest, _ := parseVolume(flagVolumes[0])
-			data = &ocistage.Bind{Source: src, Destination: dest}
-			dataArg = src + ":" + dest
+		if flagImage != "" {
+			fmt.Fprintf(os.Stderr, "dew: staging image %s\n", flagImage)
+			// A single -v/--volume becomes a persistent bind on the guest ext4
+			// disk: dew-oci-run --data mkdir's the source, and ociSpec writes
+			// the mount into config.json. Pre-validated at parse time.
+			var data *ocistage.Bind
+			var dataArg string
+			if len(flagVolumes) == 1 {
+				src, dest, _ := parseVolume(flagVolumes[0])
+				data = &ocistage.Bind{Source: src, Destination: dest}
+				dataArg = src + ":" + dest
+			}
+			if _, err := ocistage.Stage(stageCtx, flagImage, ocistage.Options{
+				StageDir: filepath.Join(stageRoot, "app"),
+				Name:     "app",
+				Cmd:      cmdArgs,
+				Env:      flagEnv,      // extra -e/--env vars appended to the image env
+				Data:     data,         // optional -v/--volume persistent bind mount
+				Platform: flagPlatform, // empty = guest arch; set e.g. linux/amd64 with --rosetta
+			}); err != nil {
+				return fmt.Errorf("stage image: %w", err)
+			}
+			cmdArgs = []string{"dew-oci-run"}
+			if dataArg != "" {
+				cmdArgs = append(cmdArgs, "--data", dataArg)
+			}
+			cmdArgs = append(cmdArgs, "/oci-stage/app", "app")
 		}
-		if _, err := ocistage.Stage(stageCtx, flagImage, ocistage.Options{
-			StageDir: filepath.Join(stageRoot, "app"),
-			Name:     "app",
-			Cmd:      cmdArgs,
-			Env:      flagEnv,      // extra -e/--env vars appended to the image env
-			Data:     data,         // optional -v/--volume persistent bind mount
-			Platform: flagPlatform, // empty = guest arch; set e.g. linux/amd64 with --rosetta
-		}); err != nil {
-			return fmt.Errorf("stage image: %w", err)
+		if flagWith != "" {
+			stagedSvcs, svcFailures = stageServices(stageCtx, strings.Split(flagWith, ","), stageRoot)
 		}
 		cfg.SharedDirs = append(cfg.SharedDirs, vm.SharedDir{Tag: "oci-stage", HostPath: stageRoot, ReadOnly: true})
-		cmdArgs = []string{"dew-oci-run"}
-		if dataArg != "" {
-			cmdArgs = append(cmdArgs, "--data", dataArg)
-		}
-		cmdArgs = append(cmdArgs, "/oci-stage/app", "app")
 	}
 
 	if len(cmdArgs) == 0 {
@@ -1444,13 +1456,13 @@ func cmdRun(args []string) error {
 		})
 	}
 
-	// Port forwards (-p/--publish, --forward) for `dew run`. Unlike
-	// `dew vm start`, run has no daemon socket, but AddForward only needs the
-	// VM + vsock token to stand up a host listener that proxies into the guest,
-	// so reuse it directly. Listeners live for the duration of the run (e.g. a
-	// foreground server image) and are reclaimed when the process exits. Gated
-	// on tokenSent because the guest proxy leg authenticates with the token.
-	if tokenSent && len(cfg.Forwards) > 0 {
+	// Post-token wiring for `dew run`: port forwards (-p/--publish, --forward)
+	// and --with services. Unlike `dew vm start`, run has no daemon socket, but
+	// AddForward only needs the VM + vsock token to stand up a host listener
+	// that proxies into the guest, so reuse it directly. Listeners live for the
+	// duration of the run and are reclaimed when the process exits. Gated on
+	// tokenSent because the guest proxy and exec legs authenticate with it.
+	if tokenSent && (len(cfg.Forwards) > 0 || len(stagedSvcs) > 0) {
 		fwd := &daemon.State{VM: d, Token: token, VsockPort: cfg.VsockPort}
 		for _, f := range cfg.Forwards {
 			if _, ferr := fwd.AddForward(f.HostPort, f.GuestPort); ferr != nil {
@@ -1458,6 +1470,67 @@ func cmdRun(args []string) error {
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "dew: forwarding 127.0.0.1:%d → guest:%d\n", f.HostPort, f.GuestPort)
+		}
+
+		// --with services: launch each detached via crun, health-gate its
+		// listen port, then forward it so both the foreground command (over the
+		// VM's localhost) and the host can reach it. Mirrors cmdUp's loop, but
+		// runs each guest command over a fresh vsock conn instead of a daemon.
+		runGuest := func(cmdline string) (*RunResult, error) {
+			conn, cerr := connectVsock(d, cfg.VsockPort)
+			if cerr != nil {
+				return nil, cerr
+			}
+			defer conn.Close()
+			ec, ea := argvOrShellWrap([]string{cmdline})
+			return execVsockConnArgv(conn, token, ec, ea, budget.guestTimeout())
+		}
+		for _, f := range svcFailures {
+			fmt.Fprintf(os.Stderr, "dew: service %s failed: %s\n", f.name, f.reason)
+		}
+		for _, s := range stagedSvcs {
+			launch := "dew-oci-run --detach"
+			if s.dataArg != "" {
+				launch += " --data " + s.dataArg
+			}
+			launch += " " + s.bundle + " " + s.name
+			res, rerr := runGuest(launch)
+			if rerr != nil || (res != nil && res.ExitCode != 0) {
+				reason := "container failed to start"
+				if rerr != nil {
+					reason = rerr.Error()
+				} else if res != nil && strings.TrimSpace(res.Stderr) != "" {
+					reason = strings.TrimSpace(res.Stderr)
+				}
+				fmt.Fprintf(os.Stderr, "dew: service %s failed: %s\n", s.name, reason)
+				continue
+			}
+			// dew-oci-run only confirms crun is "running", not that the service
+			// bound its port — poll the guest's IPv4 LISTEN socket before
+			// forwarding, so a service that came up then died isn't advertised.
+			ready := waitGuestReady(func() bool {
+				pr, perr := runGuest(services.ListenProbeCmd(s.port))
+				return perr == nil && pr != nil && pr.ExitCode == 0
+			}, 30, time.Second)
+			if !ready {
+				fmt.Fprintf(os.Stderr, "dew: service %s did not start accepting connections within 30s\n", s.name)
+				continue
+			}
+			hostFwd := s.port
+			if addr, aerr := fwd.AddForward(s.port, s.port); aerr != nil {
+				fmt.Fprintf(os.Stderr, "dew: forward %d: %v\n", s.port, aerr)
+			} else if _, p, e := net.SplitHostPort(addr); e == nil {
+				if n, e2 := strconv.Atoi(p); e2 == nil {
+					hostFwd = n
+				}
+			}
+			msg := fmt.Sprintf("dew: service %s ready on 127.0.0.1:%d", s.name, hostFwd)
+			if svc := services.Lookup(s.name); svc != nil {
+				if cs := services.ConnString(*svc, hostFwd); cs != "" {
+					msg += " (" + cs + ")"
+				}
+			}
+			fmt.Fprintln(os.Stderr, msg)
 		}
 	}
 
