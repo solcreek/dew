@@ -460,6 +460,21 @@ mount -t overlay overlay \
     "$RUN/merged"
 cp "$BUNDLE/config.json" "$RUN/bundle/config.json"
 
+# Give the container working name resolution. Many minimal images ship no
+# /etc/hosts, so a Go/musl resolver sends `localhost` to DNS ([::1]:53, which
+# is refused) instead of resolving it locally — breaking same-VM config like
+# REDIS_URL=redis://localhost:6379. Write a Docker-style hosts file (into the
+# per-run overlay upper, so the image is untouched) and hand the container the
+# guest's resolver so its outbound DNS works too. Grouped with stderr silenced
+# and `|| true` so it stays truly best-effort under `set -e`: an unwritable
+# overlay must neither abort the launch nor print a redirect-open error (which
+# the shell emits before a per-command 2>/dev/null would take effect).
+{
+    mkdir -p "$RUN/merged/etc" &&
+    printf '127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n' > "$RUN/merged/etc/hosts" &&
+    cp /etc/resolv.conf "$RUN/merged/etc/resolv.conf"
+} 2>/dev/null || true
+
 if [ "$DETACH" = "1" ]; then
     LOG="/var/log/dew-oci-$NAME.log"
     setsid crun run -b "$RUN/bundle" "$NAME" >"$LOG" 2>&1 &

@@ -60,6 +60,19 @@ func provisionalForward(guestPort int) vm.PortForward {
 	return vm.PortForward{HostPort: host, GuestPort: guestPort}
 }
 
+// initialForwards is the boot-time forward set for `dew up`. A dev server
+// gets a provisional forward at its framework-default port; a services-only
+// run (no dev server, devPort <= 0 — e.g. a dew.toml that only declares
+// [[service]] entries) gets none. Without this guard a 0 guest port reached
+// daemon.AddForward and logged a spurious "host_port and guest_port required"
+// at every services-only boot.
+func initialForwards(devPort int) []vm.PortForward {
+	if devPort <= 0 {
+		return nil
+	}
+	return []vm.PortForward{provisionalForward(devPort)}
+}
+
 // portFreeForBind: try to bind all four common targets (IPv4 +
 // IPv6, loopback + wildcard). True ONLY when every one succeeds —
 // guards against the case where a process holds *:N IPv6 (e.g.

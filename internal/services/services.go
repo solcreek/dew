@@ -56,18 +56,26 @@ var Registry = map[string]Service{
 }
 
 // ListenProbeCmd returns a guest shell command that exits 0 only when
-// something is listening on the given TCP port on the IPv4 stack. It
-// reads /proc/net/tcp directly (no ss/nc dependency) and matches the
-// port in hex against sockets in the LISTEN state (st == 0A).
+// something is listening on the given TCP port. It reads /proc/net/tcp and
+// /proc/net/tcp6 directly (no ss/nc dependency) and matches the port in hex
+// against sockets in the LISTEN state (st == 0A).
 //
-// Requiring an IPv4 listen socket is deliberate: dew's port forward
-// dials 127.0.0.1 (IPv4), so an IPv6-only bind would never be reachable
-// and must not count as ready. A crun container that came up but whose
-// service then died has no listen socket, which is how we catch a
-// "running" container that isn't actually accepting connections.
+// Both stacks are scanned because many services (anything written in Go —
+// mailpit, anycable-go — plus default Node binds) listen on the dual-stack
+// IPv6 wildcard [::]:port, which appears ONLY in /proc/net/tcp6. dew's port
+// forward dials 127.0.0.1, and a dual-stack socket still accepts that via an
+// IPv4-mapped connection, so such a service IS reachable and must count as
+// ready — scanning only IPv4 produced a false "never became ready" while the
+// service was serving fine. A crun container that came up but whose service
+// then died has no listen socket on either stack, which is how we still catch
+// a "running" container that isn't actually accepting connections.
+//
+// cat-then-awk (not awk with two file args) so a kernel without IPv6
+// (/proc/net/tcp6 absent) degrades to scanning IPv4 alone instead of awk
+// erroring on the missing file.
 func ListenProbeCmd(port int) string {
 	return fmt.Sprintf(
-		`awk '$2 ~ ":%04X$" && $4=="0A"{f=1} END{exit !f}' /proc/net/tcp`,
+		`cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$2 ~ ":%04X$" && $4=="0A"{f=1} END{exit !f}'`,
 		port)
 }
 

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **dew.toml services no longer stall ~29s with a false "never became
+  ready".** The readiness probe only scanned IPv4 (`/proc/net/tcp`), but
+  Go services (mailpit, anycable-go) and default Node binds listen on the
+  dual-stack IPv6 wildcard `[::]:port`, which appears only in
+  `/proc/net/tcp6`. Such sockets are reachable via the 127.0.0.1 forward, so
+  the probe now scans both stacks and reports ready immediately.
+- **No more spurious `forward: host_port and guest_port required` at boot.**
+  A services-only run (no dev server) seeded a provisional forward with a 0
+  guest port; it's now skipped. The per-service forward error also names the
+  service.
+- **Containers resolve `localhost` again.** `dew-oci-run` now writes a
+  `/etc/hosts` (127.0.0.1/::1 localhost) and the guest resolver into each
+  container, so same-VM service-to-service config like
+  `redis://localhost:6379` works — minimal images shipping no `/etc/hosts`
+  previously sent `localhost` to DNS and failed.
+
 ## [0.7.49] - 2026-06-26
 
 ### Added

@@ -2189,7 +2189,7 @@ func cmdUp(args []string) error {
 		// real forward dynamically. We also shift the host side if
 		// preferred is busy — matches grove's anti-collision logic
 		// so a stray dev server on the host doesn't break dew up.
-		Forwards: []vm.PortForward{provisionalForward(proj.Port)},
+		Forwards: initialForwards(proj.Port),
 		SharedDirs: []vm.SharedDir{
 			{Tag: "project", HostPath: absDir, ReadOnly: false},
 		},
@@ -2630,7 +2630,7 @@ func cmdUp(args []string) error {
 		// event would advertise a port nothing is listening on.
 		hostFwd := s.port
 		if addr, err := dmn.AddForward(s.port, s.port); err != nil {
-			fmt.Fprintf(os.Stderr, "dew: forward %d: %v\n", s.port, err)
+			fmt.Fprintf(os.Stderr, "dew: forward %s:%d: %v\n", s.name, s.port, err)
 		} else {
 			hostFwd = forwardedPort(addr, s.port)
 		}
@@ -2716,20 +2716,36 @@ func cmdUp(args []string) error {
 	// Without this, a Vite app whose vite.config.ts sets port=3000
 	// would have us forward 5173 forever and the agent could never
 	// reach the dev server.
-	hostPort := cfg.Forwards[0].HostPort
+	// Start the probe at the provisional dev forward's host port. Find it by
+	// guest port, not position: the services loop has already appended its
+	// forwards to cfg.Forwards, so cfg.Forwards[0] may be a *service* forward
+	// (hitting that would probe the wrong port). When there's no dev forward
+	// (proj.Port <= 0, e.g. a dev command with no known port), hostPort stays
+	// 0 and the loop below skips the probe until redetection lands a real one.
+	hostPort := proj.Port
+	if proj.Port > 0 {
+		for _, f := range cfg.Forwards {
+			if f.GuestPort == proj.Port {
+				hostPort = f.HostPort
+				break
+			}
+		}
+	}
 	guestPort := proj.Port
 	url := fmt.Sprintf("http://localhost:%d/", hostPort)
 	detected := false
 	for i := 0; i < 30; i++ {
 		time.Sleep(500 * time.Millisecond)
 
-		// Re-detect the real port until we've found one different
-		// from the provisional guess; then stop scanning the log to
-		// avoid pointless exec calls every tick.
+		// Re-detect the real port until we've found one different from the
+		// provisional guess AND successfully forwarded it; then stop scanning
+		// the log to avoid pointless exec calls every tick. detected is set
+		// only on a successful forward, so a transient pickFreeHostPort /
+		// AddForward failure retries next tick instead of permanently stranding
+		// us on a stale (or :0) URL.
 		if !detected {
 			if p := readDetectedDevPort(d, token, cfg.VsockPort); p > 0 && p != guestPort {
-				freeHost, _, perr := pickFreeHostPort(p, 50)
-				if perr == nil {
+				if freeHost, _, perr := pickFreeHostPort(p, 50); perr == nil {
 					if _, err := dmn.AddForward(freeHost, p); err == nil {
 						hostPort = freeHost
 						guestPort = p
@@ -2742,12 +2758,18 @@ func cmdUp(args []string) error {
 						if !flagJSON && !flagEvents {
 							fmt.Fprintf(os.Stderr, "  detected actual dev port: %d → %s\n", p, url)
 						}
+						detected = true
 					}
 				}
-				detected = true
 			}
 		}
 
+		// No host port to hit yet (a dev command with no known/forwarded
+		// port) — skip the probe so we don't GET http://localhost:0/ and
+		// keep waiting for redetection to land a real one.
+		if hostPort <= 0 {
+			continue
+		}
 		resp, err := http.Get(url)
 		if err == nil {
 			resp.Body.Close()
