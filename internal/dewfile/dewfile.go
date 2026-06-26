@@ -109,7 +109,7 @@ func (f *File) validate() error {
 		case s.Name == "":
 			return fmt.Errorf("%s: service #%d is missing a name", Filename, i+1)
 		case !validServiceName(s.Name):
-			return fmt.Errorf("%s: invalid service name %q (use lowercase letters, digits, '-' or '_')", Filename, s.Name)
+			return fmt.Errorf("%s: invalid service name %q (start with a lowercase letter or digit; then lowercase letters, digits, '-' or '_')", Filename, s.Name)
 		case seen[s.Name]:
 			return fmt.Errorf("%s: duplicate service name %q", Filename, s.Name)
 		case s.Image == "":
@@ -136,7 +136,8 @@ func (f *File) validate() error {
 
 // validServiceName guards the name before it becomes a stage dir, an
 // overlay path component (/var/lib/dew/oci/<name>), and a crun container
-// id. Mirrors the conservative charset used for VM names.
+// id. Stricter than VM names: lowercase letters and digits only, with
+// '-'/'_' allowed except as the first character.
 func validServiceName(s string) bool {
 	if s == "" || len(s) > 63 {
 		return false
