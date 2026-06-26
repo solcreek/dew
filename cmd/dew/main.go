@@ -1116,15 +1116,7 @@ func cmdStart(args []string) error {
 
 	// --reset-disk: rebuild the persistent disk fresh (recovery for a
 	// stale/corrupt image from a previous version). See cmdUp.
-	if flagResetDisk && cfg.DiskPath != "" {
-		if err := os.Remove(cfg.DiskPath); err == nil {
-			if !flagJSON && !flagEvents {
-				fmt.Fprintf(os.Stderr, "dew: reset disk: %s\n", cfg.DiskPath)
-			}
-		} else if !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "dew: could not reset disk %s: %v\n", cfg.DiskPath, err)
-		}
-	}
+	resetDiskBeforeBoot(cfg.DiskPath)
 
 	// Network on by default for `dew vm start` (and its legacy alias
 	// `dew start`). The help text has always claimed this; the
@@ -1299,15 +1291,7 @@ func cmdRun(args []string) error {
 	// cmdUp honor this; cmdRun parsed the flag but never acted on it, so the
 	// documented recovery for a stale disk silently did nothing here — and a
 	// stale disk is exactly what strands an old /usr/local/bin for `--image`.
-	if flagResetDisk && cfg.DiskPath != "" {
-		if err := os.Remove(cfg.DiskPath); err == nil {
-			if !flagJSON && !flagEvents {
-				fmt.Fprintf(os.Stderr, "dew: reset disk: %s\n", cfg.DiskPath)
-			}
-		} else if !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "dew: could not reset disk %s: %v\n", cfg.DiskPath, err)
-		}
-	}
+	resetDiskBeforeBoot(cfg.DiskPath)
 
 	// One wall-clock budget spans host-side staging + boot + agent wait + exec,
 	// so --timeout bounds the whole run (and cancels a slow registry pull).
@@ -1337,11 +1321,9 @@ func cmdRun(args []string) error {
 			// disk: dew-oci-run --data mkdir's the source, and ociSpec writes
 			// the mount into config.json. Pre-validated at parse time.
 			var data *ocistage.Bind
-			var dataArg string
 			if len(flagVolumes) == 1 {
 				src, dest, _ := parseVolume(flagVolumes[0])
 				data = &ocistage.Bind{Source: src, Destination: dest}
-				dataArg = src + ":" + dest
 			}
 			if _, err := ocistage.Stage(stageCtx, flagImage, ocistage.Options{
 				StageDir: filepath.Join(stageRoot, "app"),
@@ -1354,8 +1336,8 @@ func cmdRun(args []string) error {
 				return fmt.Errorf("stage image: %w", err)
 			}
 			cmdArgs = []string{"dew-oci-run"}
-			if dataArg != "" {
-				cmdArgs = append(cmdArgs, "--data", dataArg)
+			if data != nil {
+				cmdArgs = append(cmdArgs, "--data", data.Source+":"+data.Destination)
 			}
 			cmdArgs = append(cmdArgs, "/oci-stage/app", "app")
 		}
@@ -1519,10 +1501,8 @@ func cmdRun(args []string) error {
 			hostFwd := s.port
 			if addr, aerr := fwd.AddForward(s.port, s.port); aerr != nil {
 				fmt.Fprintf(os.Stderr, "dew: forward %d: %v\n", s.port, aerr)
-			} else if _, p, e := net.SplitHostPort(addr); e == nil {
-				if n, e2 := strconv.Atoi(p); e2 == nil {
-					hostFwd = n
-				}
+			} else {
+				hostFwd = forwardedPort(addr, s.port)
 			}
 			msg := fmt.Sprintf("dew: service %s ready on 127.0.0.1:%d", s.name, hostFwd)
 			if svc := services.Lookup(s.name); svc != nil {
@@ -2373,10 +2353,8 @@ func cmdUp(args []string) error {
 		hostFwd := s.port
 		if addr, err := dmn.AddForward(s.port, s.port); err != nil {
 			fmt.Fprintf(os.Stderr, "dew: forward %d: %v\n", s.port, err)
-		} else if _, p, e := net.SplitHostPort(addr); e == nil {
-			if n, e2 := strconv.Atoi(p); e2 == nil {
-				hostFwd = n
-			}
+		} else {
+			hostFwd = forwardedPort(addr, s.port)
 		}
 		cfg.Forwards = append(cfg.Forwards, vm.PortForward{HostPort: hostFwd, GuestPort: s.port})
 		if hostFwd != s.port && !flagJSON && !flagEvents {
@@ -3058,6 +3036,37 @@ func parseForward(s string) (vm.PortForward, error) {
 		return vm.PortForward{}, fmt.Errorf("--forward: invalid ports %q", s)
 	}
 	return vm.PortForward{HostPort: host, GuestPort: guest}, nil
+}
+
+// forwardedPort returns the host port an AddForward result actually bound to,
+// or fallback if the address can't be parsed. AddForward may bind a different
+// port than requested (it falls back to a free one when the host port is busy),
+// so callers read the real port from the returned address.
+func forwardedPort(addr string, fallback int) int {
+	if _, p, err := net.SplitHostPort(addr); err == nil {
+		if n, err2 := strconv.Atoi(p); err2 == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+// resetDiskBeforeBoot deletes cfg.DiskPath when --reset-disk was passed, so the
+// next boot rebuilds it fresh from the current initramfs (recovery for a stale
+// or corrupt profile disk). A missing disk is fine; any other removal error is
+// reported but non-fatal. cmdUp has its own variant that also emits a disk
+// event into its progress stream, so it doesn't call this.
+func resetDiskBeforeBoot(diskPath string) {
+	if !flagResetDisk || diskPath == "" {
+		return
+	}
+	if err := os.Remove(diskPath); err == nil {
+		if !flagJSON && !flagEvents {
+			fmt.Fprintf(os.Stderr, "dew: reset disk: %s\n", diskPath)
+		}
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "dew: could not reset disk %s: %v\n", diskPath, err)
+	}
 }
 
 // parseVolume parses a -v/--volume value into a guest source path and an
