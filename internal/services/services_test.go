@@ -63,7 +63,9 @@ func TestLookup(t *testing.T) {
 
 func TestListenProbeCmd(t *testing.T) {
 	cmd := ListenProbeCmd(3306) // 3306 == 0x0CEA
-	for _, want := range []string{"0CEA", "0A", "/proc/net/tcp"} {
+	// Must match the LISTEN state (0A) for the hex port on BOTH the IPv4 and
+	// IPv6 stacks — dual-stack [::]:port services only appear in tcp6.
+	for _, want := range []string{"0CEA", "0A", "/proc/net/tcp", "/proc/net/tcp6"} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("ListenProbeCmd missing %q: %q", want, cmd)
 		}
