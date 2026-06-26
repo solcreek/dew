@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.48] - 2026-06-26
+
+### Added
+
+- **`dew run --image` is a usable OCI runner: `-e/--env`, `-p/--publish`,
+  `-v/--volume`.** `-e KEY=VAL` (repeatable) appends to the image env;
+  `-p HOST:CONTAINER` (repeatable) forwards a container port; `-v
+  name:/path` mounts a persistent volume on the VM disk at
+  `/var/lib/dew/volumes/<name>` that survives across runs.
+- **`--with` services now work in `dew run`, not just `dew up`.** Run an
+  image alongside its managed dependencies in one VM — `dew run --image
+  myapp --with postgres`. Services come up (health-gated) before the
+  foreground command and are reachable on the VM's localhost (containers
+  run `--net=host`, so they share the VM network).
+
+### Fixed
+
+- **Port forwarding now works in `dew run`.** `--forward` (and the new
+  `-p`) populated the forward list but never started a listener on the
+  ephemeral run path, so the ports were silently dropped. A host-port
+  collision now also reports the actual bound port instead of the
+  requested one.
+- **OCI binaries reach an already-initialized disk after an upgrade.**
+  The persistent disk's `/usr/local/bin` was only populated on first
+  boot, so upgrading the initramfs to add `crun`/`dew-oci-run` never
+  reached an existing disk — `dew run --image` and `dew up --with` then
+  failed with a bare "exit -1". It is now refreshed every boot, like
+  kernel modules.
+- **`-v` volume writes survive VM teardown.** The foreground OCI launcher
+  now `sync`s before exit; previously a `dew run --image … -v` that wrote
+  then exited could lose the data to the guest page cache on the
+  ungraceful teardown.
+- **`dew run --reset-disk` rebuilds the disk.** The flag was parsed but
+  never acted on for `dew run`.
+
 ## [0.7.47] - 2026-06-19
 
 ### Added
