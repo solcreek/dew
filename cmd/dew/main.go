@@ -2716,12 +2716,20 @@ func cmdUp(args []string) error {
 	// Without this, a Vite app whose vite.config.ts sets port=3000
 	// would have us forward 5173 forever and the agent could never
 	// reach the dev server.
-	// cfg.Forwards is empty when there was no provisional forward to add
-	// (a dev command with no known port); fall back to the guest port so the
-	// probe URL is still well-formed instead of panicking on Forwards[0].
+	// Start the probe at the provisional dev forward's host port. Find it by
+	// guest port, not position: the services loop has already appended its
+	// forwards to cfg.Forwards, so cfg.Forwards[0] may be a *service* forward
+	// (hitting that would probe the wrong port). When there's no dev forward
+	// (proj.Port <= 0, e.g. a dev command with no known port), hostPort stays
+	// 0 and the loop below skips the probe until redetection lands a real one.
 	hostPort := proj.Port
-	if len(cfg.Forwards) > 0 {
-		hostPort = cfg.Forwards[0].HostPort
+	if proj.Port > 0 {
+		for _, f := range cfg.Forwards {
+			if f.GuestPort == proj.Port {
+				hostPort = f.HostPort
+				break
+			}
+		}
 	}
 	guestPort := proj.Port
 	url := fmt.Sprintf("http://localhost:%d/", hostPort)
