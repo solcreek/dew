@@ -1292,6 +1292,20 @@ func cmdRun(args []string) error {
 		return err
 	}
 
+	// --reset-disk: rebuild the persistent disk fresh before boot. cmdStart and
+	// cmdUp honor this; cmdRun parsed the flag but never acted on it, so the
+	// documented recovery for a stale disk silently did nothing here — and a
+	// stale disk is exactly what strands an old /usr/local/bin for `--image`.
+	if flagResetDisk && cfg.DiskPath != "" {
+		if err := os.Remove(cfg.DiskPath); err == nil {
+			if !flagJSON && !flagEvents {
+				fmt.Fprintf(os.Stderr, "dew: reset disk: %s\n", cfg.DiskPath)
+			}
+		} else if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "dew: could not reset disk %s: %v\n", cfg.DiskPath, err)
+		}
+	}
+
 	// One wall-clock budget spans host-side staging + boot + agent wait + exec,
 	// so --timeout bounds the whole run (and cancels a slow registry pull).
 	budget := newRunBudget(flagTimeout)
