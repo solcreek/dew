@@ -44,6 +44,38 @@ func TestInitramfsBuildScript_RefreshesKernelModulesEveryBoot(t *testing.T) {
 	}
 }
 
+// /usr/local/bin on the persistent disk (crun, dew-oci-run, dew-agent,
+// dew-httpd) must be refreshed from the initramfs on EVERY boot, not just first
+// boot. Otherwise an initramfs upgrade that adds or replaces one of those
+// binaries never reaches an already-initialized disk, and `dew run --image` /
+// `dew up --with` fail with a bare "exit -1". Mirrors the kernel-module guard.
+func TestInitramfsBuildScript_RefreshesLocalBinEveryBoot(t *testing.T) {
+	repoRoot, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(repoRoot, "initramfs", "build.sh"))
+	if err != nil {
+		t.Fatalf("read build.sh: %v", err)
+	}
+	script := string(data)
+
+	marker := "DEW_REFRESH_LOCALBIN"
+	markerIdx := strings.Index(script, marker)
+	if markerIdx == -1 {
+		t.Fatalf("init script missing %q marker for the always-on /usr/local/bin refresh block", marker)
+	}
+	firstBootIdx := strings.Index(script, "! -f /mnt/root/.dew-initialized")
+	endFirstBoot := strings.Index(script[firstBootIdx:], "    fi\n")
+	if firstBootIdx == -1 || endFirstBoot == -1 {
+		t.Fatal("could not locate first-boot block boundaries — test needs updating")
+	}
+	firstBootEnd := firstBootIdx + endFirstBoot
+	if markerIdx > firstBootIdx && markerIdx < firstBootEnd {
+		t.Errorf("/usr/local/bin refresh is inside the first-boot block — must run on every boot or initramfs binary upgrades never reach an existing disk")
+	}
+}
+
 // Alpine 3.21's linux-virt aarch64 kernel ships in EFI zboot format
 // (PE32+ wrapper + gzip payload). Apple VZ on Apple Silicon rejects it
 // with VZErrorDomain Code=1 — it requires a raw ARM64 Image. This

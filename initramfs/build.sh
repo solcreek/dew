@@ -605,6 +605,21 @@ if [ -b /dev/vda ]; then
     [ -f /.dew-python-profile ] && cp /.dew-python-profile /mnt/root/.dew-python-profile
     sync
 
+    # Refresh dew's shipped binaries every boot — DEW_REFRESH_LOCALBIN
+    # crun, dew-oci-run, dew-agent and dew-httpd live in /usr/local/bin in the
+    # initramfs, but the disk rootfs is only populated on FIRST boot (above).
+    # Without this, upgrading the initramfs to add or replace one of them (as
+    # happened when the crun OCI path first shipped) never reaches an
+    # already-initialized disk: `dew run --image` and `dew up --with` then fail
+    # with a bare "exit -1" because crun/dew-oci-run aren't on the disk. Same
+    # class of bug the kernel-module refresh below guards against. Overlay-copy
+    # (no rm) so anything the guest installed under /usr/local/bin survives.
+    if [ -d /usr/local/bin ]; then
+        mkdir -p /mnt/root/usr/local/bin
+        cp -a /usr/local/bin/. /mnt/root/usr/local/bin/ 2>/dev/null || true
+    fi
+    sync
+
     # Refresh kernel modules every boot — DEW_REFRESH_KMODULES
     # Modules must match the running kernel. When the initramfs ships an
     # updated kernel (dew upgrades), previously-cached modules on the
