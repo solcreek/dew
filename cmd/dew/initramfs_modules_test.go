@@ -36,9 +36,12 @@ func assertMarkerOutsideFirstBoot(t *testing.T, script, marker, failMsg string) 
 		t.Fatalf("init script missing %q marker for the always-on refresh block", marker)
 	}
 	firstBootIdx := strings.Index(script, "! -f /mnt/root/.dew-initialized")
+	if firstBootIdx == -1 {
+		t.Fatal("could not locate first-boot block start — test needs updating")
+	}
 	endFirstBoot := strings.Index(script[firstBootIdx:], "    fi\n")
-	if firstBootIdx == -1 || endFirstBoot == -1 {
-		t.Fatal("could not locate first-boot block boundaries — test needs updating")
+	if endFirstBoot == -1 {
+		t.Fatal("could not locate first-boot block end — test needs updating")
 	}
 	if firstBootEnd := firstBootIdx + endFirstBoot; markerIdx > firstBootIdx && markerIdx < firstBootEnd {
 		t.Error(failMsg)

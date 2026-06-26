@@ -964,7 +964,7 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 		case "--volume", "-v":
 			i++
 			if i >= len(args) {
-				return cfg, nil, fmt.Errorf("--volume requires name:/path or /host:/path")
+				return cfg, nil, fmt.Errorf("--volume requires name:/path or /guest:/path")
 			}
 			if _, _, verr := parseVolume(args[i]); verr != nil {
 				return cfg, nil, verr
@@ -1447,11 +1447,20 @@ func cmdRun(args []string) error {
 	if tokenSent && (len(cfg.Forwards) > 0 || len(stagedSvcs) > 0) {
 		fwd := &daemon.State{VM: d, Token: token, VsockPort: cfg.VsockPort}
 		for _, f := range cfg.Forwards {
-			if _, ferr := fwd.AddForward(f.HostPort, f.GuestPort); ferr != nil {
+			addr, ferr := fwd.AddForward(f.HostPort, f.GuestPort)
+			if ferr != nil {
 				fmt.Fprintf(os.Stderr, "dew: %v\n", ferr)
 				continue
 			}
-			fmt.Fprintf(os.Stderr, "dew: forwarding 127.0.0.1:%d → guest:%d\n", f.HostPort, f.GuestPort)
+			// AddForward falls back to a free host port when the requested one
+			// is busy — report the port it actually bound so the forward is
+			// discoverable, not the one we asked for.
+			hostPort := forwardedPort(addr, f.HostPort)
+			if hostPort != f.HostPort {
+				fmt.Fprintf(os.Stderr, "dew: host :%d busy → forwarding 127.0.0.1:%d → guest:%d\n", f.HostPort, hostPort, f.GuestPort)
+			} else {
+				fmt.Fprintf(os.Stderr, "dew: forwarding 127.0.0.1:%d → guest:%d\n", hostPort, f.GuestPort)
+			}
 		}
 
 		// --with services: launch each detached via crun, health-gate its
@@ -3081,7 +3090,7 @@ func resetDiskBeforeBoot(diskPath string) {
 func parseVolume(s string) (src, dest string, err error) {
 	parts := strings.SplitN(s, ":", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("--volume: expected name:/path or /host:/path, got %q", s)
+		return "", "", fmt.Errorf("--volume: expected name:/path or /guest:/path, got %q", s)
 	}
 	left, dst := parts[0], parts[1]
 	if !strings.HasPrefix(dst, "/") {

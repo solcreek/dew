@@ -612,8 +612,10 @@ if [ -b /dev/vda ]; then
     # happened when the crun OCI path first shipped) never reaches an
     # already-initialized disk: `dew run --image` and `dew up --with` then fail
     # with a bare "exit -1" because crun/dew-oci-run aren't on the disk. Same
-    # class of bug the kernel-module refresh below guards against. Overlay-copy
-    # (no rm) so anything the guest installed under /usr/local/bin survives.
+    # class of bug the kernel-module refresh below guards against. No rm before
+    # the copy: shipped binaries are refreshed in place (a same-named guest file
+    # is overwritten by the shipped one, which is the intent) while extra files
+    # the guest added under /usr/local/bin are left untouched.
     if [ -d /usr/local/bin ]; then
         mkdir -p /mnt/root/usr/local/bin
         cp -a /usr/local/bin/. /mnt/root/usr/local/bin/ 2>/dev/null || true
