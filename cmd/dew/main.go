@@ -2134,18 +2134,21 @@ func cmdUp(args []string) error {
 	// exactly what will happen.
 	if flagDryRun {
 		plan := map[string]interface{}{
-			"type":          "dry-run",
-			"project_dir":   absDir,
-			"framework":     proj.Framework,
-			"runtime":       proj.Runtime,
-			"package_mgr":   proj.PackageMgr,
-			"profile":       flagProfile,
-			"install_cmd":   proj.InstallCmd,
-			"dev_cmd":       proj.DevCmd,
-			"port":          proj.Port,
-			"cpus":          parsedCfg.CPUs,
-			"memory_mb":     parsedCfg.MemoryMB,
-			"with_services": strings.Join(svcNames, ","),
+			"type":        "dry-run",
+			"project_dir": absDir,
+			"framework":   proj.Framework,
+			"runtime":     proj.Runtime,
+			"package_mgr": proj.PackageMgr,
+			"profile":     flagProfile,
+			"install_cmd": proj.InstallCmd,
+			"dev_cmd":     proj.DevCmd,
+			"port":        proj.Port,
+			"cpus":        parsedCfg.CPUs,
+			"memory_mb":   parsedCfg.MemoryMB,
+			// with_services stays the raw --with string for backward
+			// compatibility; services is the resolved set (--with + dew.toml).
+			"with_services": flagWith,
+			"services":      svcNames,
 			"would_boot":    false,
 		}
 		if flagJSON || flagEvents {
