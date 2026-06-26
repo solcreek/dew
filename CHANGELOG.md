@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.50] - 2026-06-26
+
 ### Fixed
 
 - **dew.toml services no longer stall ~29s with a false "never became
