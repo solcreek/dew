@@ -465,13 +465,19 @@ cp "$BUNDLE/config.json" "$RUN/bundle/config.json"
 # is refused) instead of resolving it locally — breaking same-VM config like
 # REDIS_URL=redis://localhost:6379. Write a Docker-style hosts file (into the
 # per-run overlay upper, so the image is untouched) and hand the container the
-# guest's resolver so its outbound DNS works too. Grouped with stderr silenced
-# and `|| true` so it stays truly best-effort under `set -e`: an unwritable
-# overlay must neither abort the launch nor print a redirect-open error (which
-# the shell emits before a per-command 2>/dev/null would take effect).
+# guest's resolver so its outbound DNS works too. The host.internal line from
+# the guest's own /etc/hosts (the VZ NAT gateway, set in init-stage2) is
+# appended so a container can reach macOS host services the same way the guest
+# can. Grouped with stderr silenced and `|| true` so it stays truly
+# best-effort under `set -e`: an unwritable overlay must neither abort the
+# launch nor print a redirect-open error (which the shell emits before a
+# per-command 2>/dev/null would take effect).
 {
     mkdir -p "$RUN/merged/etc" &&
-    printf '127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n' > "$RUN/merged/etc/hosts" &&
+    {
+        printf '127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n'
+        grep -F host.internal /etc/hosts 2>/dev/null || true
+    } > "$RUN/merged/etc/hosts" &&
     cp /etc/resolv.conf "$RUN/merged/etc/resolv.conf"
 } 2>/dev/null || true
 
@@ -704,6 +710,24 @@ if ip link show eth0 >/dev/null 2>&1; then
     udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -n -t 30 -T 3 || true
     echo "nameserver 1.1.1.1" > /etc/resolv.conf
 fi
+
+# Expose the macOS host as a stable hostname. Apple VZ's NAT gateway (the
+# DHCP router — typically 192.168.64.1, but VZ may renumber the subnet across
+# reboots) IS the host, so the guest and its containers can reach a host
+# service bound to 0.0.0.0 there. Resolve it once and publish host.internal /
+# host.dew.internal in /etc/hosts (mirrors docker's host.docker.internal) so
+# dev config never has to hardcode the gateway IP. dew-oci-run copies this line
+# into each container's hosts file. (A host service bound to 127.0.0.1 stays
+# unreachable from the guest — same limitation as docker's alias.)
+#
+# Written unconditionally (not only when eth0 exists) so localhost always
+# resolves locally even on a no-network profile; the host.internal line is
+# added only when a default route — hence a gateway — is known.
+HOST_GW=$(ip route 2>/dev/null | awk '$1=="default" && $2=="via" {print $3; exit}')
+{
+    printf '127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n'
+    [ -n "$HOST_GW" ] && printf '%s\thost.internal host.dew.internal\n' "$HOST_GW"
+} > /etc/hosts
 
 # Egress policy. When the host passes dew.netpolicy=restricted on the
 # kernel cmdline, set OUTPUT default to DROP and explicitly accept:

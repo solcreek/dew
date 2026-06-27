@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`host.internal` hostname for reaching the macOS host from the VM.** The
+  guest and every container now resolve `host.internal` (alias
+  `host.dew.internal`) to the Apple VZ NAT gateway, so a service in the VM
+  can call back to a host process — e.g. a websocket gateway reaching the
+  host's RPC — without hardcoding the `192.168.64.x` gateway IP. dew's
+  equivalent of `host.docker.internal`. The host service must bind `0.0.0.0`
+  (a `127.0.0.1` bind stays unreachable, same as docker's alias).
+
 ## [0.7.50] - 2026-06-26
 
 ### Fixed

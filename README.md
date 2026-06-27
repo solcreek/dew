@@ -89,6 +89,13 @@ port = 8025
 `dew up` then boots the project and its services in one VM; containers use
 the VM network, so the dev server reaches them on `localhost`.
 
+To reach a service running on the **macOS host** (e.g. a websocket gateway
+in the VM calling back to a host RPC), use the hostname `host.internal`
+(alias `host.dew.internal`) — dew's equivalent of `host.docker.internal`.
+It resolves to the VM's NAT gateway in both the guest and its containers,
+so you never hardcode the `192.168.64.x` gateway IP. The host service must
+bind `0.0.0.0` (not `127.0.0.1`) to be reachable from the VM.
+
 ### Share instantly
 
 Temporary public HTTPS URL for any local port. Zero config, zero account.
