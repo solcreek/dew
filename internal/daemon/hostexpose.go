@@ -38,24 +38,28 @@ func (s *State) StartHostExpose(ports []int) error {
 	if len(ports) == 0 {
 		return nil
 	}
-	ln, err := s.VM.VsockListen(vsockProto.ReverseForwardPort)
-	if err != nil {
-		return fmt.Errorf("host-expose vsock listen: %w", err)
-	}
 	allow := make(map[int]bool, len(ports))
 	for _, p := range ports {
 		allow[p] = true
 	}
 
-	// Close any listener from a prior StartHostExpose before replacing it, so a
-	// second call (e.g. a re-up without full teardown) can't leak the old
-	// listener and its accept loop serving with a stale allow-set/token.
+	// Close any listener from a prior StartHostExpose *before* binding, then
+	// hold the lock across close+bind+store. ReverseForwardPort is a single
+	// fixed port (1025), so a second call (e.g. a re-up without full teardown)
+	// would otherwise fail to bind ("address in use") if we listened first —
+	// and never reach the close/replace path, leaking the old accept loop still
+	// serving a stale allow-set/token.
 	s.expose.mu.Lock()
+	defer s.expose.mu.Unlock()
 	if s.expose.listener != nil {
 		s.expose.listener.Close()
+		s.expose.listener = nil
+	}
+	ln, err := s.VM.VsockListen(vsockProto.ReverseForwardPort)
+	if err != nil {
+		return fmt.Errorf("host-expose vsock listen: %w", err)
 	}
 	s.expose.listener = ln
-	s.expose.mu.Unlock()
 
 	go s.acceptReverseDials(ln, allow)
 	return nil
