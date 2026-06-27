@@ -210,8 +210,11 @@ func Parse(r io.Reader) (Plan, error) {
 // (keep the full set minus the listed caps).
 func applyBoundingSet(p *Plan, val string, note func(string)) {
 	if val == "" {
+		// Empty assignment resets the whole set (systemd semantics): drop all,
+		// discarding any caps kept or dropped by earlier assignments.
 		p.DropAllCaps = true
 		p.KeepCaps = nil
+		p.DropCaps = nil
 		return
 	}
 	if strings.HasPrefix(val, "~") {

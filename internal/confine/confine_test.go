@@ -90,6 +90,23 @@ func TestParse_DynamicUserSetpriv(t *testing.T) {
 	}
 }
 
+// An empty CapabilityBoundingSet= resets the whole set per systemd, discarding
+// caps dropped/kept by earlier assignments (no leftover DropCaps).
+func TestParse_BoundingSetEmptyReset(t *testing.T) {
+	p, err := Parse(strings.NewReader("[Service]\nCapabilityBoundingSet=~CAP_SYS_ADMIN\nCapabilityBoundingSet=\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.DropAllCaps || len(p.DropCaps) != 0 || len(p.KeepCaps) != 0 {
+		t.Errorf("empty reset should drop-all with no residual caps, got %+v", p)
+	}
+	got := p.SetprivArgs()
+	want := []string{"setpriv", "--bounding-set", "-all"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SetprivArgs() = %v, want %v", got, want)
+	}
+}
+
 func TestParse_OnlySectionService(t *testing.T) {
 	// MemoryMax in a non-[Service] section must be ignored.
 	p, _ := Parse(strings.NewReader("[Unit]\nMemoryMax=999M\n[Slice]\nTasksMax=5\n"))
