@@ -89,12 +89,37 @@ port = 8025
 `dew up` then boots the project and its services in one VM; containers use
 the VM network, so the dev server reaches them on `localhost`.
 
+`--services-only` (alias `--no-dev`) boots just the services — handy when
+the app itself runs on the host and only its backing services live in dew.
+This is the docker-compose-shaped path: several arbitrary OCI images,
+health-gated and port-forwarded, in one microVM with no container daemon.
+
 To reach a service running on the **macOS host** (e.g. a websocket gateway
 in the VM calling back to a host RPC), use the hostname `host.internal`
 (alias `host.dew.internal`) — dew's equivalent of `host.docker.internal`.
 It resolves to the VM's NAT gateway in both the guest and its containers,
 so you never hardcode the `192.168.64.x` gateway IP. The host service must
 bind `0.0.0.0` (not `127.0.0.1`) to be reachable from the VM.
+
+### Run any container
+
+Run a single OCI image in a microVM — no Docker daemon, sub-second boot,
+automatic `--net=host` and port forwarding:
+
+```bash
+dew run --image redis:7-alpine -p 6379:6379
+dew run --image axllent/mailpit -p 8025:8025 -e MP_SMTP_AUTH_ACCEPT_ANY=1
+```
+
+Each `dew run` is ephemeral and isolated, so several run side by side
+without contending for a shared disk. For a long-lived VM that persists
+state, `--name` gives it its own disk so named instances coexist:
+
+```bash
+dew vm start --name ci --profile standard   # a second VM alongside the default
+dew exec --name ci -- ./run-tests.sh
+dew vm stop --name ci
+```
 
 ### Share instantly
 
@@ -212,7 +237,9 @@ performance prefer a native `linux/arm64` image.
 ```
 Dev:
   dew up [dir]                   Start dev environment
-  dew up --with postgres,redis   Dev with services
+  dew up --with postgres,redis   Dev with built-in services
+  dew up --init                  Write a starter dew.toml
+  dew up --services-only         Boot services without a dev server
   dew down                       Stop dev environment
 
 Share:
@@ -232,7 +259,9 @@ Infrastructure:
 
 Advanced:
   dew run [--] <cmd>             Execute in ephemeral VM
-  dew exec <cmd>                 Execute in running VM
+  dew run --image <ref>          Run an OCI image in a microVM
+  dew exec [--name <vm>] <cmd>   Execute in a running VM
+  dew vm start/stop [--name]     Manage long-lived (named) VMs
   dew assets ...                 Manage VM images
   dew update                     Update to latest version
 
