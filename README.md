@@ -107,8 +107,14 @@ reach it at `host.lo.internal` instead. dew tunnels the declared ports over
 vsock straight to the host's loopback, no `0.0.0.0` bind and no NAT:
 
 ```bash
-dew up --expose-host 50051          # or dew.toml: [host]\nexpose = [50051]
+dew up --expose-host 50051
 # in the VM: host.lo.internal:50051 → the host's 127.0.0.1:50051
+```
+
+```toml
+# or, in dew.toml:
+[host]
+expose = [50051]
 ```
 
 dew only ever dials its own loopback on a port you declared, so the VM can't

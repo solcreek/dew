@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dew.toml `[host] expose = [PORT,...]`. The host only ever dials its own
   loopback on a declared port — the guest can't make it reach anything else.
 
+## [0.7.52] - 2026-06-26
+
 ### Added
 
 - **Boot-time heads-up when a service reaches the host via `host.internal`.**
