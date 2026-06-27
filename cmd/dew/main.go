@@ -980,6 +980,16 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, fmt.Errorf("--profile requires a name")
 			}
 			flagProfile = args[i]
+			// The systemd profile is designed but not yet built (it needs a
+			// non-Alpine, systemd-based rootfs). Fail with a pointer rather
+			// than a confusing "asset not found" download error. For testing
+			// the hardening primitives today, see `dew run --confine`.
+			if flagProfile == "systemd" {
+				return cfg, nil, dewerr.New(dewerr.CodeUnavailable,
+					"--profile systemd is not available yet (experimental): it needs a "+
+						"systemd-based rootfs. See docs/systemd-profile.md for the design and status; "+
+						"for now, `dew run --confine <unit.service>` approximates a unit's hardening.")
+			}
 		case "--name":
 			i++
 			if i >= len(args) {

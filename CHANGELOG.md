@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directives it can't enforce (`SystemCallFilter`, `ProtectSystem`, …) are
   printed as warnings rather than silently dropped.
 
+### Changed
+
+- **`--profile systemd` fails clearly instead of confusingly.** The systemd
+  profile is designed but not yet built (it needs a non-Alpine rootfs); the flag
+  now exits `105` (`unavailable`) pointing to `docs/systemd-profile.md` and the
+  `--confine` alternative, rather than a misleading "asset not found" download
+  error.
+
 ## [0.7.55] - 2026-06-27
 
 ### Changed
