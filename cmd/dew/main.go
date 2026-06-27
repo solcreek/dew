@@ -828,6 +828,17 @@ func stripLeadingGlobalFlags(args []string) []string {
 }
 
 func parseFlags(args []string) (vm.Config, []string, error) {
+	return parseFlagsReset(args, true)
+}
+
+// parseFlagsReset is parseFlags with control over the command-scoped-globals
+// reset. The top-level call resets (reset=true); the recursive call that picks
+// up flags appearing AFTER the first positional must NOT reset (reset=false) —
+// otherwise it would wipe globals already parsed before the positional in the
+// outer invocation (e.g. `dew up --reset-disk ./dir --dry-run` would lose
+// --reset-disk). The recursive call only needs the post-positional flags' side
+// effects on the globals; its returned cfg is discarded.
+func parseFlagsReset(args []string, reset bool) (vm.Config, []string, error) {
 	cfg := vm.Config{
 		CPUs:     1,
 		MemoryMB: 512,
@@ -837,18 +848,20 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 	// Reset command-scoped globals: parseFlags runs once per command, but tests
 	// reuse the process, so a prior --image/--platform/--timeout must not leak
 	// into a later invocation that didn't pass them.
-	flagTimeout = 0
-	flagImage = ""
-	flagPlatform = ""
-	flagEnv = nil
-	flagVolumes = nil
-	flagWith = ""
-	flagServicesOnly = false
-	flagResetDisk = false
-	flagInit = false
-	flagVMName = ""
-	flagExposeHost = nil
-	flagConfine = ""
+	if reset {
+		flagTimeout = 0
+		flagImage = ""
+		flagPlatform = ""
+		flagEnv = nil
+		flagVolumes = nil
+		flagWith = ""
+		flagServicesOnly = false
+		flagResetDisk = false
+		flagInit = false
+		flagVMName = ""
+		flagExposeHost = nil
+		flagConfine = ""
+	}
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -1110,8 +1123,9 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 			for j := i + 1; j < len(args); j++ {
 				if strings.HasPrefix(args[j], "-") {
 					// Recurse the remaining flag stream so each
-					// known flag still gets its case-arm.
-					_, _, err := parseFlags(args[j:])
+					// known flag still gets its case-arm. reset=false so this
+					// does not wipe globals already parsed before the positional.
+					_, _, err := parseFlagsReset(args[j:], false)
 					if err != nil {
 						return cfg, nil, err
 					}
