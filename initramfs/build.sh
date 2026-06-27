@@ -466,14 +466,19 @@ cp "$BUNDLE/config.json" "$RUN/bundle/config.json"
 # it permanently. Wait for the bring-up to clear its marker so the snapshot
 # below captures host.internal. The marker is absent on a network-less VM and
 # clears in well under a second on a healthy lease, so this is a no-op in the
-# common case. The ~30s cap matches the host's readiness budget: a lease slower
-# than that fails the service's readiness gate anyway, so blocking longer here
-# (toward udhcpc's ~90s window) would only delay a launch that's already doomed.
+# common case. The ~30s cap only bounds how long a launch blocks on a
+# pathologically slow lease instead of stalling toward udhcpc's ~90s window. If
+# the cap is hit we proceed without host.internal and warn: the readiness probe
+# (a LISTEN-socket check) is independent of DHCP, so a service can still come up
+# while silently missing host.internal until the container is restarted.
 i=0
 while [ -e /run/dew-net-pending ] && [ "$i" -lt 300 ]; do
     sleep 0.1
     i=$((i + 1))
 done
+if [ -e /run/dew-net-pending ]; then
+    echo "dew-oci-run: warning: DHCP lease still pending after ~30s; $NAME launched without host.internal (restart it once the lease lands to pick the alias up)" >&2
+fi
 
 # Give the container working name resolution. Many minimal images ship no
 # /etc/hosts, so a Go/musl resolver sends `localhost` to DNS ([::1]:53, which
