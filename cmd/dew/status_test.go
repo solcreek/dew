@@ -3,9 +3,8 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
-	"io"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/solcreek/dew/internal/vmstate"
+	"github.com/solcreek/dew/pkg/dewerr"
 )
 
 // withTempSocketPath redirects daemon.SocketPath("") to a temp dir
@@ -101,11 +101,15 @@ func TestStatus_RunningWhenListenerAccepts(t *testing.T) {
 	}()
 
 	flagJSON = false
+	var statusErr error
 	out := captureStdout(t, func() {
-		_ = cmdStatus(nil)
+		statusErr = cmdStatus(nil)
 	})
 	if !strings.Contains(out, "running") || strings.Contains(out, "not running") {
 		t.Errorf("expected 'running' (no 'not'), got: %q", out)
+	}
+	if statusErr != nil {
+		t.Errorf("a running VM must exit 0 (nil), got: %v", statusErr)
 	}
 }
 
@@ -246,20 +250,52 @@ func TestStatus_StaleStateFileIgnoredAndCleaned(t *testing.T) {
 	}
 }
 
-// Exit code is part of the contract — `dew status` is a query, not
-// an action; it MUST return nil so `set -e` scripts can chain it.
-func TestStatus_NeverReturnsError(t *testing.T) {
+// Exit code is part of the contract: `dew vm status` is a reuse-vs-boot gate,
+// so on a not-running state it returns a statusExit carrying CodeConflict
+// (→ non-zero exit, matching `dew exec` / `dew vm forward`'s "no running VM")
+// while STILL printing its report, letting `if dew vm status; then reuse; else
+// boot; fi` branch. main() honors the code without an error banner over the
+// report.
+func TestStatus_ExitsConflictWhenNotRunning(t *testing.T) {
 	_ = withTempSocketPath(t)
 	flagJSON = false
-	var stdout bytes.Buffer
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-	err := cmdStatus(nil)
-	w.Close()
-	os.Stdout = old
-	_, _ = io.Copy(&stdout, r)
-	if err != nil {
-		t.Errorf("status returned error on not-running state: %v", err)
+	var err error
+	out := captureStdout(t, func() { err = cmdStatus(nil) })
+	if !strings.Contains(out, "not running") {
+		t.Errorf("report must still print to stdout, got: %q", out)
+	}
+	var se statusExit
+	if !errors.As(err, &se) {
+		t.Fatalf("status returned %v (%T), want statusExit on not-running", err, err)
+	}
+	if se.Code != dewerr.CodeConflict {
+		t.Errorf("statusExit.Code = %d, want CodeConflict (%d)", se.Code, dewerr.CodeConflict)
+	}
+}
+
+// statusVMPresent is the exit-code decision: a VM that is running, booting, or
+// an ephemeral run counts as present (exit 0); nothing — or only a stale
+// socket — is absent (exit CodeNotFound). Booting must count so a gate doesn't
+// boot a second VM over one mid-boot.
+func TestStatusVMPresent(t *testing.T) {
+	cases := []struct {
+		name    string
+		alive   bool
+		hasSt   bool
+		phase   vmstate.Phase
+		present bool
+	}{
+		{"daemon running", true, false, "", true},
+		{"booting", false, true, vmstate.PhaseBooting, true},
+		{"ephemeral running", false, true, vmstate.PhaseRunning, true},
+		{"alive overrides missing state", true, false, "", true},
+		{"nothing / stale socket only", false, false, "", false},
+		{"no state short-circuits phase", false, false, vmstate.PhaseBooting, false},
+	}
+	for _, c := range cases {
+		if got := statusVMPresent(c.alive, c.hasSt, c.phase); got != c.present {
+			t.Errorf("%s: statusVMPresent(%v,%v,%q) = %v, want %v",
+				c.name, c.alive, c.hasSt, c.phase, got, c.present)
+		}
 	}
 }

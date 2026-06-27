@@ -649,6 +649,12 @@ func main() {
 		}
 	}
 	if err != nil {
+		// A query command (dew vm status) that already emitted its own report
+		// just wants its exit code honored — no error banner over the top.
+		var se statusExit
+		if errors.As(err, &se) {
+			os.Exit(int(se.Code))
+		}
 		code := dewerr.CodeOf(err)
 		if flagJSON {
 			emitErrorJSON(err, code)
