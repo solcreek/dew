@@ -16,10 +16,12 @@ func TestInitStage2PublishesHostInternal(t *testing.T) {
 	script := readBuildScript(t)
 
 	// The gateway is derived from the default route's nexthop ($3 of the
-	// `default via <gw> dev ...` line).
-	for _, want := range []string{"ip route", "/^default/", "$3"} {
+	// `default via <gw> dev ...` line). The match is pinned to `via` so a
+	// vialess default route (`default dev eth0`) can't capture the interface
+	// name as a bogus gateway IP.
+	for _, want := range []string{"ip route", `$1=="default" && $2=="via"`, "$3"} {
 		if !strings.Contains(script, want) {
-			t.Errorf("init-stage2 no longer derives the gateway from the default route (missing %q)", want)
+			t.Errorf("init-stage2 no longer derives the gateway from the default-via route (missing %q)", want)
 		}
 	}
 	// Both alias names must be written to /etc/hosts.
@@ -37,7 +39,9 @@ func TestInitStage2PublishesHostInternal(t *testing.T) {
 // that actually run the services — could resolve host.internal.
 func TestOCIRunPropagatesHostInternal(t *testing.T) {
 	script := readBuildScript(t)
-	if !strings.Contains(script, "grep host.internal /etc/hosts") {
+	// grep -F: the hostname is matched as a literal, not a regex (the dots
+	// would otherwise be wildcards).
+	if !strings.Contains(script, "grep -F host.internal /etc/hosts") {
 		t.Error("dew-oci-run no longer copies the host.internal line into the container /etc/hosts")
 	}
 }

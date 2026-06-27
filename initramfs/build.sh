@@ -476,7 +476,7 @@ cp "$BUNDLE/config.json" "$RUN/bundle/config.json"
     mkdir -p "$RUN/merged/etc" &&
     {
         printf '127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n'
-        grep host.internal /etc/hosts 2>/dev/null || true
+        grep -F host.internal /etc/hosts 2>/dev/null || true
     } > "$RUN/merged/etc/hosts" &&
     cp /etc/resolv.conf "$RUN/merged/etc/resolv.conf"
 } 2>/dev/null || true
@@ -723,7 +723,7 @@ fi
 # Written unconditionally (not only when eth0 exists) so localhost always
 # resolves locally even on a no-network profile; the host.internal line is
 # added only when a default route — hence a gateway — is known.
-HOST_GW=$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')
+HOST_GW=$(ip route 2>/dev/null | awk '$1=="default" && $2=="via" {print $3; exit}')
 {
     printf '127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n'
     [ -n "$HOST_GW" ] && printf '%s\thost.internal host.dew.internal\n' "$HOST_GW"
