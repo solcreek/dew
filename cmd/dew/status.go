@@ -33,7 +33,10 @@ import (
 // starts a second VM over one that is still booting. The human/JSON report is
 // the command's sole output; statusExit only carries the code (see main()).
 // (Note: a bare `dew vm status` under `set -e` now aborts when nothing runs;
-// gate it in an `if`/`||` or read the --json `running` field instead.)
+// gate it in an `if`/`||`. The --json `running` field is NOT an equivalent
+// gate on its own — it reflects only daemon reachability, so a booting or
+// ephemeral VM is `running:false` though the exit code counts it present; the
+// JSON-equivalent is `running || phase in {booting, running}`.)
 func cmdStatus(args []string) error {
 	if _, err := popNameFlag(args); err != nil {
 		return err

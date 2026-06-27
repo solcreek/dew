@@ -106,11 +106,15 @@ code answers the query so a shell can branch on it directly.
   fi
   ```
 
-  It still prints its human (or `--json`) report; only the exit code is
-  added, and the `--json` envelope stays `{"ok": true, "data": {"running": …}}`.
+  It still prints its human (or `--json`) report; only the exit code is added,
+  and the `--json` envelope stays `{"ok": true, "data": {"running": …, "phase": …}}`.
   Because a bare `dew vm status` now exits non-zero when nothing runs, a
-  `set -e` script that runs it unguarded will abort — put it in an
-  `if`/`||`, or read the `--json` `running` field instead.
+  `set -e` script that runs it unguarded will abort — gate it in an `if`/`||`.
+  Parsing `--json` is **not** equivalent to checking `data.running` alone:
+  `running` reflects only daemon-socket reachability, so a **booting** or
+  **ephemeral `dew run`** VM reports `running: false` even though the exit code
+  treats it as present. The JSON-equivalent gate is
+  `running == true || data.phase in {"booting", "running"}`.
 
 ## Stability promise
 
