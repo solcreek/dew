@@ -94,7 +94,9 @@ type Service struct {
 }
 
 // ExtraForward is one additional host→container port forward for a service.
-// Host is the macOS-side port, Container the port the service listens on inside
+// Host is the REQUESTED macOS-side port; the actually-bound host port can
+// differ when daemon.State.AddForward falls back to a free port because the
+// requested one is busy. Container is the port the service listens on inside
 // the VM (they differ only when the user remaps, e.g. "1080:8025").
 type ExtraForward struct {
 	Host      int
