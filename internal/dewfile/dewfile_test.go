@@ -48,6 +48,7 @@ port = 6379
 name = "mailpit"
 image = "axllent/mailpit:latest"
 port = 8025
+ports = ["1025", "1080:8025"]
 env = ["MP_SMTP_AUTH_ACCEPT_ANY=1"]
 data = "/data"
 args = ["--smtp-auth-allow-insecure"]
@@ -84,6 +85,39 @@ args = ["--smtp-auth-allow-insecure"]
 	if len(mp.Args) != 1 || mp.Args[0] != "--smtp-auth-allow-insecure" {
 		t.Errorf("Args = %v", mp.Args)
 	}
+	// ports = ["1025", "1080:8025"] → extra forwards: bare port (host==container)
+	// and a host:container remap.
+	if len(mp.Extra) != 2 {
+		t.Fatalf("Extra = %+v, want 2 forwards", mp.Extra)
+	}
+	if mp.Extra[0].Host != 1025 || mp.Extra[0].Container != 1025 {
+		t.Errorf("Extra[0] = %+v, want host=container=1025", mp.Extra[0])
+	}
+	if mp.Extra[1].Host != 1080 || mp.Extra[1].Container != 8025 {
+		t.Errorf("Extra[1] = %+v, want host=1080 container=8025", mp.Extra[1])
+	}
+}
+
+func TestParsePortSpec(t *testing.T) {
+	ok := []struct {
+		in   string
+		h, c int
+	}{
+		{"8025", 8025, 8025},
+		{"1080:8025", 1080, 8025},
+		{" 1025 ", 1025, 1025},
+	}
+	for _, tc := range ok {
+		h, c, err := parsePortSpec(tc.in)
+		if err != nil || h != tc.h || c != tc.c {
+			t.Errorf("parsePortSpec(%q) = (%d,%d,%v), want (%d,%d,nil)", tc.in, h, c, err, tc.h, tc.c)
+		}
+	}
+	for _, bad := range []string{"", "notaport", "80:bad", "0", "70000", "80:0", "-1"} {
+		if _, _, err := parsePortSpec(bad); err == nil {
+			t.Errorf("parsePortSpec(%q) = nil error, want rejection", bad)
+		}
+	}
 }
 
 func TestLoadRejects(t *testing.T) {
@@ -100,6 +134,8 @@ func TestLoadRejects(t *testing.T) {
 		{"bad env", "[[service]]\nname=\"a\"\nimage=\"x\"\nport=1\nenv=[\"NOEQUALS\"]\n", "must be KEY=VALUE"},
 		{"bad service name", "[[service]]\nname=\"Bad Name\"\nimage=\"x\"\n", "invalid service name"},
 		{"bad expose port", "[host]\nexpose = [70000]\n", "host.expose port"},
+		{"bad ports spec", "[[service]]\nname=\"a\"\nimage=\"x\"\nport=1\nports=[\"notaport\"]\n", "ports:"},
+		{"ports out of range", "[[service]]\nname=\"a\"\nimage=\"x\"\nport=1\nports=[\"70000\"]\n", "ports:"},
 		{"unknown key", "[project]\nprofil = \"node\"\n", "unknown key"},
 		{"bad toml", "[project\n", "dew.toml:"},
 	}

@@ -1627,6 +1627,17 @@ func cmdRun(args []string) error {
 				}
 			}
 			fmt.Fprintln(os.Stderr, msg)
+
+			// Extra dew.toml `ports` forwards (e.g. mailpit SMTP + web UI).
+			for _, ef := range s.extra {
+				addr, aerr := fwd.AddForward(ef.Host, ef.Container)
+				if aerr != nil {
+					fmt.Fprintf(os.Stderr, "dew: forward %d→%d: %v\n", ef.Host, ef.Container, aerr)
+					continue
+				}
+				hp := forwardedPort(addr, ef.Host)
+				fmt.Fprintf(os.Stderr, "dew: service %s also on 127.0.0.1:%d → guest:%d\n", s.name, hp, ef.Container)
+			}
 		}
 	}
 
@@ -1857,9 +1868,10 @@ func execVsockStreamArgv(conn net.Conn, token, command string, args []string, ti
 type stagedService struct {
 	name    string
 	port    int
-	bundle  string   // guest path of the staged bundle (/oci-stage/<name>)
-	dataArg string   // "hostsrc:contdest" for dew-oci-run --data, or ""
-	env     []string // service env, retained so dew can warn about host.internal refs
+	bundle  string                  // guest path of the staged bundle (/oci-stage/<name>)
+	dataArg string                  // "hostsrc:contdest" for dew-oci-run --data, or ""
+	env     []string                // service env, retained so dew can warn about host.internal refs
+	extra   []services.ExtraForward // additional host→container forwards beyond port
 }
 
 type serviceFailure struct {
@@ -1958,7 +1970,7 @@ func stageServiceList(ctx context.Context, svcs []services.Service, stageRoot st
 		staged = append(staged, stagedService{
 			name: svc.Name, port: svc.Port,
 			bundle: "/oci-stage/" + svc.Name, dataArg: dataArg,
-			env: svc.Env,
+			env: svc.Env, extra: svc.Extra,
 		})
 	}
 	return staged, failures
@@ -2736,6 +2748,22 @@ func cmdUp(args []string) error {
 			cfg.Forwards = append(cfg.Forwards, vm.PortForward{HostPort: hostFwd, GuestPort: s.port})
 			if hostFwd != s.port && !flagJSON && !flagEvents {
 				fmt.Fprintf(os.Stderr, "  %s: host :%d busy → forwarding :%d\n", s.name, s.port, hostFwd)
+			}
+
+			// Additional host forwards declared via dew.toml `ports` (e.g.
+			// mailpit's SMTP port alongside its web UI). Not health-gated — the
+			// primary port already gates readiness — just forwarded.
+			for _, ef := range s.extra {
+				addr, err := dmn.AddForward(ef.Host, ef.Container)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "dew: forward %s:%d→%d: %v\n", s.name, ef.Host, ef.Container, err)
+					continue
+				}
+				hp := forwardedPort(addr, ef.Host)
+				cfg.Forwards = append(cfg.Forwards, vm.PortForward{HostPort: hp, GuestPort: ef.Container})
+				if hp != ef.Host && !flagJSON && !flagEvents {
+					fmt.Fprintf(os.Stderr, "  %s: host :%d busy → forwarding :%d → guest:%d\n", s.name, ef.Host, hp, ef.Container)
+				}
 			}
 
 			if !o.ready {

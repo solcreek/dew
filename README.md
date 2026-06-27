@@ -83,11 +83,15 @@ port = 6379
 [[service]]
 name = "mailpit"
 image = "axllent/mailpit:latest"
-port = 8025
+port = 8025                      # primary port (health-gated + forwarded)
+ports = ["1025"]                 # extra host forwards: "PORT" or "HOST:CONTAINER"
 ```
 
 `dew up` then boots the project and its services in one VM; containers use
-the VM network, so the dev server reaches them on `localhost`.
+the VM network, so the dev server reaches them on `localhost`. A service that
+exposes more than one port (mailpit's SMTP `1025` alongside its web UI `8025`)
+lists the extras in `ports` — each `"PORT"` (host = container) or
+`"HOST:CONTAINER"` to remap the host side.
 
 `--services-only` (alias `--no-dev`) boots just the services — handy when
 the app itself runs on the host and only its backing services live in dew.

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -60,10 +61,32 @@ type Dev struct {
 type Service struct {
 	Name  string   `toml:"name"`  // identifier; also the crun id and stage dir
 	Image string   `toml:"image"` // OCI reference (any registry image)
-	Port  int      `toml:"port"`  // container port to health-gate and forward
+	Port  int      `toml:"port"`  // primary container port: health-gated and forwarded
+	Ports []string `toml:"ports"` // extra host forwards beyond port: "8025" or "1080:8025"
 	Env   []string `toml:"env"`   // KEY=VALUE pairs added to the container env
 	Data  string   `toml:"data"`  // container path persisted on the VM disk
 	Args  []string `toml:"args"`  // extra args appended after the image entrypoint
+}
+
+// parsePortSpec parses an extra-forward spec from a [[service]] ports entry:
+// "PORT" (host == container) or "HOST:CONTAINER". Both ports must be 1..65535.
+func parsePortSpec(s string) (host, container int, err error) {
+	parts := strings.SplitN(strings.TrimSpace(s), ":", 2)
+	host, err = strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid port %q", s)
+	}
+	container = host
+	if len(parts) == 2 {
+		container, err = strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid port %q", s)
+		}
+	}
+	if host < 1 || host > 65535 || container < 1 || container > 65535 {
+		return 0, 0, fmt.Errorf("port out of range in %q", s)
+	}
+	return host, container, nil
 }
 
 // Path returns the dew.toml path for a project directory.
@@ -146,6 +169,11 @@ func (f *File) validate() error {
 				return fmt.Errorf("%s: service %q env %q must be KEY=VALUE", Filename, s.Name, e)
 			}
 		}
+		for _, p := range s.Ports {
+			if _, _, err := parsePortSpec(p); err != nil {
+				return fmt.Errorf("%s: service %q ports: %v (want \"PORT\" or \"HOST:CONTAINER\", ports 1..65535)", Filename, s.Name, err)
+			}
+		}
 	}
 	return nil
 }
@@ -175,6 +203,15 @@ func validServiceName(s string) bool {
 func (f *File) ServiceList() []services.Service {
 	out := make([]services.Service, 0, len(f.Services))
 	for _, s := range f.Services {
+		var extra []services.ExtraForward
+		for _, p := range s.Ports {
+			// validate() already rejected malformed specs, so a parse error
+			// here can't happen for a loaded File; skip defensively rather
+			// than panic if ServiceList is ever called on an unvalidated File.
+			if h, c, err := parsePortSpec(p); err == nil {
+				extra = append(extra, services.ExtraForward{Host: h, Container: c})
+			}
+		}
 		out = append(out, services.Service{
 			Name:    s.Name,
 			Image:   s.Image,
@@ -182,6 +219,7 @@ func (f *File) ServiceList() []services.Service {
 			Env:     s.Env,
 			DataDir: s.Data,
 			Args:    s.Args,
+			Extra:   extra,
 		})
 	}
 	return out

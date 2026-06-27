@@ -49,7 +49,8 @@ func Starter(profile, install, command string, port int) string {
 	b.WriteString("# [[service]]\n")
 	b.WriteString("# name = \"mailpit\"\n")
 	b.WriteString("# image = \"axllent/mailpit:latest\"\n")
-	b.WriteString("# port = 8025\n")
+	b.WriteString("# port = 8025                  # primary port (health-gated)\n")
+	b.WriteString("# ports = [\"1025\"]             # extra host forwards: \"PORT\" or \"HOST:CONTAINER\"\n")
 	b.WriteString("# env = [\"MP_SMTP_AUTH_ACCEPT_ANY=1\"]\n")
 	return b.String()
 }
