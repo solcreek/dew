@@ -140,6 +140,17 @@ func handleConn(conn net.Conn) {
 			}
 			return
 
+		case protocol.TypeSetExposes:
+			var req protocol.SetExposesRequest
+			json.Unmarshal(data, &req)
+			if !isAuthorized(req.Token) {
+				protocol.WriteJSON(conn, &protocol.ConnectResponse{Error: "unauthorized"})
+				return
+			}
+			startExposeForwarders(req.Ports)
+			protocol.WriteJSON(conn, &protocol.ConnectResponse{OK: true})
+			return
+
 		case protocol.TypeConnect:
 			var req protocol.ConnectRequest
 			json.Unmarshal(data, &req)
@@ -412,6 +423,86 @@ func handleConnect(vsockConn net.Conn, addr string) {
 		defer wg.Done()
 		io.Copy(vsockConn, tcpConn)
 	}()
+	wg.Wait()
+}
+
+// exposeListenIP is the guest loopback alias the reverse host-forward listens
+// on. host.lo.internal resolves here (set in init-stage2 / dew-oci-run), so a
+// guest dev server or a --net=host container reaches a macOS host service at
+// host.lo.internal:<port> without colliding with 127.0.0.1 services in the
+// same VM.
+const exposeListenIP = "127.0.0.2"
+
+var (
+	exposeMu      sync.Mutex
+	exposeStarted = map[int]bool{}
+)
+
+// startExposeForwarders begins forwarding each host-exposed port: the guest
+// listens on 127.0.0.2:<port> and tunnels every accepted connection to the
+// host over ReverseForwardPort, where dew dials the macOS loopback. Idempotent
+// per port (SetExposes is normally sent once at boot).
+func startExposeForwarders(ports []int) {
+	for _, port := range ports {
+		if port < 1 || port > 65535 {
+			continue
+		}
+		exposeMu.Lock()
+		already := exposeStarted[port]
+		if !already {
+			exposeStarted[port] = true
+		}
+		exposeMu.Unlock()
+		if already {
+			continue
+		}
+		ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", exposeListenIP, port))
+		if err != nil {
+			log.Printf("expose: listen %s:%d: %v", exposeListenIP, port, err)
+			exposeMu.Lock()
+			delete(exposeStarted, port)
+			exposeMu.Unlock()
+			continue
+		}
+		go acceptExposeConns(ln, port)
+	}
+}
+
+func acceptExposeConns(ln net.Listener, port int) {
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go handleExposeConn(c, port)
+	}
+}
+
+// handleExposeConn tunnels one guest-side connection to the host: open a vsock
+// stream to the host's ReverseForwardPort, send a ReverseDialRequest for this
+// port, and on OK proxy bytes both ways. The host enforces token + allow-set.
+func handleExposeConn(tcpConn net.Conn, port int) {
+	defer tcpConn.Close()
+	vsockConn, err := vsock.Dial(vsock.Host, protocol.ReverseForwardPort, nil)
+	if err != nil {
+		return
+	}
+	defer vsockConn.Close()
+
+	if err := protocol.WriteJSON(vsockConn, &protocol.ReverseDialRequest{
+		Type: protocol.TypeReverseDial, Token: authToken, Port: port,
+	}); err != nil {
+		return
+	}
+	var resp protocol.ReverseDialResponse
+	if err := protocol.ReadJSON(vsockConn, &resp); err != nil || !resp.OK {
+		return
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); io.Copy(vsockConn, tcpConn) }()
+	go func() { defer wg.Done(); io.Copy(tcpConn, vsockConn) }()
 	wg.Wait()
 }
 
