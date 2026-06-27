@@ -2381,6 +2381,10 @@ func cmdUp(args []string) error {
 		if err := dmn.StartHostExpose(exposePorts); err != nil {
 			fmt.Fprintf(os.Stderr, "dew: host-expose: %v\n", err)
 		} else if err := sendExposes(d, cfg.VsockPort, token, exposePorts); err != nil {
+			// All-or-nothing: the host listener is up but the guest never
+			// started its forwarders, so tear the listener back down rather
+			// than leave host/guest state inconsistent for the session.
+			dmn.StopHostExpose()
 			fmt.Fprintf(os.Stderr, "dew: host-expose: notify guest: %v\n", err)
 		} else {
 			emit(map[string]interface{}{
