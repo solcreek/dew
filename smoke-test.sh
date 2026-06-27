@@ -445,8 +445,11 @@ TOML
     STACK_LOG=/tmp/dew-smoke-stack.log
     (
         cd "$PROJ"
-        $DEW up --services-only --profile standard --kernel "$KERNEL" --initrd "$INITRD_STD" \
-            --memory 2048 --disk /tmp/dew-smoke-stack.img >$STACK_LOG 2>&1
+        # exec so $! (STACK_PID) is the real `dew up` process, not the
+        # subshell wrapping it — otherwise kill -9 $STACK_PID reaps the
+        # subshell and orphans `dew up` (and its VM), leaking ports.
+        exec $DEW up --services-only --profile standard --kernel "$KERNEL" --initrd "$INITRD_STD" \
+            --memory 2048 --disk /tmp/dew-smoke-stack.img >"$STACK_LOG" 2>&1
     ) &
     STACK_PID=$!
     # Readiness: poll mailpit's HTTP UI (serves / → 200) for up to 240s; the
