@@ -2704,7 +2704,7 @@ func cmdUp(args []string) error {
 			},
 			func(s stagedService) bool {
 				return waitGuestReady(func() bool {
-					pr, perr := execInVMTimeout(services.ListenProbeCmd(s.port), 5*time.Second)
+					pr, perr := execInVMTimeout(services.ListenProbeCmd(s.port), readyProbeExecTimeout)
 					return perr == nil && pr != nil && pr.ExitCode == 0
 				}, readyProbeAttempts, readyProbeInterval)
 			},
