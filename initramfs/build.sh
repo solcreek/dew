@@ -795,6 +795,18 @@ else
     NET_PID=$!
 fi
 
+# wait_network blocks on the backgrounded bring_up_network exactly once, then
+# clears NET_PID so a later barrier can't wait (and mis-reap) a stale PID. A
+# final call before handing off reaps the child if no network-dependent step
+# needed it — otherwise the lease process lingers as a zombie under PID 1. A
+# no-op under a restricted policy, where the bring-up ran synchronously and
+# NET_PID is empty.
+wait_network() {
+    [ -n "$NET_PID" ] || return 0
+    wait "$NET_PID" 2>/dev/null
+    NET_PID=""
+}
+
 # virtiofs mounts (need fuse + virtiofs modules after switch_root)
 modprobe fuse 2>/dev/null || true
 modprobe virtiofs 2>/dev/null || true
@@ -926,7 +938,7 @@ python_first_boot_apk() {
 # lease — wait for the backgrounded bring_up_network (a no-op when it already
 # ran synchronously under a restricted policy, where NET_PID is empty).
 if [ -f /.dew-node-profile ] || [ -f /.dew-python-profile ]; then
-    [ -n "$NET_PID" ] && wait "$NET_PID" 2>/dev/null
+    wait_network
 fi
 [ -f /.dew-node-profile ]   && node_first_boot_apk
 [ -f /.dew-python-profile ] && python_first_boot_apk
@@ -934,10 +946,14 @@ fi
 # startup command (dew.cmd, set by `dew start <cmd>`). A baked boot command may
 # expect the network, so wait for the backgrounded lease first.
 if [ -n "$DEW_CMD" ]; then
-    [ -n "$NET_PID" ] && wait "$NET_PID" 2>/dev/null
+    wait_network
     DECODED=$(echo "$DEW_CMD" | base64 -d 2>/dev/null)
     [ -n "$DECODED" ] && sh -c "$DECODED" &
 fi
+
+# Reap the lease child if no network-dependent step waited on it, so it
+# doesn't linger as a zombie under PID 1 (a no-op once NET_PID is cleared).
+wait_network
 
 echo ""
 echo "  dew vm ready"
