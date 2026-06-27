@@ -3848,13 +3848,21 @@ func parseCPUQuota(s string) (int64, error) {
 		if err != nil || pct <= 0 {
 			return 0, fmt.Errorf("invalid percentage %q", s)
 		}
-		return int64(pct / 100 * period), nil
+		q := int64(pct / 100 * period)
+		if q == 0 {
+			return 0, fmt.Errorf("cpu quota %q is too small (rounds to 0)", s)
+		}
+		return q, nil
 	}
 	cores, err := strconv.ParseFloat(s, 64)
 	if err != nil || cores <= 0 {
 		return 0, fmt.Errorf("invalid core count %q", s)
 	}
-	return int64(cores * period), nil
+	q := int64(cores * period)
+	if q == 0 {
+		return 0, fmt.Errorf("cpu quota %q is too small (rounds to 0)", s)
+	}
+	return q, nil
 }
 
 // parseShare accepts three forms:
