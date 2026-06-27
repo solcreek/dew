@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.52] - 2026-06-26
+
 ### Added
 
 - **Boot-time heads-up when a service reaches the host via `host.internal`.**
