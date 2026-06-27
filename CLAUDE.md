@@ -10,9 +10,10 @@ make agent         # cross-compile guest agent for linux/amd64 + linux/arm64
 make test          # go test ./...
 go test ./internal/detect/ -run TestDetect_Vite -v   # single test
 
-# Initramfs profiles (run from repo root)
-bash initramfs/build.sh minimal    # 5MB, exec-only
-bash initramfs/build.sh node       # 31MB, Node.js + npm + build-base
+# Initramfs profiles (run from repo root). Sizes are approximate.
+bash initramfs/build.sh minimal    # ~5MB, exec-only
+bash initramfs/build.sh node       # ~31MB, Node.js + npm + build-base
+bash initramfs/build.sh python     # python3 + pip
 bash initramfs/build.sh standard   # node tier + larger RAM/disk; OCI via crun (no daemon)
 
 # Turbo kernel (Docker required)
@@ -51,8 +52,8 @@ All communication uses length-prefixed JSON over vsock (no SSH). Auth token inje
 - **`internal/vm/darwin`** — Apple Virtualization.framework implementation. Configures boot loader, serial console, NAT, vsock, virtiofs, block devices.
 - **`internal/vsock`** — protocol types (`ExecRequest`, `ExecResponse`, `ConnectRequest`, `SetTokenRequest`, `OutputChunk`, `ExecDone`) and `WriteJSON`/`ReadJSON` with 4-byte big-endian length prefix.
 - **`internal/detect`** — registry-based project detection. `Detector` interface with `Match(dir)` and `Detect(dir)`. Registers `nodeDetector` and `pythonDetector`; extensible for Go/Rust.
-- **`internal/services`** — predefined service configs for `--with` flag (postgres, redis, mysql, mongo, minio). `NerdctlRunCmd()` generates container run commands.
-- **`internal/daemon`** — Unix socket at `~/.local/state/dew/default.sock` for cross-process exec. `dew start` opens it; `dew exec` connects to it.
+- **`internal/services`** — predefined service configs for `--with` flag in `Registry` (postgres, redis, mysql, mongo, minio). Each entry is an OCI `Image` run on demand via crun/`dew-oci-run` (no nerdctl). Helpers: `Lookup`, `Names`, `ListenProbeCmd` (readiness via `/proc/net/tcp[6]`, no `ss`), `ConnString`.
+- **`internal/daemon`** — Unix socket at `~/.local/state/dew/<name>.sock` (default VM → `default.sock`) for cross-process exec. The VM-owning process (`dew vm start` / `dew up` / `dew run`) opens it; `dew exec` connects to it.
 - **`internal/session`** — in-process VM session (`Create/Exec/Destroy`). Token handshake via vsock ping.
 - **`internal/serialexec`** — fallback exec via serial console (sentinel-based framing). Used when vsock is unavailable.
 
@@ -71,28 +72,62 @@ All communication uses length-prefixed JSON over vsock (no SSH). Auth token inje
 
 Standard/node profiles use `switch_root` to ext4 disk because crun's overlay rootfs needs a real filesystem for its upperdir (tmpfs is rejected as an overlay upperdir).
 
+### Kernel cmdline contract (`dew.*` params)
+
+The kernel cmdline is the one-way host→guest config channel read by the init
+scripts (host writes via `vm.Config.CmdLine`; guest parses in `init` /
+`init-stage2`). Auth tokens never go here (see vsock `SetTokenRequest`). Current
+params:
+
+| Param | Set by (host) | Read by (guest) | Meaning |
+|---|---|---|---|
+| `dew.share=tag:/path[:ro]` | `cmdRun`/`cmdUp` per shared dir | init-stage2 | virtiofs mount (`dew up` adds `project:/app`) |
+| `dew.disk=1` | host when a data disk is attached | init | wait for `/dev/vda` (diskless skips the ~1s probe) |
+| `dew.rosetta=1` | `--rosetta` (arm64) | init-stage2 | mount rosetta share + register binfmt_misc |
+| `dew.cpu_quota=` / `dew.mem_limit=` | (see R4) | init-stage2 | cgroup `cpu.max` / `memory.max` on `/sys/fs/cgroup/dew` |
+| `dew.cmd=` | `cmdStart` only | init-stage2 | base64 boot-time command (`dew run` delivers over vsock instead) |
+
+When adding a param: keep the `dew.` prefix, match it as a whole cmdline token,
+and add/extend the build-script drift-guard test (see Conventions).
+
 ### Profiles and defaults
 
-| Profile | `resolveAssets` defaults |
-|---|---|
-| minimal | 512MB RAM, no disk |
-| node | 1GB RAM, 4GB auto disk at `~/.local/share/dew/node.img` |
-| python | 1GB RAM, 4GB auto disk at `~/.local/share/dew/python.img` |
-| standard | 2GB RAM, 10GB auto disk at `~/.local/share/dew/standard.img` |
+Defaults are filled by `applyProfileDefaults` (`cmd/dew/main.go`) and only when
+the caller left the global defaults (1 CPU / 512MB / no disk); explicit
+`--cpus` / `--memory` / `--disk` win.
+
+| Profile | CPUs | RAM | Disk |
+|---|---|---|---|
+| minimal | 1 | 512MB | none (diskless, `dew run`'s default) |
+| node | 4 | 2GB | 4GB auto at `~/.local/share/dew/node.img` |
+| python | 4 | 2GB | 4GB auto at `~/.local/share/dew/python.img` |
+| standard | 4 | 2GB | 10GB auto at `~/.local/share/dew/standard.img` |
 
 `dew up` auto-selects profile via `detect.Detect()`. Assets auto-download from GitHub Releases on first use.
 
 ### Kernel strategy
 
-ARM64 (Apple Silicon): Kata pre-built kernel (vmlinux-6.18.15-186, 15.4MB, 30ms boot, monolithic). Download from kata-static release.
+**Shipped default (both arches): Alpine `linux-virt` 6.12.93-0-virt.**
+`initramfs/build.sh` downloads the `linux-virt` APK (version pinned per-arch at
+the top of the script), extracts the kernel, and releases it as the
+`vmlinuz-<arch>` asset (`kernelAssetName()` in `cmd/dew/assets_path.go`). This
+kernel is **modular** (CONFIG_MODULES on) — `build.sh` ships only the modules in
+its allowlist plus their transitive closure (resolved from `modules.dep`), and
+the two-stage init `modprobe`s them at boot.
 
-x86_64 (Intel Mac): Debian cloud kernel (11MB + 22MB modules) for now. Future: custom monolithic from `kernel/config-dew-x86_64.fragment`.
+Because it's modular, two rules matter:
 
-Never use Alpine virt kernel with non-Alpine modules — CONFIG_MODVERSIONS causes struct mismatch. Monolithic kernels (CONFIG_MODULES off) avoid this entirely.
+- Never pair the Alpine virt kernel with non-Alpine modules — CONFIG_MODVERSIONS
+  causes struct mismatch.
+- Alpine kernel modules must be decompressed (`gunzip *.ko.gz`) for `insmod`.
 
-Apple VZ format: ARM64 = uncompressed Image (4K pages). x86_64 = bzImage.
+**Optional turbo kernel:** `kernel/build.sh` (Docker) builds a monolithic
+(CONFIG_MODULES off) `vmlinuz-turbo`. It's faster to boot but supports the
+`minimal` profile only — ext4/overlay are modules there, not built-in — so
+disk-bearing profiles can't use it.
 
-See `product-planning/dew-kernel-strategy-2026-05.md` for full benchmark data.
+Apple VZ format: ARM64 = uncompressed Image (4K pages). x86_64 = bzImage. Doctor
+verifies the ARM64 kernel is a "raw ARM64 Linux Image".
 
 ### x86_64 emulation (Rosetta)
 
@@ -117,9 +152,8 @@ getrandom() callers block at "crypto/rand: blocked".
 
 ## Conventions
 
-- Commit messages: English, objective facts, no competitor brand names, no Co-Authored-By lines
+- Commit messages: English, objective facts, no competitor brand names, no Co-Authored-By lines. Prefer atomic commits (one logical change each).
 - Shared dirs default to read-only (security); explicit `:rw` for write
 - Never print unmasked env values or tokens
-- Turbo kernel only supports minimal profile (ext4/overlay are modules, not built-in)
-- Alpine kernel modules must be decompressed (`gunzip *.ko.gz`) for `insmod` compatibility
 - Node profile first boot runs `apk upgrade musl` before `apk add nodejs` to prevent musl version mismatch segfault on second boot
+- `initramfs/build.sh` is guarded by Go tests in `cmd/dew` (e.g. `TestInitramfsBuildScript_ModprobeMatchesAllowlist`, `TestInitramfsBuildScript_DiskWaitGatedOnDewDisk`). Editing the script's modprobe/allowlist or cmdline-parsing lines means updating these guards in the same change — run `make test` before committing.
