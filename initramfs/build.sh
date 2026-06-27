@@ -347,32 +347,22 @@ if [ "$PROFILE" = "node" ] || [ "$PROFILE" = "standard" ]; then
     if [ "$HOST_OS" = "Linux" ] && APK_STATIC=$(prepare_apk_static); then
         echo "--- Step 4a: Node.js + npm (baked) ---"
         ensure_apk_repos
-        apk_install_pkgs "$APK_STATIC" nodejs npm
+        # standard additionally bakes the hardening toolbox: setpriv with
+        # --reuid/--regid/--bounding-set (util-linux), prlimit (util-linux-misc),
+        # capsh (libcap), and ss/ip (iproute2) so a hardened systemd unit's
+        # User=/DynamicUser=, CapabilityBoundingSet=, and RLimit* effects are
+        # reproducible by hand — the BusyBox setpriv in minimal can't express
+        # them. Folded into this one apk transaction (not a second one) so the
+        # standard build fetches the APKINDEX once; minimal/node stay lean.
+        PKGS="nodejs npm"
+        [ "$PROFILE" = "standard" ] && PKGS="$PKGS setpriv util-linux-misc libcap iproute2"
+        apk_install_pkgs "$APK_STATIC" $PKGS
         if [ -x "$WORK_DIR/usr/bin/node" ]; then
             echo "  Node: $($WORK_DIR/usr/bin/node --version 2>/dev/null)"
         fi
         rm -rf "$WORK_DIR/var/cache/apk"/* 2>/dev/null || true
     else
         echo "--- Step 4a: Node.js marker (first-boot install — build host = $HOST_OS) ---"
-    fi
-fi
-
-# Hardening toolbox (standard profile only). Gives setpriv with
-# --reuid/--regid/--bounding-set (util-linux), prlimit (util-linux-misc),
-# capsh (libcap), and ss/ip (iproute2) so a hardened systemd unit's
-# User=/DynamicUser=, CapabilityBoundingSet=, and RLimit* effects are
-# reproducible by hand — the BusyBox setpriv in minimal can't express them.
-# Baked (not a runtime apk) so it works offline; standard is already the
-# fuller tier, so the few MB fit. minimal/node stay lean.
-if [ "$PROFILE" = "standard" ]; then
-    HOST_OS=$(uname -s)
-    if [ "$HOST_OS" = "Linux" ] && APK_STATIC=$(prepare_apk_static); then
-        echo "--- Step 4b: hardening toolbox (baked) ---"
-        ensure_apk_repos
-        apk_install_pkgs "$APK_STATIC" setpriv util-linux-misc libcap iproute2
-        rm -rf "$WORK_DIR/var/cache/apk"/* 2>/dev/null || true
-    else
-        echo "--- Step 4b: hardening toolbox skipped (build host = $HOST_OS) ---"
     fi
 fi
 
