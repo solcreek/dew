@@ -940,6 +940,12 @@ if grep -q cgroup2 /proc/filesystems 2>/dev/null; then
         [ -n "$DEW_CPU_QUOTA" ] && echo "$DEW_CPU_QUOTA 100000" > /sys/fs/cgroup/dew/cpu.max 2>/dev/null
         [ -n "$DEW_MEM_LIMIT" ] && echo "$DEW_MEM_LIMIT" > /sys/fs/cgroup/dew/memory.max 2>/dev/null
         [ -n "$DEW_PIDS_MAX" ]  && echo "$DEW_PIDS_MAX"  > /sys/fs/cgroup/dew/pids.max 2>/dev/null
+        # Diagnose silent failures: if a requested limit's file is absent the
+        # controller wasn't delegated, so the cap did NOT take effect. Warn to
+        # the console rather than letting DEW_CGROUP_ACTIVE imply it did.
+        [ -n "$DEW_CPU_QUOTA" ] && [ ! -f /sys/fs/cgroup/dew/cpu.max ]    && echo "dew: warning: cpu cap requested but cpu controller unavailable; not applied"
+        [ -n "$DEW_MEM_LIMIT" ] && [ ! -f /sys/fs/cgroup/dew/memory.max ] && echo "dew: warning: memory cap requested but memory controller unavailable; not applied"
+        [ -n "$DEW_PIDS_MAX" ]  && [ ! -f /sys/fs/cgroup/dew/pids.max ]   && echo "dew: warning: pids cap requested but pids controller unavailable; not applied"
         DEW_CGROUP_ACTIVE=1
     fi
 fi
