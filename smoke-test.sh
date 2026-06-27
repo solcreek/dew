@@ -420,6 +420,21 @@ if [ -f "$INITRD_STD" ] && [ -f "$KERNEL" ] && command -v python3 >/dev/null 2>&
     kill_port "$HOST_LO_PORT"
     python3 -m http.server "$HOST_LO_PORT" --bind 127.0.0.1 >/dev/null 2>&1 &
     HOST_LISTENER_PID=$!
+    # Confirm the listener actually bound before the stack depends on it. If
+    # the port was still occupied (e.g. lsof absent → kill_port no-op'd),
+    # http.server exits immediately and the later host.lo.internal vsock
+    # check would otherwise fail for the wrong reason. Probe explicitly.
+    HOST_LISTENER_OK=0
+    for _ in $(seq 1 20); do
+        curl -sS --max-time 1 -o /dev/null "http://127.0.0.1:$HOST_LO_PORT/" 2>/dev/null \
+            && { HOST_LISTENER_OK=1; break; }
+        sleep 0.2
+    done
+    if [ "$HOST_LISTENER_OK" = 1 ]; then
+        test_result "stack: host listener bound on 127.0.0.1:$HOST_LO_PORT" "pass"
+    else
+        test_result "stack: host listener failed to bind 127.0.0.1:$HOST_LO_PORT" "fail"
+    fi
     PROJ=$(mktemp -d -t dew-smoke-stack)
     cat > "$PROJ/dew.toml" <<TOML
 [project]
@@ -513,11 +528,17 @@ TOML
         else
             test_result "stack: host.lo.internal did not map to 127.0.0.2 (got '$HLO')" "fail"
         fi
-        REACH=$("$DEW" exec "wget -q -O /dev/null -T 5 http://host.lo.internal:$HOST_LO_PORT/ && echo lo-ok" 2>/dev/null)
-        if echo "$REACH" | grep -q 'lo-ok'; then
-            test_result "stack: host.lo.internal:$HOST_LO_PORT reaches host 127.0.0.1 over vsock" "pass"
+        if [ "$HOST_LISTENER_OK" = 1 ]; then
+            REACH=$("$DEW" exec "wget -q -O /dev/null -T 5 http://host.lo.internal:$HOST_LO_PORT/ && echo lo-ok" 2>/dev/null)
+            if echo "$REACH" | grep -q 'lo-ok'; then
+                test_result "stack: host.lo.internal:$HOST_LO_PORT reaches host 127.0.0.1 over vsock" "pass"
+            else
+                test_result "stack: host.lo.internal vsock tunnel to host loopback failed" "fail"
+            fi
         else
-            test_result "stack: host.lo.internal vsock tunnel to host loopback failed" "fail"
+            # Host listener never bound, so a vsock-reachability failure here
+            # would be misattributed — skip rather than blame the tunnel.
+            test_result "stack: host.lo.internal vsock tunnel (host listener never bound)" "skip"
         fi
 
         # 5. dew services lists the dew.toml [[service]] images, not just built-ins.
