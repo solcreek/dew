@@ -148,6 +148,39 @@ func TestServeReverseDial_SurfacesDialError(t *testing.T) {
 	}
 }
 
+// A request whose type isn't reverse_dial is rejected before any gate — fail
+// closed against a stray message shape that happens to carry a token/port.
+func TestServeReverseDial_RejectsBadType(t *testing.T) {
+	guestClient, guestServer := net.Pipe()
+	defer guestClient.Close()
+	go serveReverseDial(guestServer, map[int]bool{50051: true}, "tok", func(int) (net.Conn, error) {
+		t.Error("dialed despite bad request type")
+		return nil, nil
+	})
+	vsockProto.WriteJSON(guestClient, &vsockProto.ReverseDialRequest{
+		Type: vsockProto.TypeExec, Token: "tok", Port: 50051,
+	})
+	if resp := readResp(t, guestClient); resp.OK || resp.Error == "" {
+		t.Errorf("got %+v, want a bad-type error", resp)
+	}
+}
+
+// An out-of-range port is rejected before the allow-set/token gates.
+func TestServeReverseDial_RejectsOutOfRangePort(t *testing.T) {
+	guestClient, guestServer := net.Pipe()
+	defer guestClient.Close()
+	go serveReverseDial(guestServer, map[int]bool{50051: true}, "tok", func(int) (net.Conn, error) {
+		t.Error("dialed an out-of-range port")
+		return nil, nil
+	})
+	vsockProto.WriteJSON(guestClient, &vsockProto.ReverseDialRequest{
+		Type: vsockProto.TypeReverseDial, Token: "tok", Port: 70000,
+	})
+	if resp := readResp(t, guestClient); resp.OK || resp.Error == "" {
+		t.Errorf("got %+v, want an out-of-range error", resp)
+	}
+}
+
 // listenerVM is a vm.VM whose VsockListen hands out real loopback listeners so
 // the reverse-forward lifecycle is testable without Virtualization.framework.
 type listenerVM struct{ handed []net.Listener }

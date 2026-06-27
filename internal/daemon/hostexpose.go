@@ -7,9 +7,15 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 
 	vsockProto "github.com/solcreek/dew/internal/vsock"
 )
+
+// hostDialTimeout bounds a single reverse-dial to the host loopback so a
+// stalled connect can't hang the handler goroutine. Matches the agent's
+// guest-side handleConnect timeout.
+const hostDialTimeout = 5 * time.Second
 
 // hostExpose holds the host-side reverse-forward state: the vsock listener
 // that accepts guest-initiated dials and the set of host ports the user
@@ -68,9 +74,10 @@ func (s *State) acceptReverseDials(ln net.Listener, allow map[int]bool) {
 }
 
 // dialHostLoopback dials the macOS host's own loopback — the only place a
-// reverse-dial is ever allowed to land.
+// reverse-dial is ever allowed to land — with a bounded timeout so a dead
+// host service fails fast instead of pinning the handler goroutine.
 func dialHostLoopback(port int) (net.Conn, error) {
-	return net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	return net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), hostDialTimeout)
 }
 
 // serveReverseDial handles one guest-initiated reverse-dial: read the request,
@@ -82,6 +89,16 @@ func serveReverseDial(guest net.Conn, allow map[int]bool, token string, dial fun
 
 	var req vsockProto.ReverseDialRequest
 	if err := vsockProto.ReadJSON(guest, &req); err != nil {
+		return
+	}
+	// Fail closed: only a well-formed reverse_dial for an in-range port is
+	// even considered, before the token/allow-set gates.
+	if req.Type != vsockProto.TypeReverseDial {
+		vsockProto.WriteJSON(guest, &vsockProto.ReverseDialResponse{Error: "bad request type"})
+		return
+	}
+	if req.Port < 1 || req.Port > 65535 {
+		vsockProto.WriteJSON(guest, &vsockProto.ReverseDialResponse{Error: "port out of range"})
 		return
 	}
 	if req.Token != token {
