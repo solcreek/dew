@@ -112,7 +112,10 @@ func cmdServices(args []string) error {
 				m, _ := f.(map[string]any)
 				gp, _ := m["GuestPort"].(float64)
 				hp, _ := m["HostPort"].(float64)
-				if gp > 0 {
+				// Require a real host port: a failed type assertion leaves hp at
+				// 0, and since pickPrimaryHostPort takes the smallest, a stray 0
+				// would win and misreport the service as running on port 0.
+				if gp > 0 && hp > 0 {
 					hostPortsByGuest[int(gp)] = append(hostPortsByGuest[int(gp)], int(hp))
 				}
 			}
