@@ -38,11 +38,26 @@ test_result() {
     fi
 }
 
+# kill_port frees a host TCP port, portably. -iTCP:port -sTCP:LISTEN
+# restricts the match to the listener squatting the port, so a client
+# merely connected through it isn't caught and SIGKILLed. We capture the
+# PIDs and kill only when non-empty rather than piping through `xargs -r`
+# (--no-run-if-empty), which not every BSD xargs implements. No-op when
+# lsof is absent — the `command -v` guard avoids a noisy command-not-found
+# — and `kill --` so a PID can never be mistaken for a flag.
+kill_port() {
+    command -v lsof >/dev/null 2>&1 || return 0
+    local pids
+    pids=$(lsof -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null)
+    [ -n "$pids" ] && kill -9 -- $pids 2>/dev/null
+    return 0
+}
+
 echo "=== Dew Smoke Test ==="
 echo ""
 
 # --- Test 1: Binary runs ---
-VER=$($DEW version 2>&1)
+VER=$("$DEW" version 2>&1)
 if echo "$VER" | grep -q "dew"; then
     test_result "binary runs ($VER)" "pass"
 else
@@ -53,10 +68,10 @@ fi
 INITRD_MIN="$INITRD_DIR/initramfs-minimal.cpio.gz"
 if [ -f "$INITRD_MIN" ] && [ -f "$KERNEL" ]; then
     rm -f ~/.local/state/dew/default.sock
-    $DEW start --profile minimal --kernel "$KERNEL" --initrd "$INITRD_MIN" --network 2>/dev/null &
+    "$DEW" start --profile minimal --kernel "$KERNEL" --initrd "$INITRD_MIN" --network 2>/dev/null &
     PID=$!
     for i in $(seq 1 60); do [ -S ~/.local/state/dew/default.sock ] && break; sleep 0.5; done
-    RESULT=$($DEW exec "echo smoke-ok" 2>&1)
+    RESULT=$("$DEW" exec "echo smoke-ok" 2>&1)
     kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -f ~/.local/state/dew/default.sock
     if [ "$RESULT" = "smoke-ok" ]; then
         test_result "minimal: boot + exec" "pass"
@@ -71,7 +86,7 @@ fi
 INITRD_MIN="$INITRD_DIR/initramfs-minimal.cpio.gz"
 if [ -f "$INITRD_MIN" ] && [ -f "$KERNEL" ]; then
     rm -f ~/.local/state/dew/default.sock
-    $DEW start --profile minimal --kernel "$KERNEL" --initrd "$INITRD_MIN" \
+    "$DEW" start --profile minimal --kernel "$KERNEL" --initrd "$INITRD_MIN" \
         --network --forward 19876:9876 2>/dev/null &
     PID=$!
     for i in $(seq 1 60); do [ -S ~/.local/state/dew/default.sock ] && break; sleep 0.5; done
@@ -79,7 +94,7 @@ if [ -f "$INITRD_MIN" ] && [ -f "$KERNEL" ]; then
     # echo's backslash-escape handling is a compile-time option, and
     # without expansion curl never sees the CRLF header terminator and
     # times out waiting for the response to complete.
-    $DEW exec "printf 'HTTP/1.0 200 OK\r\n\r\nsmoke-port' | nc -l -p 9876 &" 2>/dev/null
+    "$DEW" exec "printf 'HTTP/1.0 200 OK\r\n\r\nsmoke-port' | nc -l -p 9876 &" 2>/dev/null
     sleep 1
     RESULT=$(curl -s --max-time 3 http://localhost:19876/ 2>/dev/null)
     kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -f ~/.local/state/dew/default.sock
@@ -95,7 +110,7 @@ fi
 # --- Test 4: Network isolation (no NIC) ---
 INITRD_MIN="$INITRD_DIR/initramfs-minimal.cpio.gz"
 if [ -f "$INITRD_MIN" ] && [ -f "$KERNEL" ]; then
-    RESULT=$($DEW run --kernel "$KERNEL" --initrd "$INITRD_MIN" \
+    RESULT=$("$DEW" run --kernel "$KERNEL" --initrd "$INITRD_MIN" \
         -- "ip link show eth0 2>&1" 2>/dev/null)
     # busybox `ip` says "can't find device"; iproute2 says "does not
     # exist" — accept both so the assertion survives initramfs rebuilds.
@@ -117,20 +132,20 @@ if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ]; then
     # First boot. Poll for node: the CI-built initramfs bakes it
     # (immediate), the Darwin-local build installs it on first boot
     # (apk, needs network + time) — the test must pass with either.
-    $DEW start --profile node --kernel "$KERNEL" --initrd "$INITRD_NODE" --network 2>/dev/null &
+    "$DEW" start --profile node --kernel "$KERNEL" --initrd "$INITRD_NODE" --network 2>/dev/null &
     PID=$!
     for i in $(seq 1 120); do [ -S ~/.local/state/dew/default.sock ] && break; sleep 0.5; done
     for i in $(seq 1 45); do
-        NODE_V=$($DEW exec "node --version" 2>/dev/null)
+        NODE_V=$("$DEW" exec "node --version" 2>/dev/null)
         [ -n "$NODE_V" ] && break
         sleep 2
     done
     kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -f ~/.local/state/dew/default.sock; sleep 1
     # Second boot
-    $DEW start --profile node --kernel "$KERNEL" --initrd "$INITRD_NODE" --network 2>/dev/null &
+    "$DEW" start --profile node --kernel "$KERNEL" --initrd "$INITRD_NODE" --network 2>/dev/null &
     PID=$!
     for i in $(seq 1 60); do [ -S ~/.local/state/dew/default.sock ] && break; sleep 0.5; done
-    RESULT=$($DEW exec "node -e 'console.log(\"node-ok\")'" 2>&1)
+    RESULT=$("$DEW" exec "node -e 'console.log(\"node-ok\")'" 2>&1)
     kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -f ~/.local/state/dew/default.sock
     if [ "$RESULT" = "node-ok" ]; then
         test_result "node: second boot (no segfault)" "pass"
@@ -148,17 +163,17 @@ fi
 INITRD_STD="$INITRD_DIR/initramfs-standard.cpio.gz"
 if [ -f "$INITRD_STD" ] && [ -f "$KERNEL" ]; then
     rm -f ~/.local/state/dew/default.sock /tmp/dew-smoke-std.img
-    $DEW start --kernel "$KERNEL" --initrd "$INITRD_STD" \
+    "$DEW" start --kernel "$KERNEL" --initrd "$INITRD_STD" \
         --network --memory 2048 --disk /tmp/dew-smoke-std.img 2>/dev/null &
     PID=$!
     for i in $(seq 1 120); do [ -S ~/.local/state/dew/default.sock ] && break; sleep 0.5; done
-    RESULT=$($DEW exec "crun --version 2>&1 | head -1" 2>&1)
+    RESULT=$("$DEW" exec "crun --version 2>&1 | head -1" 2>&1)
     if echo "$RESULT" | grep -q "crun"; then
         test_result "standard: crun runtime available" "pass"
     else
         test_result "standard: crun runtime available" "fail"
     fi
-    LAUNCHER=$($DEW exec "test -x /usr/local/bin/dew-oci-run && echo launcher-ok" 2>&1)
+    LAUNCHER=$("$DEW" exec "test -x /usr/local/bin/dew-oci-run && echo launcher-ok" 2>&1)
     if echo "$LAUNCHER" | grep -q "launcher-ok"; then
         test_result "standard: dew-oci-run launcher present" "pass"
     else
@@ -189,7 +204,7 @@ if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ]; then
         # result to /bin/sh -c, so we pass ONE pre-quoted shell line
         # rather than `sh -c '<pipeline>'` (which would degenerate to
         # `sh -c` running with no script).
-        OUT=$($DEW run --profile node --network --kernel "$KERNEL" --initrd "$INITRD_NODE" \
+        OUT=$("$DEW" run --profile node --network --kernel "$KERNEL" --initrd "$INITRD_NODE" \
               -- 'ip -4 addr show eth0 2>/dev/null | awk "/inet /{print \$2; exit}"' 2>&1)
         D=$(($(date +%s)-S))
         if echo "$OUT" | grep -qE '192\.168\.[0-9]+\.[0-9]+/'; then
@@ -216,7 +231,7 @@ fi
 #      knownNativeNodePackages)
 if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ] && command -v npm >/dev/null 2>&1; then
     pkill -9 -f 'dew start\|dew run\|dew up' 2>/dev/null
-    lsof -ti:5173 2>/dev/null | xargs -r kill -9 2>/dev/null
+    kill_port 5173
     sleep 1
     rm -f ~/.local/state/dew/default.sock ~/.local/share/dew/node.img
     PROJ=$(mktemp -d -t dew-smoke-up)
@@ -230,7 +245,7 @@ if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ] && command -v npm >/dev/null 2>&1; 
     if [ -d "$PROJ/my-app" ]; then
         (
             cd "$PROJ/my-app"
-            $DEW up --kernel "$KERNEL" --initrd "$INITRD_NODE" >$LOG 2>&1
+            "$DEW" up --kernel "$KERNEL" --initrd "$INITRD_NODE" >$LOG 2>&1
         ) &
         UP_PID=$!
         START=$(date +%s)
@@ -277,7 +292,7 @@ fi
 # matches against knownNativeNodePackages.
 if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ] && command -v npm >/dev/null 2>&1; then
     pkill -9 -f 'dew start\|dew run\|dew up' 2>/dev/null
-    lsof -ti:5173 2>/dev/null | xargs -r kill -9 2>/dev/null
+    kill_port 5173
     sleep 1
     rm -f ~/.local/state/dew/default.sock ~/.local/share/dew/node.img
     PROJ=$(mktemp -d -t dew-smoke-sharp)
@@ -296,7 +311,7 @@ if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ] && command -v npm >/dev/null 2>&1; 
     if [ -d "$PROJ/my-app" ]; then
         (
             cd "$PROJ/my-app"
-            $DEW up --kernel "$KERNEL" --initrd "$INITRD_NODE" >$LOG 2>&1
+            "$DEW" up --kernel "$KERNEL" --initrd "$INITRD_NODE" >$LOG 2>&1
         ) &
         UP_PID=$!
         START=$(date +%s)
@@ -348,7 +363,7 @@ if [ -f "$KERNEL" ] && command -v go >/dev/null 2>&1; then
     if [ -x "$MUTE_DIR/init" ]; then
         (cd "$MUTE_DIR" && echo init | cpio -o -H newc 2>/dev/null | gzip > mute.cpio.gz)
         START_S=$(date +%s)
-        $DEW run --kernel "$KERNEL" --initrd "$MUTE_DIR/mute.cpio.gz" \
+        "$DEW" run --kernel "$KERNEL" --initrd "$MUTE_DIR/mute.cpio.gz" \
             -- echo hang-guard >/dev/null 2>&1 &
         RUNPID=$!
         # Watchdog: if the hang regresses, fail the test instead of
@@ -378,6 +393,194 @@ if [ -f "$KERNEL" ] && command -v go >/dev/null 2>&1; then
     rm -rf "$MUTE_DIR"
 else
     test_result "hang guard: mute guest" "skip"
+fi
+
+# --- Test 6e: multi-service dew.toml stack + host.lo.internal (field-eval topology) ---
+# Sediments the external field evaluation's canonical stack into a regression
+# guard: three arbitrary OCI services (redis + mailpit + anycable-go) composed
+# into ONE standard-profile VM via dew.toml [[service]], plus the reverse
+# host-forward. Asserts, end to end:
+#   1. all three boot and forward to the host (mailpit :8025 → 200; redis :6379
+#      + anycable :8080 reachable)
+#   2. service-to-service on localhost works (anycable connects to redis)
+#   3. host.internal resolves to the NAT gateway inside the guest
+#   4. host.lo.internal (127.0.0.2) tunnels over vsock to a 127.0.0.1-ONLY host
+#      listener — the loopback-host-callback case host.internal cannot do
+#   5. `dew services` lists the dew.toml [[service]] images, not just built-ins
+# Heavy (standard profile + three image pulls): skips without the standard
+# initramfs, python3 (host listener), or curl.
+INITRD_STD="$INITRD_DIR/initramfs-standard.cpio.gz"
+if [ -f "$INITRD_STD" ] && [ -f "$KERNEL" ] && command -v python3 >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+    pkill -9 -f 'dew start\|dew run\|dew up' 2>/dev/null
+    rm -f ~/.local/state/dew/default.sock /tmp/dew-smoke-stack.img /tmp/dew-smoke-stack.log
+    HOST_LO_PORT=50071
+    # A 127.0.0.1-ONLY host listener: unreachable via host.internal (NAT) by
+    # design — that's the whole point of host.lo.internal. python's http.server
+    # answers 200 on GET / and binds loopback only.
+    kill_port "$HOST_LO_PORT"
+    python3 -m http.server "$HOST_LO_PORT" --bind 127.0.0.1 >/dev/null 2>&1 &
+    HOST_LISTENER_PID=$!
+    # Confirm the listener actually bound before the stack depends on it. If
+    # the port was still occupied (e.g. lsof absent → kill_port no-op'd),
+    # http.server exits immediately and the later host.lo.internal vsock
+    # check would otherwise fail for the wrong reason. Require BOTH that our
+    # http.server PID is still alive AND that the port answers HTTP — a squatter
+    # already serving on the port must not pass as "our listener bound".
+    HOST_LISTENER_OK=0
+    for _ in $(seq 1 20); do
+        if ps -p "$HOST_LISTENER_PID" -o command= 2>/dev/null | grep -q 'http\.server' \
+            && curl -sS --max-time 1 -o /dev/null "http://127.0.0.1:$HOST_LO_PORT/" 2>/dev/null; then
+            HOST_LISTENER_OK=1
+            break
+        fi
+        sleep 0.2
+    done
+    if [ "$HOST_LISTENER_OK" = 1 ]; then
+        test_result "stack: host listener bound on 127.0.0.1:$HOST_LO_PORT" "pass"
+    else
+        test_result "stack: host listener failed to bind 127.0.0.1:$HOST_LO_PORT" "fail"
+    fi
+    PROJ=$(mktemp -d -t dew-smoke-stack)
+    cat > "$PROJ/dew.toml" <<TOML
+[project]
+profile = "standard"
+
+[[service]]
+name = "redis"
+image = "redis:7-alpine"
+port = 6379
+
+[[service]]
+name = "mailpit"
+image = "axllent/mailpit:v1.30"
+port = 8025
+
+[[service]]
+name = "anycable"
+image = "anycable/anycable-go:1.5"
+port = 8080
+env = ["REDIS_URL=redis://localhost:6379/0", "ANYCABLE_HOST=0.0.0.0"]
+
+[host]
+expose = [$HOST_LO_PORT]
+TOML
+    STACK_LOG=/tmp/dew-smoke-stack.log
+    (
+        cd "$PROJ"
+        # exec so $! (STACK_PID) is the real `dew up` process, not the
+        # subshell wrapping it — otherwise kill -9 $STACK_PID reaps the
+        # subshell and orphans `dew up` (and its VM), leaking ports.
+        exec "$DEW" up --services-only --profile standard --kernel "$KERNEL" --initrd "$INITRD_STD" \
+            --memory 2048 --disk /tmp/dew-smoke-stack.img >"$STACK_LOG" 2>&1
+    ) &
+    STACK_PID=$!
+    # Readiness: poll mailpit's HTTP UI (serves / → 200) for up to 240s; the
+    # first run pulls three images over the network.
+    STACK_OK=0
+    for i in $(seq 1 120); do
+        sleep 2
+        # Assign first, override to 000 only on curl failure: on a refused
+        # connection curl prints 000 to stdout AND exits non-zero, so a
+        # `|| echo 000` would append a second 000 (-> 000000).
+        code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://localhost:8025/ 2>/dev/null) || code=000
+        [ "$code" = "200" ] && { STACK_OK=1; break; }
+    done
+    if [ "$STACK_OK" = "1" ]; then
+        test_result "stack: 3 OCI services in one VM, mailpit :8025 serves" "pass"
+    else
+        test_result "stack: 3-service stack never came up (waited 240s)" "fail"
+    fi
+
+    if [ "$STACK_OK" = "1" ]; then
+        # 1. redis + anycable forwarded to the host.
+        if (exec 3<>/dev/tcp/127.0.0.1/6379) 2>/dev/null; then
+            exec 3>&- 3<&-
+            test_result "stack: redis :6379 forwarded to host" "pass"
+        else
+            test_result "stack: redis :6379 not forwarded" "fail"
+        fi
+        # Same capture-then-override as the mailpit probe: with `|| echo 000`
+        # a refused connection yields ACODE=000000, which is != 000 and would
+        # falsely report the port as reachable.
+        ACODE=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:8080/health 2>/dev/null) || ACODE=000
+        if [ "$ACODE" != "000" ]; then
+            test_result "stack: anycable :8080 forwarded to host (HTTP $ACODE)" "pass"
+        else
+            test_result "stack: anycable :8080 not forwarded" "fail"
+        fi
+
+        # 2. service-to-service on localhost: anycable reached redis, no DNS error.
+        ALOG=$("$DEW" logs anycable 2>/dev/null)
+        if echo "$ALOG" | grep -qiE 'subscrib|provider=redis|connected to redis' \
+            && ! echo "$ALOG" | grep -qi 'lookup localhost'; then
+            test_result "stack: anycable → redis on localhost (service-to-service)" "pass"
+        else
+            test_result "stack: anycable → redis on localhost failed" "fail"
+        fi
+
+        # 3. host.internal resolves to the NAT gateway inside the guest.
+        # Verify the invariant init-stage2 builds — host.internal maps to the
+        # guest's actual default-route gateway (the VZ NAT host) — rather than a
+        # hardcoded 192.168.* prefix, which would break if VZ ever renumbered
+        # the subnet even though host.internal stayed correct.
+        HI_IP=$("$DEW" exec "awk '/host.internal/{print \$1; exit}' /etc/hosts" 2>/dev/null | tr -d '[:space:]')
+        GW_IP=$("$DEW" exec "ip route 2>/dev/null | awk '/^default/{print \$3; exit}'" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$HI_IP" ] && [ "$HI_IP" = "$GW_IP" ]; then
+            test_result "stack: host.internal → default gateway ($HI_IP)" "pass"
+        else
+            test_result "stack: host.internal '$HI_IP' != default gateway '$GW_IP'" "fail"
+        fi
+
+        # 4. host.lo.internal: maps to 127.0.0.2 AND tunnels over vsock to the
+        #    127.0.0.1-only host listener.
+        HLO=$("$DEW" exec "grep host.lo.internal /etc/hosts" 2>/dev/null)
+        if echo "$HLO" | grep -q '127.0.0.2'; then
+            test_result "stack: host.lo.internal → 127.0.0.2 (reverse-forward alias)" "pass"
+        else
+            test_result "stack: host.lo.internal did not map to 127.0.0.2 (got '$HLO')" "fail"
+        fi
+        if [ "$HOST_LISTENER_OK" = 1 ]; then
+            REACH=$("$DEW" exec "wget -q -O /dev/null -T 5 http://host.lo.internal:$HOST_LO_PORT/ && echo lo-ok" 2>/dev/null)
+            if echo "$REACH" | grep -q 'lo-ok'; then
+                test_result "stack: host.lo.internal:$HOST_LO_PORT reaches host 127.0.0.1 over vsock" "pass"
+            else
+                test_result "stack: host.lo.internal vsock tunnel to host loopback failed" "fail"
+            fi
+        else
+            # Host listener never bound, so a vsock-reachability failure here
+            # would be misattributed — skip rather than blame the tunnel.
+            test_result "stack: host.lo.internal vsock tunnel (host listener never bound)" "skip"
+        fi
+
+        # 5. dew services lists the dew.toml [[service]] images, not just built-ins.
+        SVC=$(cd "$PROJ" && "$DEW" services 2>/dev/null)
+        if echo "$SVC" | grep -q 'mailpit' && echo "$SVC" | grep -q 'anycable'; then
+            test_result "stack: dew services lists dew.toml services (mailpit + anycable)" "pass"
+        else
+            test_result "stack: dew services omitted dew.toml services" "fail"
+        fi
+    else
+        # Stack never came up — the dependent assertions are unmeasurable, skip.
+        test_result "stack: redis/anycable forward" "skip"
+        test_result "stack: service-to-service localhost" "skip"
+        test_result "stack: host.internal gateway" "skip"
+        test_result "stack: host.lo.internal vsock tunnel" "skip"
+        test_result "stack: dew services listing" "skip"
+    fi
+
+    kill -9 -- "$STACK_PID" 2>/dev/null; wait "$STACK_PID" 2>/dev/null
+    # Only kill the listener if that PID is still our http.server. A bind
+    # failure could have killed it early and, over the long stack wait, the
+    # PID may have been recycled by an unrelated host process — so match the
+    # command before signalling rather than trusting the captured PID.
+    if ps -p "$HOST_LISTENER_PID" -o command= 2>/dev/null | grep -q 'http\.server'; then
+        kill -- "$HOST_LISTENER_PID" 2>/dev/null
+    fi
+    pkill -9 -f 'dew start\|dew up' 2>/dev/null
+    rm -f ~/.local/state/dew/default.sock /tmp/dew-smoke-stack.img "$STACK_LOG"
+    rm -rf "$PROJ"
+else
+    test_result "stack: multi-service dew.toml + host.lo.internal" "skip"
 fi
 
 # --- Test 7: Detect (unit-level) ---
