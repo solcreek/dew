@@ -427,7 +427,7 @@ port = 6379
 
 [[service]]
 name = "mailpit"
-image = "axllent/mailpit:latest"
+image = "axllent/mailpit:v1.30"
 port = 8025
 
 [[service]]
