@@ -141,6 +141,22 @@ func TestParse_InvalidNumericDirectives(t *testing.T) {
 	}
 }
 
+// A unit setting only Group= must still drop the group (NeedsSetpriv true).
+func TestParse_GroupOnly(t *testing.T) {
+	p, err := Parse(strings.NewReader("[Service]\nGroup=appgroup\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.NeedsSetpriv() || !p.Confined() {
+		t.Fatalf("Group=-only should need setpriv, got %+v", p)
+	}
+	got := p.SetprivArgs()
+	want := []string{"setpriv", "--regid", "appgroup", "--clear-groups"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SetprivArgs() = %v, want %v", got, want)
+	}
+}
+
 func TestParse_OnlySectionService(t *testing.T) {
 	// MemoryMax in a non-[Service] section must be ignored.
 	p, _ := Parse(strings.NewReader("[Unit]\nMemoryMax=999M\n[Slice]\nTasksMax=5\n"))

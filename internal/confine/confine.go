@@ -49,7 +49,7 @@ func (p Plan) Confined() bool {
 // NeedsSetpriv reports whether the plan requires the setpriv binary in the
 // guest (privilege drop) — which only the standard profile ships.
 func (p Plan) NeedsSetpriv() bool {
-	return p.UID != "" || p.DynamicUser || p.DropAllCaps || len(p.DropCaps) > 0 || p.NoNewPrivs
+	return p.UID != "" || p.GID != "" || p.DynamicUser || p.DropAllCaps || len(p.DropCaps) > 0 || p.NoNewPrivs
 }
 
 // SetprivArgs renders the privilege-drop prefix, e.g.
