@@ -98,7 +98,8 @@ Flags:
                          Default mode is read-only.
   --cgroup memory=256M,pids=256,cpu=200%
                          Cap the guest workload with cgroup v2. memory
-                         takes a 1024-based K/M/G suffix; cpu is N% of one
+                         takes a 1024-based K/M/G suffix; pids is the max
+                         number of processes/threads; cpu is N% of one
                          core (or a bare core count). The agent shares the
                          cap, so a memory cap small enough to OOM the
                          workload can also kill it.
