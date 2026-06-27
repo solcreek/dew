@@ -20,12 +20,22 @@ import (
 // just the built-ins, preserving the static-catalog behaviour. This is why a
 // running mailpit/anycable from dew.toml now shows up, not only the five
 // managed services.
-func serviceCatalog(dir string) []services.Service {
+//
+// A broken dew.toml (parse/validation error) is surfaced, not swallowed:
+// silently falling back to the built-ins would honour neither dewfile.Load's
+// "fail loudly" contract nor the user, who'd see a catalog that omits their
+// declared services with no hint why. Only (nil, nil) — no dew.toml present —
+// is the clean built-ins-only case.
+func serviceCatalog(dir string) ([]services.Service, error) {
 	byName := make(map[string]services.Service, len(services.Registry))
 	for name, s := range services.Registry {
 		byName[name] = s
 	}
-	if df, err := dewfile.Load(dir); err == nil && df != nil {
+	df, err := dewfile.Load(dir)
+	if err != nil {
+		return nil, err
+	}
+	if df != nil {
 		for _, s := range df.ServiceList() {
 			byName[s.Name] = s
 		}
@@ -35,7 +45,7 @@ func serviceCatalog(dir string) []services.Service {
 		out = append(out, s)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
+	return out, nil
 }
 
 // serviceRow is one line of `dew services` output.
@@ -77,7 +87,10 @@ func cmdServices(args []string) error {
 		}
 	}
 
-	catalog := serviceCatalog(".")
+	catalog, err := serviceCatalog(".")
+	if err != nil {
+		return err
+	}
 	rows := make([]serviceRow, 0, len(catalog))
 	for _, s := range catalog {
 		port := s.Port
