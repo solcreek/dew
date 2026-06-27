@@ -433,6 +433,11 @@ func handleConnect(vsockConn net.Conn, addr string) {
 // same VM.
 const exposeListenIP = "127.0.0.2"
 
+// reverseDialRespTimeout bounds how long the guest waits for the host's
+// ReverseDialResponse handshake. A stalled host listener or wedged vsock
+// transport must not block this goroutine (and its TCP conn) forever.
+const reverseDialRespTimeout = 5 * time.Second
+
 var (
 	exposeMu        sync.Mutex
 	exposeListeners = map[int]net.Listener{}
@@ -506,7 +511,7 @@ func handleExposeConn(tcpConn net.Conn, port int) {
 		return
 	}
 	var resp protocol.ReverseDialResponse
-	if err := protocol.ReadJSON(vsockConn, &resp); err != nil || !resp.OK {
+	if err := protocol.ReadJSONTimeout(vsockConn, &resp, reverseDialRespTimeout); err != nil || !resp.OK {
 		return
 	}
 

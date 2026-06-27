@@ -12,10 +12,18 @@ import (
 	vsockProto "github.com/solcreek/dew/internal/vsock"
 )
 
-// hostDialTimeout bounds a single reverse-dial to the host loopback so a
-// stalled connect can't hang the handler goroutine. Matches the agent's
-// guest-side handleConnect timeout.
-const hostDialTimeout = 5 * time.Second
+const (
+	// hostDialTimeout bounds a single reverse-dial to the host loopback so a
+	// stalled connect can't hang the handler goroutine. Matches the agent's
+	// guest-side handleConnect timeout.
+	hostDialTimeout = 5 * time.Second
+
+	// reverseDialReadTimeout bounds how long serveReverseDial waits for the
+	// guest's length-prefixed ReverseDialRequest. The guest runs arbitrary
+	// workloads, so a connection that opens but never sends a frame must not
+	// pin a goroutine/fd indefinitely — fail closed on timeout.
+	reverseDialReadTimeout = 5 * time.Second
+)
 
 // hostExpose holds the host-side reverse-forward state: the vsock listener
 // that accepts guest-initiated dials and the set of host ports the user
@@ -92,7 +100,7 @@ func serveReverseDial(guest net.Conn, allow map[int]bool, token string, dial fun
 	defer guest.Close()
 
 	var req vsockProto.ReverseDialRequest
-	if err := vsockProto.ReadJSON(guest, &req); err != nil {
+	if err := vsockProto.ReadJSONTimeout(guest, &req, reverseDialReadTimeout); err != nil {
 		return
 	}
 	// Fail closed: only a well-formed reverse_dial for an in-range port is
