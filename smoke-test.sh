@@ -485,11 +485,16 @@ TOML
         fi
 
         # 3. host.internal resolves to the NAT gateway inside the guest.
-        HI=$($DEW exec "grep host.internal /etc/hosts" 2>/dev/null)
-        if echo "$HI" | grep -qE '192\.168\.[0-9]+\.[0-9]+[[:space:]].*host\.internal'; then
-            test_result "stack: host.internal → NAT gateway" "pass"
+        # Verify the invariant init-stage2 builds — host.internal maps to the
+        # guest's actual default-route gateway (the VZ NAT host) — rather than a
+        # hardcoded 192.168.* prefix, which would break if VZ ever renumbered
+        # the subnet even though host.internal stayed correct.
+        HI_IP=$($DEW exec "awk '/host.internal/{print \$1; exit}' /etc/hosts" 2>/dev/null | tr -d '[:space:]')
+        GW_IP=$($DEW exec "ip route 2>/dev/null | awk '/^default/{print \$3; exit}'" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$HI_IP" ] && [ "$HI_IP" = "$GW_IP" ]; then
+            test_result "stack: host.internal → default gateway ($HI_IP)" "pass"
         else
-            test_result "stack: host.internal did not map to a gateway (got '$HI')" "fail"
+            test_result "stack: host.internal '$HI_IP' != default gateway '$GW_IP'" "fail"
         fi
 
         # 4. host.lo.internal: maps to 127.0.0.2 AND tunnels over vsock to the
