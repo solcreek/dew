@@ -42,7 +42,7 @@ func TestInitStage2PublishesHostInternal(t *testing.T) {
 // /etc/hosts, so a container reaches macOS host services the same way the guest
 // can — both host.internal (NAT gateway) and host.lo.internal (reverse-forward).
 // `grep -F .internal` matches every alias line and no localhost line.
-func TestOCIRunPropagatesHostInternal(t *testing.T) {
+func TestOCIRunPropagatesHostAliases(t *testing.T) {
 	script := readBuildScript(t)
 	if !strings.Contains(script, "grep -F .internal /etc/hosts") {
 		t.Error("dew-oci-run no longer copies the host alias lines into the container /etc/hosts")
