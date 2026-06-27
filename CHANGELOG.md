@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dew run --cgroup memory=…,pids=…,cpu=…`** caps the guest workload with
+  cgroup v2 (also on `dew vm start`). The limits are applied to
+  `/sys/fs/cgroup/dew` and the agent runs inside that cgroup, so a hardened
+  `systemd` unit's `MemoryMax` / `TasksMax` / `CPUQuota` ceilings are directly
+  testable on macOS. `memory` takes a 1024-based K/M/G suffix; `cpu` is N% of a
+  core or a bare core count. The agent shares the cap (a memory cap small enough
+  to OOM the workload can also kill the agent).
+
 ## [0.7.55] - 2026-06-27
 
 ### Changed
