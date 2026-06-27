@@ -10,6 +10,25 @@ import (
 	"github.com/solcreek/dew/internal/vm"
 )
 
+// dew.disk=1 must be appended exactly when a data disk is attached, so the
+// guest waits for /dev/vda only then — a diskless profile (minimal) otherwise
+// burns init's ~1s device-probe timeout every boot. In lockstep with
+// configureDisk (attaches iff DiskPath != "").
+func TestDiskCmdLine(t *testing.T) {
+	const base = "console=hvc0"
+	if got := diskCmdLine(base, ""); got != base {
+		t.Errorf("diskless: diskCmdLine(%q, \"\") = %q, want unchanged", base, got)
+	}
+	if got := diskCmdLine(base, "/x/node.img"); got != base+" dew.disk=1" {
+		t.Errorf("with disk: diskCmdLine = %q, want %q appended with dew.disk=1", got, base)
+	}
+	// Idempotent on the existing cmdline content — only the marker is added.
+	withShare := "console=hvc0 dew.share=oci-stage:/oci-stage"
+	if got := diskCmdLine(withShare, "/x/std.img"); got != withShare+" dew.disk=1" {
+		t.Errorf("preserves existing flags: got %q", got)
+	}
+}
+
 func TestNew_KernelRequired(t *testing.T) {
 	_, err := New(vm.Config{})
 	if err == nil {
