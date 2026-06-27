@@ -200,6 +200,20 @@ dew run --profile standard --share /tmp/x:rw -- \
   setpriv --reuid 65534 --regid 65534 --clear-groups --bounding-set -all /x/app
 ```
 
+Or point dew at the unit itself. `--confine` reads a `.service` file, derives
+the cgroup limits and a `setpriv` privilege drop, and runs the command under
+them:
+
+```bash
+dew run --confine ./gateway.service --share /tmp/x:rw -- /x/app
+```
+
+It's an **approximation**, not a systemd reimplementation: `MemoryMax` /
+`TasksMax` / `CPUQuota`, `User=` / `DynamicUser=`, `CapabilityBoundingSet=`,
+and `NoNewPrivileges=` are applied; directives it can't enforce
+(`SystemCallFilter`, `ProtectSystem`, `RestrictAddressFamilies`, …) are printed
+as warnings so you know what's still only checked under real systemd.
+
 ### Share instantly
 
 Temporary public HTTPS URL for any local port. Zero config, zero account.

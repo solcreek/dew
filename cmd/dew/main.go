@@ -28,6 +28,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/solcreek/dew/internal/confine"
 	"github.com/solcreek/dew/internal/daemon"
 	"github.com/solcreek/dew/internal/detect"
 	"github.com/solcreek/dew/internal/dewfile"
@@ -69,6 +70,10 @@ var flagEnv []string
 var flagVolumes []string
 var flagDryRun bool
 var flagProfile string
+
+// flagConfine holds the path to a systemd unit whose hardening directives
+// `dew run --confine` approximates with cgroup limits + setpriv.
+var flagConfine string
 var flagServicesOnly bool
 var flagResetDisk bool
 
@@ -843,6 +848,7 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 	flagInit = false
 	flagVMName = ""
 	flagExposeHost = nil
+	flagConfine = ""
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -911,6 +917,12 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, perr
 			}
 			cfg.Cgroup = cg
+		case "--confine":
+			i++
+			if i >= len(args) {
+				return cfg, nil, dewerr.New(dewerr.CodeUsage, "--confine requires a path to a systemd .service unit")
+			}
+			flagConfine = args[i]
 		case "--network-policy":
 			i++
 			if i >= len(args) {
@@ -1388,6 +1400,39 @@ func cmdRun(args []string) error {
 	if (flagImage != "" || flagWith != "") && (flagProfile == "" || flagProfile == "minimal") {
 		flagProfile = "node"
 	}
+
+	// --confine: approximate a systemd unit's hardening with cgroup limits +
+	// setpriv. Resolves the plan, adjusts cfg/profile, and wraps cmdArgs below.
+	var confinePlan confine.Plan
+	if flagConfine != "" {
+		if flagImage != "" {
+			return dewerr.New(dewerr.CodeUsage, "--confine cannot be combined with --image")
+		}
+		if cfg.Cgroup.Set() {
+			return dewerr.New(dewerr.CodeUsage, "--confine derives cgroup limits from the unit; drop --cgroup or drop --confine")
+		}
+		p, perr := confine.ParseFile(flagConfine)
+		if perr != nil {
+			return dewerr.Newf(dewerr.CodeUsage, "--confine: %v", perr)
+		}
+		confinePlan = p
+		cfg.Cgroup = vm.CgroupLimits{MemoryBytes: p.MemoryBytes, PidsMax: p.PidsMax, CPUQuota: p.CPUQuota}
+		// setpriv ships only in the standard profile. --confine intent
+		// dominates: force standard unless the user already chose it.
+		if p.NeedsSetpriv() && flagProfile != "standard" {
+			if flagProfile != "" && !flagJSON {
+				fmt.Fprintf(os.Stderr, "dew: --confine needs setpriv (privilege drop); using --profile standard instead of %s\n", flagProfile)
+			}
+			flagProfile = "standard"
+		}
+		if !flagJSON {
+			fmt.Fprintln(os.Stderr, "dew: --confine approximates systemd hardening — it is not equivalent to running the unit under systemd")
+			for _, u := range p.Unsupported {
+				fmt.Fprintf(os.Stderr, "dew:   not enforced: %s\n", u)
+			}
+		}
+	}
+
 	if err := resolveAssets(&cfg); err != nil {
 		return err
 	}
@@ -1668,6 +1713,14 @@ func cmdRun(args []string) error {
 				fmt.Fprintf(os.Stderr, "dew: service %s also on 127.0.0.1:%d → guest:%d\n", s.name, hp, ef.Container)
 			}
 		}
+	}
+
+	// --confine: prepend the setpriv privilege-drop prefix so the command
+	// runs as the unit's uid with its capability bounding set. The cgroup
+	// limits already crossed via cfg.Cgroup → appendGuestParams. A single
+	// shell arg is wrapped so setpriv execs a real argv, not a bare string.
+	if prefix := confinePlan.SetprivArgs(); len(prefix) > 0 {
+		cmdArgs = wrapWithSetpriv(prefix, cmdArgs)
 	}
 
 	// argv-or-shell decision: 2+ args → exec argv directly (no
@@ -3350,6 +3403,18 @@ func runExecStreaming(args []string, timeoutMs int, tty bool) error {
 // structured their input as argv knows they're not going through a
 // shell; the only time we should wrap is when there's a single string
 // that the user implicitly expects shell parsing on.
+// wrapWithSetpriv prepends a setpriv privilege-drop prefix to the user's
+// command for `dew run --confine`. A single shell-string arg is wrapped in
+// `/bin/sh -c` so setpriv execs a real argv (it does not parse shell syntax),
+// matching argvOrShellWrap's single-arg behavior.
+func wrapWithSetpriv(prefix, cmdArgs []string) []string {
+	inner := cmdArgs
+	if len(cmdArgs) == 1 {
+		inner = []string{"/bin/sh", "-c", cmdArgs[0]}
+	}
+	return append(append(append([]string{}, prefix...), "--"), inner...)
+}
+
 func argvOrShellWrap(cliArgs []string) (command string, args []string) {
 	if len(cliArgs) == 0 {
 		return "", nil

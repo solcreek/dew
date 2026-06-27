@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now baked in, so a hardened unit's `User=` / `DynamicUser=`,
   `CapabilityBoundingSet=`, and `RLimit*` effects are reproducible by hand.
   `minimal` and `node` stay lean.
+- **`dew run --confine <unit.service>`** approximates a systemd unit's hardening
+  without systemd: it derives cgroup limits (`MemoryMax`/`TasksMax`/`CPUQuota`)
+  and a `setpriv` privilege drop (`User=`/`DynamicUser=`,
+  `CapabilityBoundingSet=`, `NoNewPrivileges=`) and runs the command under them
+  (implies `--profile standard`). It is explicitly an approximation —
+  directives it can't enforce (`SystemCallFilter`, `ProtectSystem`, …) are
+  printed as warnings rather than silently dropped.
 
 ## [0.7.55] - 2026-06-27
 
