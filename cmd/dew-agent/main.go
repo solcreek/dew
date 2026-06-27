@@ -434,36 +434,47 @@ func handleConnect(vsockConn net.Conn, addr string) {
 const exposeListenIP = "127.0.0.2"
 
 var (
-	exposeMu      sync.Mutex
-	exposeStarted = map[int]bool{}
+	exposeMu        sync.Mutex
+	exposeListeners = map[int]net.Listener{}
 )
 
-// startExposeForwarders begins forwarding each host-exposed port: the guest
-// listens on 127.0.0.2:<port> and tunnels every accepted connection to the
-// host over ReverseForwardPort, where dew dials the macOS loopback. Idempotent
-// per port (SetExposes is normally sent once at boot).
+// startExposeForwarders reconciles the guest's reverse-forward listeners to
+// `ports` as the desired full set: it opens a 127.0.0.2:<port> listener for
+// each newly declared port (tunnelling accepted connections to the host over
+// ReverseForwardPort, where dew dials the macOS loopback) and closes any
+// previously started listener no longer in the set. Treating SetExposes as the
+// source of truth means a re-send with a smaller set reclaims the dropped
+// ports instead of leaving them dangling on 127.0.0.2.
 func startExposeForwarders(ports []int) {
-	for _, port := range ports {
-		if port < 1 || port > 65535 {
-			continue
+	desired := make(map[int]bool, len(ports))
+	for _, p := range ports {
+		if p >= 1 && p <= 65535 {
+			desired[p] = true
 		}
-		exposeMu.Lock()
-		already := exposeStarted[port]
-		if !already {
-			exposeStarted[port] = true
+	}
+
+	exposeMu.Lock()
+	defer exposeMu.Unlock()
+
+	// Drop listeners no longer desired (closing the listener unblocks its
+	// acceptExposeConns loop).
+	for port, ln := range exposeListeners {
+		if !desired[port] {
+			ln.Close()
+			delete(exposeListeners, port)
 		}
-		exposeMu.Unlock()
-		if already {
+	}
+	// Start listeners newly desired.
+	for port := range desired {
+		if _, running := exposeListeners[port]; running {
 			continue
 		}
 		ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", exposeListenIP, port))
 		if err != nil {
 			log.Printf("expose: listen %s:%d: %v", exposeListenIP, port, err)
-			exposeMu.Lock()
-			delete(exposeStarted, port)
-			exposeMu.Unlock()
 			continue
 		}
+		exposeListeners[port] = ln
 		go acceptExposeConns(ln, port)
 	}
 }
