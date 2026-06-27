@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   testable on macOS. `memory` takes a 1024-based K/M/G suffix; `cpu` is N% of a
   core or a bare core count. The agent shares the cap (a memory cap small enough
   to OOM the workload can also kill the agent).
+- **Hardening toolbox in the `standard` profile.** `setpriv` (with
+  `--reuid`/`--regid`/`--bounding-set`), `prlimit`, `capsh`, and `ss`/`ip` are
+  now baked in, so a hardened unit's `User=` / `DynamicUser=`,
+  `CapabilityBoundingSet=`, and `RLimit*` effects are reproducible by hand.
+  `minimal` and `node` stay lean.
 
 ## [0.7.55] - 2026-06-27
 

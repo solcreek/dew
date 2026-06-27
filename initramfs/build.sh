@@ -357,6 +357,25 @@ if [ "$PROFILE" = "node" ] || [ "$PROFILE" = "standard" ]; then
     fi
 fi
 
+# Hardening toolbox (standard profile only). Gives setpriv with
+# --reuid/--regid/--bounding-set (util-linux), prlimit (util-linux-misc),
+# capsh (libcap), and ss/ip (iproute2) so a hardened systemd unit's
+# User=/DynamicUser=, CapabilityBoundingSet=, and RLimit* effects are
+# reproducible by hand — the BusyBox setpriv in minimal can't express them.
+# Baked (not a runtime apk) so it works offline; standard is already the
+# fuller tier, so the few MB fit. minimal/node stay lean.
+if [ "$PROFILE" = "standard" ]; then
+    HOST_OS=$(uname -s)
+    if [ "$HOST_OS" = "Linux" ] && APK_STATIC=$(prepare_apk_static); then
+        echo "--- Step 4b: hardening toolbox (baked) ---"
+        ensure_apk_repos
+        apk_install_pkgs "$APK_STATIC" setpriv util-linux-misc libcap iproute2
+        rm -rf "$WORK_DIR/var/cache/apk"/* 2>/dev/null || true
+    else
+        echo "--- Step 4b: hardening toolbox skipped (build host = $HOST_OS) ---"
+    fi
+fi
+
 # e2fsprogs for any profile that uses disk (switch_root needs mkfs.ext4).
 # iptables for the egress-policy plumbing (every profile, not just
 # standard, because --network-policy=restricted applies to all).

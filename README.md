@@ -189,6 +189,17 @@ This makes the cgroup ceilings of a hardened `systemd` unit
 high-port bind, namespace isolation, and seccomp-capable kernel are all
 exercisable the same way.
 
+The `standard` profile additionally bakes a hardening toolbox — `setpriv`
+(with `--reuid`/`--regid`/`--bounding-set`), `prlimit`, `capsh`, and
+`ss`/`ip` — so the `User=` / `DynamicUser=`, `CapabilityBoundingSet=`, and
+`RLimit*` effects of a unit are reproducible by hand:
+
+```bash
+# run as an unprivileged uid with zero capabilities, like DynamicUser= + CapabilityBoundingSet=
+dew run --profile standard --share /tmp/x:rw -- \
+  setpriv --reuid 65534 --regid 65534 --clear-groups --bounding-set -all /x/app
+```
+
 ### Share instantly
 
 Temporary public HTTPS URL for any local port. Zero config, zero account.
