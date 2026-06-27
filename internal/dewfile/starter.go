@@ -31,7 +31,9 @@ func Starter(profile, install, command string, port int) string {
 	}
 
 	b.WriteString("\n# Services run in the same VM as the project (containers use the\n")
-	b.WriteString("# VM network, so the dev server reaches them on localhost).\n")
+	b.WriteString("# VM network, so the dev server reaches them on localhost). To reach\n")
+	b.WriteString("# a service on the macOS host, use host.internal (it resolves to the\n")
+	b.WriteString("# VM's NAT gateway; the host service must bind 0.0.0.0).\n")
 	b.WriteString("# Uncomment and edit, then re-run `dew up`:\n")
 	b.WriteString("#\n")
 	b.WriteString("# [[service]]\n")
