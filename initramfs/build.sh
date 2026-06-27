@@ -930,7 +930,13 @@ if grep -q cgroup2 /proc/filesystems 2>/dev/null; then
         # Delegate controllers from the root so the dew leaf exposes
         # memory.max/pids.max/cpu.max. The root cgroup is exempt from the
         # cgroup-v2 "no internal processes" rule, so PID 1 may stay in it.
-        echo "+cpu +memory +pids" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+        # Enable each controller on its own line: a subtree_control write is
+        # all-or-nothing, so a single "+cpu +memory +pids" would fail entirely
+        # on a kernel lacking any one controller and silently void every limit.
+        # Per-controller writes let the available ones still take effect.
+        for ctrl in cpu memory pids; do
+            echo "+$ctrl" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+        done
         [ -n "$DEW_CPU_QUOTA" ] && echo "$DEW_CPU_QUOTA 100000" > /sys/fs/cgroup/dew/cpu.max 2>/dev/null
         [ -n "$DEW_MEM_LIMIT" ] && echo "$DEW_MEM_LIMIT" > /sys/fs/cgroup/dew/memory.max 2>/dev/null
         [ -n "$DEW_PIDS_MAX" ]  && echo "$DEW_PIDS_MAX"  > /sys/fs/cgroup/dew/pids.max 2>/dev/null
