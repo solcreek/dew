@@ -1227,6 +1227,12 @@ func cmdStart(args []string) error {
 	if err != nil {
 		return err
 	}
+	// --confine is honored only by `dew run` (it wraps the foreground exec
+	// with setpriv). parseFlags accepts the flag for every command, so reject
+	// it here rather than letting `dew vm start --confine` silently ignore it.
+	if flagConfine != "" {
+		return dewerr.New(dewerr.CodeUsage, "--confine is only supported on `dew run`")
+	}
 	if err := resolveAssets(&cfg); err != nil {
 		return err
 	}
@@ -2158,6 +2164,16 @@ func cmdUp(args []string) error {
 	parsedCfg, remaining, err := parseFlags(args)
 	if err != nil {
 		return err
+	}
+	// `dew up` builds its own kernel cmdline and does not thread cgroup limits
+	// or the confine plan through, so accepting these flags here would silently
+	// drop them. Reject explicitly until `dew up` honors them. They are
+	// available on `dew run` (both) and `dew vm start` (--cgroup).
+	if parsedCfg.Cgroup.Set() {
+		return dewerr.New(dewerr.CodeUsage, "--cgroup is not supported on `dew up` (use `dew run` or `dew vm start`)")
+	}
+	if flagConfine != "" {
+		return dewerr.New(dewerr.CodeUsage, "--confine is only supported on `dew run`")
 	}
 	dir := "."
 	if len(remaining) > 0 {
