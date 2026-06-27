@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.54] - 2026-06-27
+
+### Added
+
+- **Multiple host forwards per service: dew.toml `[[service]]` `ports`.** Beyond
+  the health-gated primary `port`, declare extra host→container forwards as
+  `ports = ["1025", "1080:8025"]` — a bare `"PORT"` maps host==container, or
+  `"HOST:CONTAINER"` remaps (e.g. mailpit's SMTP `1025` alongside its web UI).
+  Extras are forwarded for any launched container, not gated on the primary
+  port's readiness, so a sibling port can be reached while the primary is still
+  binding. Duplicate requested host ports are rejected at load time.
+
+### Changed
+
+- **Faster `dew up` / `dew run` service startup.** Staged services now launch
+  and health-probe concurrently (wall-clock ≈ the slowest service, not the sum
+  of all of them), readiness is polled at 100ms instead of a flat 1s, and the
+  DHCP lease is taken off the boot critical path so the agent answers ~0.5–2s
+  sooner. The readiness gate is bounded by a ~30s wall-clock deadline.
+
+### Fixed
+
+- **`host.internal` no longer races container launch.** With the DHCP lease
+  backgrounded, a container started before `host.internal` was written to the
+  guest's `/etc/hosts` would permanently miss the alias. dew-oci-run now waits
+  (bounded, ~30s) for the lease to land before snapshotting the container's
+  hosts file, and warns if the wait caps with the lease still pending.
+- **`dew services` reports a deterministic host port** when a `ports` entry
+  shares a service's primary container port — it preferred a nondeterministic
+  forward (from the unordered forward-list) before, and could misreport the
+  main row's port.
+- Reaped the backgrounded DHCP lease child so it can't linger as a zombie under
+  PID 1.
+
+### Documentation
+
+- New README section on reaching the macOS host from the VM — `host.internal`
+  (NAT gateway, needs a `0.0.0.0` bind) vs `host.lo.internal` (vsock to the
+  host's `127.0.0.1`) — plus the field-evaluation 3-service stack sedimented
+  into a regression smoke test.
+
 ## [0.7.53] - 2026-06-26
 
 ### Added
