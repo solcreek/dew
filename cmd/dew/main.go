@@ -1557,14 +1557,17 @@ func cmdRun(args []string) error {
 		// listen port, then forward it so both the foreground command (over the
 		// VM's localhost) and the host can reach it. Mirrors cmdUp's loop, but
 		// runs each guest command over a fresh vsock conn instead of a daemon.
-		runGuest := func(cmdline string) (*RunResult, error) {
+		runGuestTimeout := func(cmdline string, timeout time.Duration) (*RunResult, error) {
 			conn, cerr := connectVsock(d, cfg.VsockPort)
 			if cerr != nil {
 				return nil, cerr
 			}
 			defer conn.Close()
 			ec, ea := argvOrShellWrap([]string{cmdline})
-			return execVsockConnArgv(conn, token, ec, ea, budget.guestTimeout())
+			return execVsockConnArgv(conn, token, ec, ea, timeout)
+		}
+		runGuest := func(cmdline string) (*RunResult, error) {
+			return runGuestTimeout(cmdline, budget.guestTimeout())
 		}
 		for _, f := range svcFailures {
 			fmt.Fprintf(os.Stderr, "dew: service %s failed: %s\n", f.name, f.reason)
@@ -1595,7 +1598,10 @@ func cmdRun(args []string) error {
 			},
 			func(s stagedService) bool {
 				return waitGuestReady(func() bool {
-					pr, perr := runGuest(services.ListenProbeCmd(s.port))
+					// Bound each probe exec at readyProbeExecTimeout so an
+					// unbounded (agent-default) exec can't stretch the gate far
+					// past its ~30s budget over readyProbeAttempts attempts.
+					pr, perr := runGuestTimeout(services.ListenProbeCmd(s.port), readyProbeExecTimeout)
 					return perr == nil && pr != nil && pr.ExitCode == 0
 				}, readyProbeAttempts, readyProbeInterval)
 			},

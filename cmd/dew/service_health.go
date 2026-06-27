@@ -68,6 +68,11 @@ func bringUpStaged(
 const (
 	readyProbeInterval = 100 * time.Millisecond
 	readyProbeAttempts = 300
+	// readyProbeExecTimeout bounds each individual listen-probe exec so the
+	// overall gate stays ~readyProbeAttempts*readyProbeInterval. Without it a
+	// probe exec inherits the agent default (up to 30s per attempt), and 300
+	// such attempts could blow far past the intended ~30s budget.
+	readyProbeExecTimeout = 5 * time.Second
 )
 
 // waitGuestReady calls probe repeatedly until it returns true or the
