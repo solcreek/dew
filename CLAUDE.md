@@ -84,7 +84,7 @@ params:
 | `dew.share=tag:/path[:ro]` | `cmdRun`/`cmdUp` per shared dir | init-stage2 | virtiofs mount (`dew up` adds `project:/app`) |
 | `dew.disk=1` | host when a data disk is attached | init | wait for `/dev/vda` (diskless skips the ~1s probe) |
 | `dew.rosetta=1` | `--rosetta` (arm64) | init-stage2 | mount rosetta share + register binfmt_misc |
-| `dew.cpu_quota=` / `dew.mem_limit=` | (see R4) | init-stage2 | cgroup `cpu.max` / `memory.max` on `/sys/fs/cgroup/dew` |
+| `dew.cpu_quota=` / `dew.mem_limit=` / `dew.pids_max=` | `--cgroup` (and `--confine`) | init-stage2 | cgroup `cpu.max` / `memory.max` / `pids.max` on `/sys/fs/cgroup/dew` |
 | `dew.cmd=` | `cmdStart` only | init-stage2 | base64 boot-time command (`dew run` delivers over vsock instead) |
 
 When adding a param: keep the `dew.` prefix, match it as a whole cmdline token,
