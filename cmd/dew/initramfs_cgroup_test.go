@@ -38,4 +38,15 @@ func TestInitramfsBuildScript_CgroupApply(t *testing.T) {
 	if !strings.Contains(script, "/sys/fs/cgroup/dew/cgroup.procs") {
 		t.Error("init-stage2 never moves the agent into the dew cgroup; --cgroup limits would not contain the workload")
 	}
+
+	// The move MUST use `sh -c` (an invoked shell's $$ is its own PID, kept
+	// across exec), NOT a `( … )` subshell — in POSIX/BusyBox ash $$ inside a
+	// subshell is the PARENT (PID 1), so a subshell writes init into the leaf
+	// and leaves the agent uncapped. Guard the exact regression.
+	if strings.Contains(script, "( echo $$ > /sys/fs/cgroup/dew/cgroup.procs") {
+		t.Error("agent placement uses a ( … ) subshell: $$ expands to PID 1, not the agent — limits won't contain the workload and init gets moved into the leaf")
+	}
+	if !strings.Contains(script, `sh -c "echo \$\$ > /sys/fs/cgroup/dew/cgroup.procs`) {
+		t.Error("agent placement must use `sh -c` so $$ is the agent's own PID (preserved across exec)")
+	}
 }

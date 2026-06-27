@@ -965,7 +965,13 @@ if [ -x /usr/local/bin/dew-agent ] && [ -e /dev/vsock ]; then
         # so `--cgroup` actually contains the guest workload. Trade-off: the
         # agent shares the cap, so a memory cap small enough to OOM the
         # workload can also kill the agent (documented).
-        ( echo $$ > /sys/fs/cgroup/dew/cgroup.procs 2>/dev/null; exec env $AGENT_ENV /usr/local/bin/dew-agent >/dev/null 2>&1 ) &
+        #
+        # Must be `sh -c`, NOT a `( … )` subshell: in POSIX/BusyBox ash `$$`
+        # inside a subshell expands to the PARENT shell (PID 1 / init), so a
+        # subshell would write init into the leaf and leave the agent uncapped
+        # in the root cgroup. An invoked shell's `$$` is its own PID, and the
+        # following `exec` keeps that PID — so the agent itself joins the leaf.
+        sh -c "echo \$\$ > /sys/fs/cgroup/dew/cgroup.procs 2>/dev/null; exec env $AGENT_ENV /usr/local/bin/dew-agent >/dev/null 2>&1" &
     else
         env $AGENT_ENV /usr/local/bin/dew-agent >/dev/null 2>&1 &
     fi
