@@ -331,7 +331,11 @@ func parseCPUQuota(s string) (int64, error) {
 	if err != nil || pct <= 0 {
 		return 0, fmt.Errorf("invalid percentage")
 	}
-	q := int64(pct / 100 * period)
+	f := pct / 100 * period
+	if f > float64(1<<63-1) { // also catches +Inf; guards int64 overflow
+		return 0, fmt.Errorf("quota out of range")
+	}
+	q := int64(f)
 	if q == 0 {
 		return 0, fmt.Errorf("quota too small (rounds to 0)")
 	}

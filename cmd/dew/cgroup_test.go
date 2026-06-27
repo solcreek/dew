@@ -38,6 +38,7 @@ func TestParseCgroup(t *testing.T) {
 		{"zero pids", "pids=0", vm.CgroupLimits{}, true},
 		{"negative cpu", "cpu=-1", vm.CgroupLimits{}, true},
 		{"cpu rounds to zero", "cpu=0.0001%", vm.CgroupLimits{}, true},
+		{"cpu finite overflow", "cpu=99999999999999999%", vm.CgroupLimits{}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

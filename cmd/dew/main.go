@@ -3854,17 +3854,24 @@ func parseCPUQuota(s string) (int64, error) {
 		if err != nil || pct <= 0 {
 			return 0, fmt.Errorf("invalid percentage %q", s)
 		}
-		q := int64(pct / 100 * period)
-		if q == 0 {
-			return 0, fmt.Errorf("cpu quota %q is too small (rounds to 0)", s)
-		}
-		return q, nil
+		return quotaFromFloat(pct/100*period, s)
 	}
 	cores, err := strconv.ParseFloat(s, 64)
 	if err != nil || cores <= 0 {
 		return 0, fmt.Errorf("invalid core count %q", s)
 	}
-	q := int64(cores * period)
+	return quotaFromFloat(cores*period, s)
+}
+
+// quotaFromFloat converts a computed cpu.max quota to int64, rejecting values
+// that overflow int64 (a finite-but-huge float, or +Inf — both > MaxInt64) and
+// values that round to 0 (NaN lands here too, since int64(NaN) == 0). Without
+// the range guard a bogus/negative quota could reach the kernel cmdline.
+func quotaFromFloat(f float64, s string) (int64, error) {
+	if f > float64(1<<63-1) {
+		return 0, fmt.Errorf("cpu quota %q is out of range", s)
+	}
+	q := int64(f)
 	if q == 0 {
 		return 0, fmt.Errorf("cpu quota %q is too small (rounds to 0)", s)
 	}
