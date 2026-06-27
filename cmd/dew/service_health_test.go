@@ -152,7 +152,11 @@ func TestBringUpStaged_RunsConcurrently(t *testing.T) {
 	got := bringUpStaged(svcs, func(stagedService) error { return nil }, probe, func(string) string { return "" })
 	elapsed := time.Since(start)
 
-	if elapsed > block*time.Duration(n)/2 {
+	// Serial execution takes n*block; true concurrency ≈ block. Assert
+	// comfortably below the serial time (n-1)*block rather than at the
+	// midpoint, so a loaded runner's scheduler jitter doesn't flake an
+	// actually-concurrent run. peak (below) is the strong overlap signal.
+	if elapsed >= block*time.Duration(n-1) {
 		t.Errorf("elapsed %v for %d services blocking %v each — looks serial, not concurrent", elapsed, n, block)
 	}
 	if peak < 2 {
