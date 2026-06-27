@@ -158,6 +158,7 @@ func (s *State) Stop() {
 	if s.listener != nil {
 		s.listener.Close()
 	}
+	s.StopHostExpose()
 	os.Remove(s.SocketPath)
 }
 

@@ -31,17 +31,20 @@ func TestInitStage2PublishesHostInternal(t *testing.T) {
 	if !strings.Contains(script, "} > /etc/hosts") {
 		t.Error("init-stage2 no longer writes the guest /etc/hosts")
 	}
+	// host.lo.internal → 127.0.0.2 is the reverse host-forward alias the agent
+	// listens on for `dew up --expose-host`.
+	if !strings.Contains(script, "127.0.0.2\\thost.lo.internal") {
+		t.Error("init-stage2 no longer writes the host.lo.internal (127.0.0.2) reverse-forward alias")
+	}
 }
 
-// dew-oci-run must propagate the guest's host.internal line into each
-// container's /etc/hosts, so a container reaches macOS host services the same
-// way the guest can. Without this, only the guest — not the crun containers
-// that actually run the services — could resolve host.internal.
+// dew-oci-run must propagate the guest's host alias lines into each container's
+// /etc/hosts, so a container reaches macOS host services the same way the guest
+// can — both host.internal (NAT gateway) and host.lo.internal (reverse-forward).
+// `grep -F .internal` matches every alias line and no localhost line.
 func TestOCIRunPropagatesHostInternal(t *testing.T) {
 	script := readBuildScript(t)
-	// grep -F: the hostname is matched as a literal, not a regex (the dots
-	// would otherwise be wildcards).
-	if !strings.Contains(script, "grep -F host.internal /etc/hosts") {
-		t.Error("dew-oci-run no longer copies the host.internal line into the container /etc/hosts")
+	if !strings.Contains(script, "grep -F .internal /etc/hosts") {
+		t.Error("dew-oci-run no longer copies the host alias lines into the container /etc/hosts")
 	}
 }
