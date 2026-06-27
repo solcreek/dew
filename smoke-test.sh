@@ -40,11 +40,14 @@ test_result() {
 
 # kill_port frees a host TCP port, portably. BSD/macOS xargs has no `-r`
 # (--no-run-if-empty), so capture the PIDs and only kill when non-empty
-# rather than piping through `xargs -r`.
+# rather than piping through `xargs -r`. No-op when lsof is absent (rather
+# than a silent command-not-found), and `kill --` so a PID can never be
+# mistaken for a flag.
 kill_port() {
+    command -v lsof >/dev/null 2>&1 || return 0
     local pids
     pids=$(lsof -ti:"$1" 2>/dev/null)
-    [ -n "$pids" ] && kill -9 $pids 2>/dev/null
+    [ -n "$pids" ] && kill -9 -- $pids 2>/dev/null
     return 0
 }
 
