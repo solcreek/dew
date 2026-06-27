@@ -99,6 +99,11 @@ func TestHostInternalPorts(t *testing.T) {
 		},
 		{"out-of-range-ignored", []string{"X=host.internal:99999"}, nil},
 		{"two-refs-one-value", []string{"X=host.internal:1 host.internal:2"}, []int{1, 2}},
+		// Boundary: host.internal must be a standalone hostname, not a tail
+		// (myhost.internal) or prefix (host.internalfoo) of a different name.
+		{"substring-prefix-not-matched", []string{"DB=myhost.internal:1234"}, nil},
+		{"substring-suffix-not-matched", []string{"X=host.internalfoo:80"}, nil},
+		{"in-url-with-userinfo", []string{"DB=postgres://u@host.internal:5432/app"}, []int{5432}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
