@@ -1445,7 +1445,10 @@ func cmdRun(args []string) error {
 		// setpriv ships only in the standard profile. --confine intent
 		// dominates: force standard unless the user already chose it.
 		if p.NeedsSetpriv() && flagProfile != "standard" {
-			if flagProfile != "" && !flagJSON {
+			// Always surface the override (even in --json): it changes which
+			// profile/disk/image the VM boots, which a scripted caller needs to
+			// know. It goes to stderr, so it doesn't pollute the stdout NDJSON.
+			if flagProfile != "" {
 				fmt.Fprintf(os.Stderr, "dew: --confine needs setpriv (privilege drop); using --profile standard instead of %s\n", flagProfile)
 			}
 			flagProfile = "standard"
