@@ -49,6 +49,16 @@ default mode flips from open to restricted.
 
 ## Mid-term
 
+### `systemd` profile (test real `.service` units locally)
+
+An opt-in, heavier profile that boots a systemd-based rootfs with systemd as
+PID 1, so a hardened deployment artifact can be tested as the literal unit:
+`systemctl start`, `systemd-analyze security <unit>`, and the systemd-specific
+semantics (`DynamicUser`, `ProtectSystem=strict`, `SystemCallFilter` group
+expansion) that `dew run --confine` only approximates. Stays opt-in and never a
+`detect.Detect()` default — it's against the lightweight grain of the Alpine
+profiles. Design and acceptance criteria: [`docs/systemd-profile.md`](docs/systemd-profile.md).
+
 ### Linux dev parity
 
 The macOS path is the most polished. Linux users get a `dew` binary

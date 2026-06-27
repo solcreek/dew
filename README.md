@@ -163,6 +163,57 @@ dew exec --name ci -- ./run-tests.sh
 dew vm stop --name ci
 ```
 
+### Verify a hardened deployment
+
+The guest is a real Linux kernel with a writable cgroup v2 hierarchy, so you
+can check that a production binary behaves under its resource ceilings — on a
+Mac, before shipping. `--cgroup` caps the workload without the manual
+`subtree_control` / `mkdir` / `cgroup.procs` dance:
+
+```bash
+# cross-build a static linux/arm64 binary, then run it under a 256 MiB / 256-pid cap
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o /tmp/x/app ./cmd/app
+dew run --share /tmp/x:rw --cgroup memory=256M,pids=256,cpu=200% -- /x/app
+```
+
+`memory` takes a 1024-based `K`/`M`/`G` suffix; `pids` is an integer; `cpu` is
+a percentage of one core (`200%`) or a bare core count (`2`). The limits land
+on `/sys/fs/cgroup/dew`, and the agent runs inside that cgroup so the cap
+contains the workload and everything it spawns. A process that exceeds the
+memory cap is OOM-killed exactly as it would be under a `systemd`
+`MemoryMax=` — note the agent shares the cap, so a cap small enough to OOM the
+workload can also take the agent down.
+
+This makes the cgroup ceilings of a hardened `systemd` unit
+(`MemoryMax` / `TasksMax` / `CPUQuota`) directly testable. The unprivileged
+high-port bind, namespace isolation, and seccomp-capable kernel are all
+exercisable the same way.
+
+The `standard` profile additionally bakes a hardening toolbox — `setpriv`
+(with `--reuid`/`--regid`/`--bounding-set`), `prlimit`, `capsh`, and
+`ss`/`ip` — so the `User=` / `DynamicUser=`, `CapabilityBoundingSet=`, and
+`RLimit*` effects of a unit are reproducible by hand:
+
+```bash
+# run as an unprivileged uid with zero capabilities, like DynamicUser= + CapabilityBoundingSet=
+dew run --profile standard --share /tmp/x:rw -- \
+  setpriv --reuid 65534 --regid 65534 --clear-groups --bounding-set -all /x/app
+```
+
+Or point dew at the unit itself. `--confine` reads a `.service` file, derives
+the cgroup limits and a `setpriv` privilege drop, and runs the command under
+them:
+
+```bash
+dew run --confine ./gateway.service --share /tmp/x:rw -- /x/app
+```
+
+It's an **approximation**, not a systemd reimplementation: `MemoryMax` /
+`TasksMax` / `CPUQuota`, `User=` / `DynamicUser=`, `CapabilityBoundingSet=`,
+and `NoNewPrivileges=` are applied; directives it can't enforce
+(`SystemCallFilter`, `ProtectSystem`, `RestrictAddressFamilies`, …) are printed
+as warnings so you know what's still only checked under real systemd.
+
 ### Share instantly
 
 Temporary public HTTPS URL for any local port. Zero config, zero account.
@@ -302,6 +353,7 @@ Infrastructure:
 
 Advanced:
   dew run [--] <cmd>             Execute in ephemeral VM
+  dew run --cgroup mem=…,pids=…,cpu=…  Cap the workload with cgroup v2
   dew run --image <ref>          Run an OCI image in a microVM
   dew exec [--name <vm>] <cmd>   Execute in a running VM
   dew vm start/stop [--name]     Manage long-lived (named) VMs

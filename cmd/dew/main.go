@@ -28,6 +28,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/solcreek/dew/internal/confine"
 	"github.com/solcreek/dew/internal/daemon"
 	"github.com/solcreek/dew/internal/detect"
 	"github.com/solcreek/dew/internal/dewfile"
@@ -69,6 +70,10 @@ var flagEnv []string
 var flagVolumes []string
 var flagDryRun bool
 var flagProfile string
+
+// flagConfine holds the path to a systemd unit whose hardening directives
+// `dew run --confine` approximates with cgroup limits + setpriv.
+var flagConfine string
 var flagServicesOnly bool
 var flagResetDisk bool
 
@@ -823,26 +828,47 @@ func stripLeadingGlobalFlags(args []string) []string {
 }
 
 func parseFlags(args []string) (vm.Config, []string, error) {
-	cfg := vm.Config{
+	return parseFlagsReset(vm.Config{
 		CPUs:     1,
 		MemoryMB: 512,
 		CmdLine:  "console=hvc0",
-	}
+	}, args, true)
+}
+
+// parseFlagsReset is parseFlags with control over the command-scoped-globals
+// reset. The top-level call resets (reset=true); the recursive call that picks
+// up flags appearing AFTER the first positional must NOT reset (reset=false) —
+// otherwise it would wipe globals already parsed before the positional in the
+// outer invocation (e.g. `dew up --reset-disk ./dir --dry-run` would lose
+// --reset-disk). cfg is threaded in (and the recursive call is seeded with the
+// current cfg and takes its result) so post-positional flags that mutate
+// vm.Config — --cpus/--memory/--cgroup/--share/--forward — actually take
+// effect instead of being parsed into a discarded copy.
+func parseFlagsReset(cfg vm.Config, args []string, reset bool) (vm.Config, []string, error) {
 	var remaining []string
 	// Reset command-scoped globals: parseFlags runs once per command, but tests
 	// reuse the process, so a prior --image/--platform/--timeout must not leak
 	// into a later invocation that didn't pass them.
-	flagTimeout = 0
-	flagImage = ""
-	flagPlatform = ""
-	flagEnv = nil
-	flagVolumes = nil
-	flagWith = ""
-	flagServicesOnly = false
-	flagResetDisk = false
-	flagInit = false
-	flagVMName = ""
-	flagExposeHost = nil
+	if reset {
+		flagTimeout = 0
+		flagImage = ""
+		flagPlatform = ""
+		flagEnv = nil
+		flagVolumes = nil
+		flagWith = ""
+		flagServicesOnly = false
+		flagResetDisk = false
+		flagInit = false
+		flagVMName = ""
+		flagExposeHost = nil
+		flagConfine = ""
+		flagProfile = ""
+		// NB: flagJSON/flagStream/flagEvents/flagDryRun are deliberately NOT
+		// reset here. They are set by the position-independent early global
+		// pass (so `dew --json run …` works even though parseFlags never sees
+		// --json), and resetting them here would wipe that. They are parsed
+		// again within parseFlags when they appear after the subcommand.
+	}
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -901,6 +927,22 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 			cfg.Network = true
 		case "--rosetta":
 			cfg.EnableRosetta = true
+		case "--cgroup":
+			i++
+			if i >= len(args) {
+				return cfg, nil, dewerr.New(dewerr.CodeUsage, "--cgroup requires limits (e.g. memory=256M,pids=256,cpu=200%)")
+			}
+			cg, perr := parseCgroup(args[i])
+			if perr != nil {
+				return cfg, nil, perr
+			}
+			cfg.Cgroup = cg
+		case "--confine":
+			i++
+			if i >= len(args) {
+				return cfg, nil, dewerr.New(dewerr.CodeUsage, "--confine requires a path to a systemd .service unit")
+			}
+			flagConfine = args[i]
 		case "--network-policy":
 			i++
 			if i >= len(args) {
@@ -958,6 +1000,25 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 				return cfg, nil, fmt.Errorf("--profile requires a name")
 			}
 			flagProfile = args[i]
+			// The systemd profile is designed but not yet built (it needs a
+			// non-Alpine, systemd-based rootfs). Fail with a pointer rather
+			// than a confusing "asset not found" download error. For testing
+			// the hardening primitives today, see `dew run --confine`.
+			if flagProfile == "systemd" {
+				return cfg, nil, dewerr.New(dewerr.CodeUnavailable,
+					"--profile systemd is not available yet (experimental): it needs a "+
+						"systemd-based rootfs. See docs/systemd-profile.md for the design and status; "+
+						"for now, `dew run --confine <unit.service>` approximates a unit's hardening.")
+			}
+			// Validate against the built profiles so a typo gets a clear error
+			// instead of falling through to resolveAssets and a confusing
+			// "initramfs not found" download failure from GitHub Releases.
+			switch flagProfile {
+			case "minimal", "node", "python", "standard":
+			default:
+				return cfg, nil, dewerr.Newf(dewerr.CodeUsage,
+					"unknown profile %q; valid: minimal, node, python, standard", flagProfile)
+			}
 		case "--name":
 			i++
 			if i >= len(args) {
@@ -1068,9 +1129,12 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 			collected := []string{args[i]}
 			for j := i + 1; j < len(args); j++ {
 				if strings.HasPrefix(args[j], "-") {
-					// Recurse the remaining flag stream so each
-					// known flag still gets its case-arm.
-					_, _, err := parseFlags(args[j:])
+					// Parse the remaining flag stream so each known flag still
+					// gets its case-arm. reset=false so this does not wipe
+					// globals already parsed before the positional; seed with
+					// (and take back) cfg so post-positional cfg flags apply.
+					var err error
+					cfg, _, err = parseFlagsReset(cfg, args[j:], false)
 					if err != nil {
 						return cfg, nil, err
 					}
@@ -1160,6 +1224,15 @@ func appendGuestParams(cfg *vm.Config) {
 	if cfg.EnableRosetta {
 		cfg.CmdLine += " dew.rosetta=1"
 	}
+	if cfg.Cgroup.MemoryBytes > 0 {
+		cfg.CmdLine += fmt.Sprintf(" dew.mem_limit=%d", cfg.Cgroup.MemoryBytes)
+	}
+	if cfg.Cgroup.PidsMax > 0 {
+		cfg.CmdLine += fmt.Sprintf(" dew.pids_max=%d", cfg.Cgroup.PidsMax)
+	}
+	if cfg.Cgroup.CPUQuota > 0 {
+		cfg.CmdLine += fmt.Sprintf(" dew.cpu_quota=%d", cfg.Cgroup.CPUQuota)
+	}
 	if cfg.Network && cfg.NetworkPolicy == "restricted" {
 		cfg.CmdLine += " dew.netpolicy=restricted"
 		if len(cfg.AllowHosts) > 0 {
@@ -1185,6 +1258,12 @@ func cmdStart(args []string) error {
 	cfg, cmdArgs, err := parseFlags(args)
 	if err != nil {
 		return err
+	}
+	// --confine is honored only by `dew run` (it wraps the foreground exec
+	// with setpriv). parseFlags accepts the flag for every command, so reject
+	// it here rather than letting `dew vm start --confine` silently ignore it.
+	if flagConfine != "" {
+		return dewerr.New(dewerr.CodeUsage, "--confine is only supported on `dew run`")
 	}
 	if err := resolveAssets(&cfg); err != nil {
 		return err
@@ -1369,6 +1448,42 @@ func cmdRun(args []string) error {
 	if (flagImage != "" || flagWith != "") && (flagProfile == "" || flagProfile == "minimal") {
 		flagProfile = "node"
 	}
+
+	// --confine: approximate a systemd unit's hardening with cgroup limits +
+	// setpriv. Resolves the plan, adjusts cfg/profile, and wraps cmdArgs below.
+	var confinePlan confine.Plan
+	if flagConfine != "" {
+		if flagImage != "" {
+			return dewerr.New(dewerr.CodeUsage, "--confine cannot be combined with --image")
+		}
+		if cfg.Cgroup.Set() {
+			return dewerr.New(dewerr.CodeUsage, "--confine derives cgroup limits from the unit; drop --cgroup or drop --confine")
+		}
+		p, perr := confine.ParseFile(flagConfine)
+		if perr != nil {
+			return dewerr.Newf(dewerr.CodeUsage, "--confine: %v", perr)
+		}
+		confinePlan = p
+		cfg.Cgroup = vm.CgroupLimits{MemoryBytes: p.MemoryBytes, PidsMax: p.PidsMax, CPUQuota: p.CPUQuota}
+		// setpriv ships only in the standard profile. --confine intent
+		// dominates: force standard unless the user already chose it.
+		if p.NeedsSetpriv() && flagProfile != "standard" {
+			// Always surface the override (even in --json): it changes which
+			// profile/disk/image the VM boots, which a scripted caller needs to
+			// know. It goes to stderr, so it doesn't pollute the stdout NDJSON.
+			if flagProfile != "" {
+				fmt.Fprintf(os.Stderr, "dew: --confine needs setpriv (privilege drop); using --profile standard instead of %s\n", flagProfile)
+			}
+			flagProfile = "standard"
+		}
+		if !flagJSON {
+			fmt.Fprintln(os.Stderr, "dew: --confine approximates systemd hardening — it is not equivalent to running the unit under systemd")
+			for _, u := range p.Unsupported {
+				fmt.Fprintf(os.Stderr, "dew:   not enforced: %s\n", u)
+			}
+		}
+	}
+
 	if err := resolveAssets(&cfg); err != nil {
 		return err
 	}
@@ -1649,6 +1764,14 @@ func cmdRun(args []string) error {
 				fmt.Fprintf(os.Stderr, "dew: service %s also on 127.0.0.1:%d → guest:%d\n", s.name, hp, ef.Container)
 			}
 		}
+	}
+
+	// --confine: prepend the setpriv privilege-drop prefix so the command
+	// runs as the unit's uid with its capability bounding set. The cgroup
+	// limits already crossed via cfg.Cgroup → appendGuestParams. A single
+	// shell arg is wrapped so setpriv execs a real argv, not a bare string.
+	if prefix := confinePlan.SetprivArgs(); len(prefix) > 0 {
+		cmdArgs = wrapWithSetpriv(prefix, cmdArgs)
 	}
 
 	// argv-or-shell decision: 2+ args → exec argv directly (no
@@ -2076,6 +2199,16 @@ func cmdUp(args []string) error {
 	parsedCfg, remaining, err := parseFlags(args)
 	if err != nil {
 		return err
+	}
+	// `dew up` builds its own kernel cmdline and does not thread cgroup limits
+	// or the confine plan through, so accepting these flags here would silently
+	// drop them. Reject explicitly until `dew up` honors them. They are
+	// available on `dew run` (both) and `dew vm start` (--cgroup).
+	if parsedCfg.Cgroup.Set() {
+		return dewerr.New(dewerr.CodeUsage, "--cgroup is not supported on `dew up` (use `dew run` or `dew vm start`)")
+	}
+	if flagConfine != "" {
+		return dewerr.New(dewerr.CodeUsage, "--confine is only supported on `dew run`")
 	}
 	dir := "."
 	if len(remaining) > 0 {
@@ -3331,6 +3464,18 @@ func runExecStreaming(args []string, timeoutMs int, tty bool) error {
 // structured their input as argv knows they're not going through a
 // shell; the only time we should wrap is when there's a single string
 // that the user implicitly expects shell parsing on.
+// wrapWithSetpriv prepends a setpriv privilege-drop prefix to the user's
+// command for `dew run --confine`. A single shell-string arg is wrapped in
+// `/bin/sh -c` so setpriv execs a real argv (it does not parse shell syntax),
+// matching argvOrShellWrap's single-arg behavior.
+func wrapWithSetpriv(prefix, cmdArgs []string) []string {
+	inner := cmdArgs
+	if len(cmdArgs) == 1 {
+		inner = []string{"/bin/sh", "-c", cmdArgs[0]}
+	}
+	return append(append(append([]string{}, prefix...), "--"), inner...)
+}
+
 func argvOrShellWrap(cliArgs []string) (command string, args []string) {
 	if len(cliArgs) == 0 {
 		return "", nil
@@ -3610,6 +3755,100 @@ func parseVolume(s string) (src, dest string, err error) {
 		}
 	}
 	return "/var/lib/dew/volumes/" + left, dst, nil
+}
+
+// parseCgroup parses a `--cgroup` spec: a comma-separated list of
+// key=value limits applied to the guest's /sys/fs/cgroup/dew leaf.
+//
+//	memory=256M    memory.max — K/M/G suffix is 1024-based; bare = bytes
+//	pids=256       pids.max — integer
+//	cpu=200%       cpu.max — N% of one core, or a bare core count (2 = 200%)
+//
+// Unknown keys, malformed values, and non-positive numbers are errors so a
+// typo fails loudly rather than silently leaving a limit unset.
+func parseCgroup(s string) (vm.CgroupLimits, error) {
+	var cg vm.CgroupLimits
+	// An empty or all-whitespace spec falls through the loop and is caught by
+	// the trailing !cg.Set() check, so no separate empty guard is needed.
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(part, "=")
+		if !ok {
+			return cg, dewerr.Newf(dewerr.CodeUsage, "--cgroup: expected key=value, got %q", part)
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		switch k {
+		case "memory", "mem":
+			b, err := parseByteSize(v)
+			if err != nil {
+				return cg, dewerr.Newf(dewerr.CodeUsage, "--cgroup memory: %v", err)
+			}
+			cg.MemoryBytes = b
+		case "pids", "tasks":
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil || n <= 0 {
+				return cg, dewerr.Newf(dewerr.CodeUsage, "--cgroup pids: invalid count %q", v)
+			}
+			cg.PidsMax = n
+		case "cpu":
+			q, err := parseCPUQuota(v)
+			if err != nil {
+				return cg, dewerr.Newf(dewerr.CodeUsage, "--cgroup cpu: %v", err)
+			}
+			cg.CPUQuota = q
+		default:
+			return cg, dewerr.Newf(dewerr.CodeUsage, "--cgroup: unknown key %q (want memory, pids, cpu)", k)
+		}
+	}
+	if !cg.Set() {
+		return cg, dewerr.New(dewerr.CodeUsage, "--cgroup: no limits parsed")
+	}
+	return cg, nil
+}
+
+// parseByteSize parses a positive 1024-based size for --cgroup memory. It
+// shares one size grammar with --confine via confine.ParseSize; percentages
+// and non-positive sizes (incl. "infinity"/empty, which ParseSize maps to 0)
+// are rejected here since a cgroup cap must be a concrete positive byte count.
+func parseByteSize(s string) (int64, error) {
+	b, isPct, err := confine.ParseSize(s)
+	if err != nil {
+		return 0, err
+	}
+	if isPct {
+		return 0, fmt.Errorf("percentage not supported: %q", s)
+	}
+	if b <= 0 {
+		return 0, fmt.Errorf("invalid size %q", s)
+	}
+	return b, nil
+}
+
+// parseCPUQuota converts a cpu spec into a cpu.max quota numerator for a
+// 100000us period: "200%" → 200000, "2" → 200000, "50%" → 50000. The "%" form
+// and the overflow/round-to-0 guard are shared with --confine via
+// confine.QuotaFromFloat; this adds the bare-core-count form on top.
+func parseCPUQuota(s string) (int64, error) {
+	const period = 100000
+	if s == "" {
+		return 0, fmt.Errorf("empty cpu spec")
+	}
+	if strings.HasSuffix(s, "%") {
+		pct, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
+		if err != nil || pct <= 0 {
+			return 0, fmt.Errorf("invalid percentage %q", s)
+		}
+		return confine.QuotaFromFloat(pct / 100 * period)
+	}
+	cores, err := strconv.ParseFloat(s, 64)
+	if err != nil || cores <= 0 {
+		return 0, fmt.Errorf("invalid core count %q", s)
+	}
+	return confine.QuotaFromFloat(cores * period)
 }
 
 // parseShare accepts three forms:

@@ -96,6 +96,23 @@ Flags:
   --share <hostdir>[:rw|:ro]   or   --share <tag>:<hostdir>[:rw|:ro]
                          Mount a host directory into the guest.
                          Default mode is read-only.
+  --cgroup memory=256M,pids=256,cpu=200%
+                         Cap the guest workload with cgroup v2. memory
+                         takes a 1024-based K/M/G suffix; pids is the max
+                         number of processes/threads; cpu is N% of one
+                         core (or a bare core count). The agent shares the
+                         cap, so a memory cap small enough to OOM the
+                         workload can also kill it.
+  --confine <unit.service>
+                         Approximate a systemd unit's hardening: derive
+                         cgroup limits (MemoryMax/TasksMax/CPUQuota) and a
+                         setpriv privilege drop (User=/DynamicUser=,
+                         CapabilityBoundingSet=, NoNewPrivileges=) and run
+                         the command under them. Forces --profile standard
+                         when the unit drops privileges (for setpriv). An
+                         APPROXIMATION — directives it can't enforce (seccomp,
+                         ProtectSystem, ...) are printed as warnings, not
+                         applied.
   --json                 Pass guest exit code in JSON; dew exits 0.
   --stream / --events    Stream stdout/stderr live.
   --timeout DUR          Overall wall-clock bound for the whole run
@@ -109,6 +126,7 @@ Examples:
   dew run -- sh -c 'echo A; echo B'
   dew run --network -- curl https://example.com
   dew run --share ./data:rw -- ls /data
+  dew run --cgroup memory=256M,pids=256 -- ./my-binary
 `,
 	"exec": `dew exec — execute a command in a running VM
 

@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dew run --cgroup memory=…,pids=…,cpu=…`** caps the guest workload with
+  cgroup v2 (also on `dew vm start`). The limits are applied to
+  `/sys/fs/cgroup/dew` and the agent runs inside that cgroup, so a hardened
+  `systemd` unit's `MemoryMax` / `TasksMax` / `CPUQuota` ceilings are directly
+  testable on macOS. `memory` takes a 1024-based K/M/G suffix; `cpu` is N% of a
+  core or a bare core count. The agent shares the cap (a memory cap small enough
+  to OOM the workload can also kill the agent).
+- **Hardening toolbox in the `standard` profile.** `setpriv` (with
+  `--reuid`/`--regid`/`--bounding-set`), `prlimit`, `capsh`, and `ss`/`ip` are
+  now baked in, so a hardened unit's `User=` / `DynamicUser=`,
+  `CapabilityBoundingSet=`, and `RLimit*` effects are reproducible by hand.
+  `minimal` and `node` stay lean.
+- **`dew run --confine <unit.service>`** approximates a systemd unit's hardening
+  without systemd: it derives cgroup limits (`MemoryMax`/`TasksMax`/`CPUQuota`)
+  and a `setpriv` privilege drop (`User=`/`DynamicUser=`,
+  `CapabilityBoundingSet=`, `NoNewPrivileges=`) and runs the command under them
+  (forces `--profile standard` when the unit drops privileges). It is explicitly an approximation —
+  directives it can't enforce (`SystemCallFilter`, `ProtectSystem`, …) are
+  printed as warnings rather than silently dropped.
+
+### Changed
+
+- **`--profile systemd` fails clearly instead of confusingly.** The systemd
+  profile is designed but not yet built (it needs a non-Alpine rootfs); the flag
+  now exits `105` (`unavailable`) pointing to `docs/systemd-profile.md` and the
+  `--confine` alternative, rather than a misleading "asset not found" download
+  error.
+
 ## [0.7.55] - 2026-06-27
 
 ### Changed

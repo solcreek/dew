@@ -347,7 +347,16 @@ if [ "$PROFILE" = "node" ] || [ "$PROFILE" = "standard" ]; then
     if [ "$HOST_OS" = "Linux" ] && APK_STATIC=$(prepare_apk_static); then
         echo "--- Step 4a: Node.js + npm (baked) ---"
         ensure_apk_repos
-        apk_install_pkgs "$APK_STATIC" nodejs npm
+        # standard additionally bakes the hardening toolbox: setpriv with
+        # --reuid/--regid/--bounding-set (util-linux), prlimit (util-linux-misc),
+        # capsh (libcap), and ss/ip (iproute2) so a hardened systemd unit's
+        # User=/DynamicUser=, CapabilityBoundingSet=, and RLimit* effects are
+        # reproducible by hand — the BusyBox setpriv in minimal can't express
+        # them. Folded into this one apk transaction (not a second one) so the
+        # standard build fetches the APKINDEX once; minimal/node stay lean.
+        PKGS="nodejs npm"
+        [ "$PROFILE" = "standard" ] && PKGS="$PKGS setpriv util-linux-misc libcap iproute2"
+        apk_install_pkgs "$APK_STATIC" $PKGS
         if [ -x "$WORK_DIR/usr/bin/node" ]; then
             echo "  Node: $($WORK_DIR/usr/bin/node --version 2>/dev/null)"
         fi
@@ -887,21 +896,56 @@ fi
 # kernel cmdline params
 DEW_CPU_QUOTA=""
 DEW_MEM_LIMIT=""
+DEW_PIDS_MAX=""
 DEW_CMD=""
 for param in $(cat /proc/cmdline); do
     case "$param" in
         dew.cpu_quota=*) DEW_CPU_QUOTA="${param#dew.cpu_quota=}" ;;
         dew.mem_limit=*) DEW_MEM_LIMIT="${param#dew.mem_limit=}" ;;
+        dew.pids_max=*)  DEW_PIDS_MAX="${param#dew.pids_max=}" ;;
         dew.cmd=*)       DEW_CMD="${param#dew.cmd=}" ;;
     esac
 done
 
-# cgroup v2
+# cgroup v2. The /sys/fs/cgroup/dew leaf always exists (the agent reports it
+# as writable); limits are applied only when `--cgroup` passed them. Without
+# delegating controllers from the root these memory.max/pids.max/cpu.max files
+# wouldn't exist on the leaf, so the limit writes would no-op — which is why
+# this gates the whole apply path on DEW_CGROUP_ACTIVE.
+DEW_CGROUP_ACTIVE=""
 if grep -q cgroup2 /proc/filesystems 2>/dev/null; then
     mountpoint -q /sys/fs/cgroup || mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
-    mkdir -p /sys/fs/cgroup/dew
-    [ -n "$DEW_CPU_QUOTA" ] && echo "$DEW_CPU_QUOTA 100000" > /sys/fs/cgroup/dew/cpu.max 2>/dev/null
-    [ -n "$DEW_MEM_LIMIT" ] && echo "$DEW_MEM_LIMIT" > /sys/fs/cgroup/dew/memory.max 2>/dev/null
+    # Confirm cgroup2 is actually mounted before touching it. cgroup.controllers
+    # exists only on a real cgroup2 mount; if the mount failed, writes would
+    # land as regular files and DEW_CGROUP_ACTIVE would falsely imply active
+    # limits. Gate the apply path (and the leaf mkdir) on it.
+    if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+      mkdir -p /sys/fs/cgroup/dew
+      if [ -n "$DEW_CPU_QUOTA" ] || [ -n "$DEW_MEM_LIMIT" ] || [ -n "$DEW_PIDS_MAX" ]; then
+        # Delegate controllers from the root so the dew leaf exposes
+        # memory.max/pids.max/cpu.max. The root cgroup is exempt from the
+        # cgroup-v2 "no internal processes" rule, so PID 1 may stay in it.
+        # Enable each controller on its own line: a subtree_control write is
+        # all-or-nothing, so a single "+cpu +memory +pids" would fail entirely
+        # on a kernel lacking any one controller and silently void every limit.
+        # Per-controller writes let the available ones still take effect.
+        for ctrl in cpu memory pids; do
+            echo "+$ctrl" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+        done
+        [ -n "$DEW_CPU_QUOTA" ] && echo "$DEW_CPU_QUOTA 100000" > /sys/fs/cgroup/dew/cpu.max 2>/dev/null
+        [ -n "$DEW_MEM_LIMIT" ] && echo "$DEW_MEM_LIMIT" > /sys/fs/cgroup/dew/memory.max 2>/dev/null
+        [ -n "$DEW_PIDS_MAX" ]  && echo "$DEW_PIDS_MAX"  > /sys/fs/cgroup/dew/pids.max 2>/dev/null
+        # Diagnose silent failures: if a requested limit's file is absent the
+        # controller wasn't delegated, so the cap did NOT take effect. Warn to
+        # the console rather than letting DEW_CGROUP_ACTIVE imply it did.
+        [ -n "$DEW_CPU_QUOTA" ] && [ ! -f /sys/fs/cgroup/dew/cpu.max ]    && echo "dew: warning: cpu cap requested but cpu controller unavailable; not applied"
+        [ -n "$DEW_MEM_LIMIT" ] && [ ! -f /sys/fs/cgroup/dew/memory.max ] && echo "dew: warning: memory cap requested but memory controller unavailable; not applied"
+        [ -n "$DEW_PIDS_MAX" ]  && [ ! -f /sys/fs/cgroup/dew/pids.max ]   && echo "dew: warning: pids cap requested but pids controller unavailable; not applied"
+        DEW_CGROUP_ACTIVE=1
+      fi
+    elif [ -n "$DEW_CPU_QUOTA$DEW_MEM_LIMIT$DEW_PIDS_MAX" ]; then
+      echo "dew: warning: cgroup2 is not mounted; --cgroup limits not applied"
+    fi
 fi
 
 # unprivileged user with sudo
@@ -926,7 +970,21 @@ chmod 440 /etc/sudoers.d/dew 2>/dev/null || true
 # DEW_EXEC_USER=dew opts into unprivileged-user exec for untrusted code.
 AGENT_ENV=""
 if [ -x /usr/local/bin/dew-agent ] && [ -e /dev/vsock ]; then
-    env $AGENT_ENV /usr/local/bin/dew-agent >/dev/null 2>&1 &
+    if [ -n "$DEW_CGROUP_ACTIVE" ]; then
+        # Run the agent — and so everything it execs — inside the capped leaf
+        # so `--cgroup` actually contains the guest workload. Trade-off: the
+        # agent shares the cap, so a memory cap small enough to OOM the
+        # workload can also kill the agent (documented).
+        #
+        # Must be `sh -c`, NOT a `( … )` subshell: in POSIX/BusyBox ash `$$`
+        # inside a subshell expands to the PARENT shell (PID 1 / init), so a
+        # subshell would write init into the leaf and leave the agent uncapped
+        # in the root cgroup. An invoked shell's `$$` is its own PID, and the
+        # following `exec` keeps that PID — so the agent itself joins the leaf.
+        sh -c "echo \$\$ > /sys/fs/cgroup/dew/cgroup.procs 2>/dev/null; exec env $AGENT_ENV /usr/local/bin/dew-agent >/dev/null 2>&1" &
+    else
+        env $AGENT_ENV /usr/local/bin/dew-agent >/dev/null 2>&1 &
+    fi
     echo "dew-agent: vsock ready"
 fi
 
