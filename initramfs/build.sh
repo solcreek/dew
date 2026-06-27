@@ -465,18 +465,19 @@ cp "$BUNDLE/config.json" "$RUN/bundle/config.json"
 # is refused) instead of resolving it locally — breaking same-VM config like
 # REDIS_URL=redis://localhost:6379. Write a Docker-style hosts file (into the
 # per-run overlay upper, so the image is untouched) and hand the container the
-# guest's resolver so its outbound DNS works too. The host.internal line from
-# the guest's own /etc/hosts (the VZ NAT gateway, set in init-stage2) is
-# appended so a container can reach macOS host services the same way the guest
-# can. Grouped with stderr silenced and `|| true` so it stays truly
-# best-effort under `set -e`: an unwritable overlay must neither abort the
-# launch nor print a redirect-open error (which the shell emits before a
-# per-command 2>/dev/null would take effect).
+# guest's resolver so its outbound DNS works too. The host alias lines from the
+# guest's own /etc/hosts (host.internal → VZ NAT gateway, host.lo.internal →
+# 127.0.0.2 reverse-forward, both set in init-stage2) are appended so a
+# container can reach macOS host services the same way the guest can. Grouped
+# with stderr silenced and `|| true` so it stays truly best-effort under
+# `set -e`: an unwritable overlay must neither abort the launch nor print a
+# redirect-open error (which the shell emits before a per-command 2>/dev/null
+# would take effect).
 {
     mkdir -p "$RUN/merged/etc" &&
     {
         printf '127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n'
-        grep -F host.internal /etc/hosts 2>/dev/null || true
+        grep -F .internal /etc/hosts 2>/dev/null || true
     } > "$RUN/merged/etc/hosts" &&
     cp /etc/resolv.conf "$RUN/merged/etc/resolv.conf"
 } 2>/dev/null || true
@@ -723,9 +724,17 @@ fi
 # Written unconditionally (not only when eth0 exists) so localhost always
 # resolves locally even on a no-network profile; the host.internal line is
 # added only when a default route — hence a gateway — is known.
+#
+# host.lo.internal (127.0.0.2) is the reverse host-forward alias: when the user
+# runs `dew up --expose-host PORT`, dew-agent listens on 127.0.0.2:PORT and
+# tunnels to the host over vsock, so a host service bound to 127.0.0.1 (not just
+# 0.0.0.0) is reachable, bypassing NAT entirely. The alias always resolves; it
+# only connects when a port was exposed. 127.0.0.2 (not .1) so the forwarder
+# never shadows a container's own localhost services.
 HOST_GW=$(ip route 2>/dev/null | awk '$1=="default" && $2=="via" {print $3; exit}')
 {
     printf '127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n'
+    printf '127.0.0.2\thost.lo.internal\n'
     [ -n "$HOST_GW" ] && printf '%s\thost.internal host.dew.internal\n' "$HOST_GW"
 } > /etc/hosts
 

@@ -36,6 +36,9 @@ install = "npm ci"
 command = "npm run dev"
 port = 3000
 
+[host]
+expose = [50051, 5432]
+
 [[service]]
 name = "redis"
 image = "redis:7-alpine"
@@ -61,6 +64,9 @@ args = ["--smtp-auth-allow-insecure"]
 	}
 	if len(f.Services) != 2 {
 		t.Fatalf("services = %d, want 2", len(f.Services))
+	}
+	if len(f.Host.Expose) != 2 || f.Host.Expose[0] != 50051 || f.Host.Expose[1] != 5432 {
+		t.Errorf("host.expose = %v, want [50051 5432]", f.Host.Expose)
 	}
 
 	// ServiceList must map cleanly onto services.Service (DataDir, Args, Env).
@@ -93,6 +99,7 @@ func TestLoadRejects(t *testing.T) {
 		{"relative data", "[[service]]\nname=\"a\"\nimage=\"x\"\nport=1\ndata=\"var/data\"\n", "must be absolute"},
 		{"bad env", "[[service]]\nname=\"a\"\nimage=\"x\"\nport=1\nenv=[\"NOEQUALS\"]\n", "must be KEY=VALUE"},
 		{"bad service name", "[[service]]\nname=\"Bad Name\"\nimage=\"x\"\n", "invalid service name"},
+		{"bad expose port", "[host]\nexpose = [70000]\n", "host.expose port"},
 		{"unknown key", "[project]\nprofil = \"node\"\n", "unknown key"},
 		{"bad toml", "[project\n", "dew.toml:"},
 	}

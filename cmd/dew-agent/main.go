@@ -140,6 +140,23 @@ func handleConn(conn net.Conn) {
 			}
 			return
 
+		case protocol.TypeSetExposes:
+			var req protocol.SetExposesRequest
+			// Fail closed on a malformed frame before mutating listener state:
+			// a corrupt SetExposes must not reconcile (and possibly tear down)
+			// the guest's expose listeners.
+			if err := json.Unmarshal(data, &req); err != nil {
+				protocol.WriteJSON(conn, &protocol.ConnectResponse{Error: "bad set_exposes request"})
+				return
+			}
+			if !isAuthorized(req.Token) {
+				protocol.WriteJSON(conn, &protocol.ConnectResponse{Error: "unauthorized"})
+				return
+			}
+			startExposeForwarders(req.Ports)
+			protocol.WriteJSON(conn, &protocol.ConnectResponse{OK: true})
+			return
+
 		case protocol.TypeConnect:
 			var req protocol.ConnectRequest
 			json.Unmarshal(data, &req)
@@ -412,6 +429,102 @@ func handleConnect(vsockConn net.Conn, addr string) {
 		defer wg.Done()
 		io.Copy(vsockConn, tcpConn)
 	}()
+	wg.Wait()
+}
+
+// exposeListenIP is the guest loopback alias the reverse host-forward listens
+// on. host.lo.internal resolves here (set in init-stage2 / dew-oci-run), so a
+// guest dev server or a --net=host container reaches a macOS host service at
+// host.lo.internal:<port> without colliding with 127.0.0.1 services in the
+// same VM.
+const exposeListenIP = "127.0.0.2"
+
+// reverseDialRespTimeout bounds how long the guest waits for the host's
+// ReverseDialResponse handshake. A stalled host listener or wedged vsock
+// transport must not block this goroutine (and its TCP conn) forever.
+const reverseDialRespTimeout = 5 * time.Second
+
+var (
+	exposeMu        sync.Mutex
+	exposeListeners = map[int]net.Listener{}
+)
+
+// startExposeForwarders reconciles the guest's reverse-forward listeners to
+// `ports` as the desired full set: it opens a 127.0.0.2:<port> listener for
+// each newly declared port (tunnelling accepted connections to the host over
+// ReverseForwardPort, where dew dials the macOS loopback) and closes any
+// previously started listener no longer in the set. Treating SetExposes as the
+// source of truth means a re-send with a smaller set reclaims the dropped
+// ports instead of leaving them dangling on 127.0.0.2.
+func startExposeForwarders(ports []int) {
+	desired := make(map[int]bool, len(ports))
+	for _, p := range ports {
+		if p >= 1 && p <= 65535 {
+			desired[p] = true
+		}
+	}
+
+	exposeMu.Lock()
+	defer exposeMu.Unlock()
+
+	// Drop listeners no longer desired (closing the listener unblocks its
+	// acceptExposeConns loop).
+	for port, ln := range exposeListeners {
+		if !desired[port] {
+			ln.Close()
+			delete(exposeListeners, port)
+		}
+	}
+	// Start listeners newly desired.
+	for port := range desired {
+		if _, running := exposeListeners[port]; running {
+			continue
+		}
+		ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", exposeListenIP, port))
+		if err != nil {
+			log.Printf("expose: listen %s:%d: %v", exposeListenIP, port, err)
+			continue
+		}
+		exposeListeners[port] = ln
+		go acceptExposeConns(ln, port)
+	}
+}
+
+func acceptExposeConns(ln net.Listener, port int) {
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go handleExposeConn(c, port)
+	}
+}
+
+// handleExposeConn tunnels one guest-side connection to the host: open a vsock
+// stream to the host's ReverseForwardPort, send a ReverseDialRequest for this
+// port, and on OK proxy bytes both ways. The host enforces token + allow-set.
+func handleExposeConn(tcpConn net.Conn, port int) {
+	defer tcpConn.Close()
+	vsockConn, err := vsock.Dial(vsock.Host, protocol.ReverseForwardPort, nil)
+	if err != nil {
+		return
+	}
+	defer vsockConn.Close()
+
+	if err := protocol.WriteJSON(vsockConn, &protocol.ReverseDialRequest{
+		Type: protocol.TypeReverseDial, Token: authToken, Port: port,
+	}); err != nil {
+		return
+	}
+	var resp protocol.ReverseDialResponse
+	if err := protocol.ReadJSONTimeout(vsockConn, &resp, reverseDialRespTimeout); err != nil || !resp.OK {
+		return
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); io.Copy(vsockConn, tcpConn) }()
+	go func() { defer wg.Done(); io.Copy(tcpConn, vsockConn) }()
 	wg.Wait()
 }
 

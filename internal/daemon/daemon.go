@@ -37,6 +37,11 @@ type State struct {
 	// can register a new one against the same VM without restarting.
 	forwardMu sync.Mutex
 	forwards  map[string]*ForwardEntry
+
+	// expose holds the reverse host-forward: the host vsock listener that
+	// accepts guest-initiated dials to declared macOS host ports. Empty
+	// unless `dew up --expose-host` / dew.toml [host] expose is set.
+	expose hostExpose
 }
 
 // ForwardEntry records a live host→guest TCP forward. Keyed by
@@ -153,6 +158,7 @@ func (s *State) Stop() {
 	if s.listener != nil {
 		s.listener.Close()
 	}
+	s.StopHostExpose()
 	os.Remove(s.SocketPath)
 }
 

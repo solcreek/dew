@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,6 +71,11 @@ var flagDryRun bool
 var flagProfile string
 var flagServicesOnly bool
 var flagResetDisk bool
+
+// flagExposeHost collects repeatable --expose-host PORT values for `dew up`:
+// macOS host ports made reachable from the VM as host.lo.internal:PORT over a
+// vsock reverse-forward (works against a 127.0.0.1-bound host service).
+var flagExposeHost []int
 
 // flagInit makes `dew up --init` write a starter dew.toml for the detected
 // project and exit, instead of booting.
@@ -830,6 +836,7 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 	flagResetDisk = false
 	flagInit = false
 	flagVMName = ""
+	flagExposeHost = nil
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -978,6 +985,16 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 			flagWith = args[i]
 		case "--services-only", "--no-dev":
 			flagServicesOnly = true
+		case "--expose-host":
+			i++
+			if i >= len(args) {
+				return cfg, nil, fmt.Errorf("--expose-host requires a port (e.g. --expose-host 50051)")
+			}
+			p, perr := strconv.Atoi(args[i])
+			if perr != nil || p < 1 || p > 65535 {
+				return cfg, nil, fmt.Errorf("--expose-host: expected a port in 1..65535, got %q", args[i])
+			}
+			flagExposeHost = append(flagExposeHost, p)
 		case "--image":
 			i++
 			if i >= len(args) {
@@ -2045,6 +2062,7 @@ func cmdUp(args []string) error {
 	if df != nil {
 		tomlSvcs = df.ServiceList()
 	}
+	exposePorts := exposeHostPorts(flagExposeHost, df)
 
 	var proj *detect.Project
 	if flagServicesOnly {
@@ -2351,6 +2369,31 @@ func cmdUp(args []string) error {
 	for _, f := range cfg.Forwards {
 		if _, err := dmn.AddForward(f.HostPort, f.GuestPort); err != nil {
 			fmt.Fprintf(os.Stderr, "dew: %v\n", err)
+		}
+	}
+
+	// Reverse host-forward: make the declared macOS host ports reachable from
+	// the VM as host.lo.internal:<port> over vsock (works even against a
+	// 127.0.0.1-bound host service, and bypasses the NAT path entirely). The
+	// host listener and the guest forwarder are both authenticated with the
+	// token, so this only runs once the handshake succeeded.
+	if len(exposePorts) > 0 && tokenSent {
+		if err := dmn.StartHostExpose(exposePorts); err != nil {
+			fmt.Fprintf(os.Stderr, "dew: host-expose: %v\n", err)
+		} else if err := sendExposes(d, cfg.VsockPort, token, exposePorts); err != nil {
+			// All-or-nothing: the host listener is up but the guest never
+			// started its forwarders, so tear the listener back down rather
+			// than leave host/guest state inconsistent for the session.
+			dmn.StopHostExpose()
+			fmt.Fprintf(os.Stderr, "dew: host-expose: notify guest: %v\n", err)
+		} else {
+			emit(map[string]interface{}{
+				"type": "host-expose", "ports": exposePorts, "alias": "host.lo.internal",
+			})
+			if !flagJSON && !flagEvents {
+				fmt.Fprintf(os.Stderr, "  host: %s reachable in the VM as host.lo.internal:<port>\n",
+					joinInts(exposePorts))
+			}
 		}
 	}
 
@@ -3283,6 +3326,59 @@ func sendToken(v vm.VM, port uint32, token string) error {
 		return fmt.Errorf("token rejected: %s", resp.Error)
 	}
 	return nil
+}
+
+// sendExposes tells the guest agent which host ports to forward back to the
+// host (host.lo.internal:port). Mirrors sendToken — one authenticated vsock
+// message on the control port, after the token handshake.
+func sendExposes(v vm.VM, port uint32, token string, ports []int) error {
+	conn, err := connectVsock(v, port)
+	if err != nil {
+		return fmt.Errorf("vsock connect for exposes: %w", err)
+	}
+	defer conn.Close()
+	req := vsockProto.SetExposesRequest{Type: vsockProto.TypeSetExposes, Token: token, Ports: ports}
+	if err := vsockProto.WriteJSON(conn, &req); err != nil {
+		return fmt.Errorf("send exposes: %w", err)
+	}
+	var resp vsockProto.ConnectResponse
+	if err := vsockProto.ReadJSONTimeout(conn, &resp, 5*time.Second); err != nil {
+		return fmt.Errorf("exposes response: %w", err)
+	}
+	if !resp.OK {
+		return fmt.Errorf("exposes rejected: %s", resp.Error)
+	}
+	return nil
+}
+
+// exposeHostPorts merges the --expose-host flags with dew.toml [host] expose,
+// deduped and ascending. Empty when neither is set.
+func exposeHostPorts(flagPorts []int, df *dewfile.File) []int {
+	seen := map[int]bool{}
+	var out []int
+	add := func(ps []int) {
+		for _, p := range ps {
+			if p >= 1 && p <= 65535 && !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	add(flagPorts)
+	if df != nil {
+		add(df.Host.Expose)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// joinInts renders ints as a comma-separated string for human-facing notes.
+func joinInts(xs []int) string {
+	parts := make([]string, len(xs))
+	for i, x := range xs {
+		parts[i] = strconv.Itoa(x)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func connectVsock(v vm.VM, port uint32) (net.Conn, error) {

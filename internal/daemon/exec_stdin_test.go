@@ -24,6 +24,7 @@ func (f *fakeVM) Stop(context.Context) error                   { return nil }
 func (f *fakeVM) State() vm.State                              { var s vm.State; return s }
 func (f *fakeVM) WaitForState(context.Context, vm.State) error { return nil }
 func (f *fakeVM) VsockConnect(uint32) (net.Conn, error)        { return f.guest, nil }
+func (f *fakeVM) VsockListen(uint32) (net.Listener, error)     { return nil, net.ErrClosed }
 
 func TestBuildVsockExec_ForwardsStdinFlag(t *testing.T) {
 	got := buildVsockExec(ExecRequest{Argv: []string{"/bin/sh"}, Stream: true, Stdin: true}, "tok")

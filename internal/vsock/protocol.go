@@ -12,14 +12,51 @@ import (
 
 const (
 	DefaultPort = 1024
+	// ReverseForwardPort is the host-side vsock listener port the guest
+	// dials (CID=2) to reach a macOS host service exposed via `dew up
+	// --expose-host`. It is the mirror of DefaultPort: DefaultPort is the
+	// guest listening for host-initiated exec/connect; ReverseForwardPort is
+	// the host listening for guest-initiated reverse dials. See
+	// ReverseDialRequest.
+	ReverseForwardPort = 1025
 )
 
 // Message types for the vsock protocol.
 const (
-	TypeExec     = "exec"
-	TypeConnect  = "connect"
-	TypeSetToken = "set_token"
+	TypeExec        = "exec"
+	TypeConnect     = "connect"
+	TypeSetToken    = "set_token"
+	TypeSetExposes  = "set_exposes"
+	TypeReverseDial = "reverse_dial"
 )
+
+// SetExposesRequest is sent once after boot (host→guest, on DefaultPort, like
+// SetTokenRequest) to tell the agent which host ports the user exposed. The
+// agent then listens on 127.0.0.2:<port> inside the guest for each and proxies
+// accepted connections back to the host over ReverseForwardPort.
+type SetExposesRequest struct {
+	Type  string `json:"type"`
+	Token string `json:"token"`
+	Ports []int  `json:"ports"`
+}
+
+// ReverseDialRequest is sent guest→host on ReverseForwardPort, once per
+// forwarded connection, asking the host to dial 127.0.0.1:Port on macOS and
+// bidirectionally proxy. The host validates Token and that Port is in the
+// user-declared expose set before dialing — the guest can never make the host
+// dial an arbitrary address. This is how a VM service reaches a host process
+// bound to 127.0.0.1 (the dev default) without the NAT path or a 0.0.0.0 bind.
+type ReverseDialRequest struct {
+	Type  string `json:"type"`
+	Token string `json:"token"`
+	Port  int    `json:"port"`
+}
+
+// ReverseDialResponse is sent host→guest before proxying starts.
+type ReverseDialResponse struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
 
 // SetTokenRequest is sent once after boot to inject the auth token
 // via vsock instead of kernel cmdline (avoids /proc/cmdline leak).

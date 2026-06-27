@@ -382,6 +382,25 @@ func (d *DarwinVM) VsockConnect(port uint32) (net.Conn, error) {
 	}, vsockConnectTimeout)
 }
 
+// VsockListen returns a host-side listener for guest-initiated vsock
+// connections on port (the reverse of VsockConnect). The returned
+// *vz.VirtioSocketListener implements net.Listener; the reverse host-forward
+// accepts on it, reads a ReverseDialRequest, and proxies to 127.0.0.1.
+func (d *DarwinVM) VsockListen(port uint32) (net.Listener, error) {
+	d.mu.RLock()
+	machine := d.machine
+	d.mu.RUnlock()
+
+	if machine == nil {
+		return nil, fmt.Errorf("dew: VM not running")
+	}
+	devices := machine.SocketDevices()
+	if len(devices) == 0 {
+		return nil, fmt.Errorf("dew: VM has no vsock devices")
+	}
+	return devices[0].Listen(port)
+}
+
 // connectWithTimeout runs dial in a goroutine and abandons it after
 // timeout. The abandoned goroutine holds no locks; if the dial ever
 // completes late, its conn is closed so the fd doesn't leak.

@@ -26,6 +26,7 @@ func (f *fakeVM) Stop(ctx context.Context) error                        { return
 func (f *fakeVM) State() vm.State                                       { return vm.StateRunning }
 func (f *fakeVM) WaitForState(ctx context.Context, t vm.State) error    { return nil }
 func (f *fakeVM) VsockConnect(port uint32) (net.Conn, error)            { return f.connect(port) }
+func (f *fakeVM) VsockListen(uint32) (net.Listener, error)              { return nil, errors.New("no vsock listener") }
 
 // The regression test for the `dew run` hang: a VsockConnect that
 // never returns (vz against a guest with no vsock transport) must
