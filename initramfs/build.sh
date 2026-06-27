@@ -460,6 +460,18 @@ mount -t overlay overlay \
     "$RUN/merged"
 cp "$BUNDLE/config.json" "$RUN/bundle/config.json"
 
+# If init-stage2 backgrounded the DHCP lease, host.internal may not be in
+# /etc/hosts yet (it's appended once the gateway is known). Snapshotting now
+# would bake a hosts file without host.internal, and the container would miss
+# it permanently. Wait (bounded) for the bring-up to clear its marker so the
+# snapshot below captures host.internal. The marker is absent on a network-less
+# VM or once the lease has landed, so this is a no-op in the common case.
+i=0
+while [ -e /run/dew-net-pending ] && [ "$i" -lt 50 ]; do
+    sleep 0.1
+    i=$((i + 1))
+done
+
 # Give the container working name resolution. Many minimal images ship no
 # /etc/hosts, so a Go/musl resolver sends `localhost` to DNS ([::1]:53, which
 # is refused) instead of resolving it locally — breaking same-VM config like
@@ -774,6 +786,11 @@ bring_up_network() {
         [ -n "$HOST_GW" ] && printf '%s\thost.internal host.dew.internal\n' "$HOST_GW" >> /etc/hosts
     fi
     apply_netpolicy
+    # Network bring-up is done (host.internal written if we have a NIC, or
+    # legitimately absent if not) — release any container launch waiting to
+    # snapshot /etc/hosts. Harmless when the marker was never set (restricted
+    # path, where the bring-up was synchronous before any container could run).
+    rm -f /run/dew-net-pending
 }
 
 # Take DHCP off the critical path. dew-agent rides vsock (not eth0), OCI images
@@ -791,6 +808,12 @@ NET_PID=""
 if [ "$NETPOLICY" = "restricted" ]; then
     bring_up_network
 else
+    # Mark the lease in flight: host.internal isn't in /etc/hosts until the
+    # background bring_up_network appends it, and dew-oci-run snapshots the
+    # guest's .internal lines into each container at launch. A container
+    # started in this window would permanently miss host.internal, so
+    # dew-oci-run waits for this marker to clear before snapshotting.
+    : > /run/dew-net-pending
     bring_up_network &
     NET_PID=$!
 fi
