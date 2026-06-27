@@ -9,9 +9,34 @@ import (
 	"sort"
 
 	"github.com/solcreek/dew/internal/daemon"
+	"github.com/solcreek/dew/internal/dewfile"
 	"github.com/solcreek/dew/internal/services"
 	"github.com/solcreek/dew/pkg/dewerr"
 )
+
+// serviceCatalog returns the services `dew services` lists: the built-in
+// registry plus any dew.toml [[service]] entries in dir (a custom image with a
+// registry name overrides the built-in), sorted by name. df-absent dirs yield
+// just the built-ins, preserving the static-catalog behaviour. This is why a
+// running mailpit/anycable from dew.toml now shows up, not only the five
+// managed services.
+func serviceCatalog(dir string) []services.Service {
+	byName := make(map[string]services.Service, len(services.Registry))
+	for name, s := range services.Registry {
+		byName[name] = s
+	}
+	if df, err := dewfile.Load(dir); err == nil && df != nil {
+		for _, s := range df.ServiceList() {
+			byName[s.Name] = s
+		}
+	}
+	out := make([]services.Service, 0, len(byName))
+	for _, s := range byName {
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
 
 // serviceRow is one line of `dew services` output.
 type serviceRow struct {
@@ -52,22 +77,27 @@ func cmdServices(args []string) error {
 		}
 	}
 
-	names := services.Names()
-	sort.Strings(names)
-	rows := make([]serviceRow, 0, len(names))
-	for _, n := range names {
-		s := services.Registry[n]
+	catalog := serviceCatalog(".")
+	rows := make([]serviceRow, 0, len(catalog))
+	for _, s := range catalog {
 		port := s.Port
 		hp, running := hostPortByGuest[s.Port]
 		if running {
 			port = hp
 		}
+		// Built-in services have a known URI scheme; a custom dew.toml image
+		// (mailpit, anycable) doesn't, so fall back to a plain host:port so
+		// the row still carries a copy-pasteable address.
+		conn := services.ConnString(s, port)
+		if conn == "" {
+			conn = fmt.Sprintf("127.0.0.1:%d", port)
+		}
 		rows = append(rows, serviceRow{
-			Name:      n,
+			Name:      s.Name,
 			Running:   running,
 			HostPort:  port,
 			GuestPort: s.Port,
-			Conn:      services.ConnString(s, port),
+			Conn:      conn,
 		})
 	}
 
