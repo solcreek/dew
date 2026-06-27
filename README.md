@@ -353,7 +353,7 @@ Infrastructure:
 
 Advanced:
   dew run [--] <cmd>             Execute in ephemeral VM
-  dew run --cgroup mem=…,pids=…  Cap the workload with cgroup v2
+  dew run --cgroup mem=…,pids=…,cpu=…  Cap the workload with cgroup v2
   dew run --image <ref>          Run an OCI image in a microVM
   dew exec [--name <vm>] <cmd>   Execute in a running VM
   dew vm start/stop [--name]     Manage long-lived (named) VMs
