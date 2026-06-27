@@ -92,8 +92,8 @@ func (*fakeErr) Error() string { return "no VM" }
 func TestBringUpStaged_OrderedOutcomes(t *testing.T) {
 	svcs := []stagedService{
 		{name: "redis", port: 6379},
-		{name: "mailpit", port: 8025},   // launch fails
-		{name: "anycable", port: 8080},  // launches but never ready
+		{name: "mailpit", port: 8025},  // launch fails
+		{name: "anycable", port: 8080}, // launches but never ready
 	}
 	launch := func(s stagedService) error {
 		if s.name == "mailpit" {
