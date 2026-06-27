@@ -136,6 +136,8 @@ func TestLoadRejects(t *testing.T) {
 		{"bad expose port", "[host]\nexpose = [70000]\n", "host.expose port"},
 		{"bad ports spec", "[[service]]\nname=\"a\"\nimage=\"x\"\nport=1\nports=[\"notaport\"]\n", "ports:"},
 		{"ports out of range", "[[service]]\nname=\"a\"\nimage=\"x\"\nport=1\nports=[\"70000\"]\n", "ports:"},
+		{"ports reuse primary host", "[[service]]\nname=\"a\"\nimage=\"x\"\nport=8025\nports=[\"8025:1025\"]\n", "primary host port"},
+		{"ports duplicate host", "[[service]]\nname=\"a\"\nimage=\"x\"\nport=1\nports=[\"9000:8025\",\"9000:8026\"]\n", "duplicate host port"},
 		{"unknown key", "[project]\nprofil = \"node\"\n", "unknown key"},
 		{"bad toml", "[project\n", "dew.toml:"},
 	}

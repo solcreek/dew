@@ -169,10 +169,24 @@ func (f *File) validate() error {
 				return fmt.Errorf("%s: service %q env %q must be KEY=VALUE", Filename, s.Name, e)
 			}
 		}
+		// Each forward must request a distinct host port. The primary `port`
+		// already binds host port s.Port, so a `ports` entry reusing it (or
+		// another entry's host port) would trip the daemon's busy-port fallback
+		// and silently bind some other free port instead of the one asked for.
+		// Reject up-front so the surprising remap can't happen.
+		seenHost := map[int]bool{s.Port: true}
 		for _, p := range s.Ports {
-			if _, _, err := parsePortSpec(p); err != nil {
+			h, _, err := parsePortSpec(p)
+			if err != nil {
 				return fmt.Errorf("%s: service %q ports: %v (want \"PORT\" or \"HOST:CONTAINER\", ports 1..65535)", Filename, s.Name, err)
 			}
+			if seenHost[h] {
+				if h == s.Port {
+					return fmt.Errorf("%s: service %q ports entry %q reuses the service's primary host port %d", Filename, s.Name, p, h)
+				}
+				return fmt.Errorf("%s: service %q ports has duplicate host port %d", Filename, s.Name, h)
+			}
+			seenHost[h] = true
 		}
 	}
 	return nil
