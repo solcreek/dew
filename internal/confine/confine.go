@@ -26,8 +26,9 @@ type Plan struct {
 	UID         string // numeric uid or username for setpriv --reuid
 	GID         string
 	DynamicUser bool     // User= absent but DynamicUser=yes → run as a fixed unprivileged uid
-	DropAllCaps bool     // CapabilityBoundingSet reset to empty → drop every capability
-	KeepCaps    []string // capabilities to retain (libcap names, lowercased)
+	DropAllCaps bool     // CapabilityBoundingSet reset to empty / positive list → start from empty
+	KeepCaps    []string // with DropAllCaps: capabilities to add back (libcap names, lowercased)
+	DropCaps    []string // CapabilityBoundingSet=~… : capabilities to drop from the full set
 	NoNewPrivs  bool
 
 	// Unsupported lists directives present in the unit that dew does NOT
@@ -42,14 +43,13 @@ const dynamicUserUID = "65534"
 
 // Confined reports whether the plan actually constrains anything.
 func (p Plan) Confined() bool {
-	return p.MemoryBytes > 0 || p.PidsMax > 0 || p.CPUQuota > 0 ||
-		p.UID != "" || p.DynamicUser || p.DropAllCaps || len(p.KeepCaps) > 0 || p.NoNewPrivs
+	return p.MemoryBytes > 0 || p.PidsMax > 0 || p.CPUQuota > 0 || p.NeedsSetpriv()
 }
 
 // NeedsSetpriv reports whether the plan requires the setpriv binary in the
 // guest (privilege drop) — which only the standard profile ships.
 func (p Plan) NeedsSetpriv() bool {
-	return p.UID != "" || p.DynamicUser || p.DropAllCaps || len(p.KeepCaps) > 0 || p.NoNewPrivs
+	return p.UID != "" || p.DynamicUser || p.DropAllCaps || len(p.DropCaps) > 0 || p.NoNewPrivs
 }
 
 // SetprivArgs renders the privilege-drop prefix, e.g.
@@ -63,10 +63,23 @@ func (p Plan) SetprivArgs() []string {
 	if p.NoNewPrivs {
 		args = append(args, "--no-new-privs")
 	}
-	if p.DropAllCaps || len(p.KeepCaps) > 0 {
+	if p.DropAllCaps {
+		// Positive list / empty reset: drop everything, then add back the kept
+		// caps. `-all` with no `+` is a full drop.
 		set := "-all"
 		for _, c := range p.KeepCaps {
 			set += ",+" + c
+		}
+		args = append(args, "--bounding-set", set)
+	} else if len(p.DropCaps) > 0 {
+		// Negated set (`~CAP_X`): keep the inherited full set minus these, so
+		// drop only the named caps (no `-all`).
+		set := ""
+		for i, c := range p.DropCaps {
+			if i > 0 {
+				set += ","
+			}
+			set += "-" + c
 		}
 		args = append(args, "--bounding-set", set)
 	}
@@ -130,7 +143,8 @@ func Parse(r io.Reader) (Plan, error) {
 		val = strings.TrimSpace(val)
 
 		switch key {
-		case "MemoryMax", "MemoryLimit", "MemoryHigh":
+		case "MemoryMax", "MemoryLimit":
+			// The hard cap → cgroup memory.max.
 			b, perc, err := parseBytes(val)
 			if err != nil {
 				return p, fmt.Errorf("%s=%q: %w", key, val, err)
@@ -140,6 +154,12 @@ func Parse(r io.Reader) (Plan, error) {
 			} else if b > 0 {
 				p.MemoryBytes = b
 			}
+		case "MemoryHigh":
+			// A soft throttle (memory.high), not the OOM ceiling. dew applies
+			// only the hard cap, so treating MemoryHigh as memory.max would
+			// OOM-kill a workload that systemd would merely throttle. Surface
+			// it instead of silently lowering the hard cap.
+			note("MemoryHigh= (soft throttle not applied; only MemoryMax is enforced)")
 		case "TasksMax":
 			if n := parseCountOrInfinity(val); n > 0 {
 				p.PidsMax = n
@@ -184,10 +204,10 @@ func Parse(r io.Reader) (Plan, error) {
 	return p, nil
 }
 
-// applyBoundingSet mirrors systemd's CapabilityBoundingSet semantics enough for
-// the common cases: an empty assignment resets the set (drop all); a positive
-// list keeps those caps; a leading "~" (negation) is too nuanced to map
-// faithfully, so it drops all and notes the imprecision.
+// applyBoundingSet mirrors systemd's CapabilityBoundingSet semantics for the
+// common cases: an empty assignment resets the set (drop all); a positive list
+// resets to those caps (drop all, keep the listed); a leading "~" negates
+// (keep the full set minus the listed caps).
 func applyBoundingSet(p *Plan, val string, note func(string)) {
 	if val == "" {
 		p.DropAllCaps = true
@@ -195,8 +215,10 @@ func applyBoundingSet(p *Plan, val string, note func(string)) {
 		return
 	}
 	if strings.HasPrefix(val, "~") {
-		p.DropAllCaps = true
-		note("CapabilityBoundingSet=~… (negated set approximated as drop-all)")
+		// "keep all except these" — drop only the named caps.
+		for _, c := range strings.Fields(strings.TrimPrefix(val, "~")) {
+			p.DropCaps = append(p.DropCaps, strings.ToLower(c))
+		}
 		return
 	}
 	p.DropAllCaps = true // start from empty, then add the listed caps back

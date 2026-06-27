@@ -102,12 +102,45 @@ func TestParse_OnlySectionService(t *testing.T) {
 }
 
 func TestParse_InfinityAndPercentMemory(t *testing.T) {
-	p, _ := Parse(strings.NewReader("[Service]\nMemoryMax=infinity\nMemoryHigh=40%\nTasksMax=infinity\n"))
+	p, _ := Parse(strings.NewReader("[Service]\nMemoryMax=40%\nTasksMax=infinity\n"))
 	if p.MemoryBytes != 0 || p.PidsMax != 0 {
-		t.Errorf("infinity should leave limits unset, got %+v", p)
+		t.Errorf("infinity/percentage should leave limits unset, got %+v", p)
 	}
-	if len(p.Unsupported) == 0 || !strings.Contains(strings.Join(p.Unsupported, "\n"), "percentage") {
+	if !strings.Contains(strings.Join(p.Unsupported, "\n"), "percentage") {
 		t.Error("percentage memory should be noted as unresolved")
+	}
+}
+
+// MemoryHigh is a soft throttle; treating it as memory.max would OOM-kill a
+// workload systemd would only throttle. It must NOT lower the hard cap and
+// must be surfaced as not-applied.
+func TestParse_MemoryHighNotHardCap(t *testing.T) {
+	p, err := Parse(strings.NewReader("[Service]\nMemoryMax=512M\nMemoryHigh=256M\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.MemoryBytes != 512*1024*1024 {
+		t.Errorf("MemoryBytes = %d, want 512MiB (MemoryHigh must not lower MemoryMax)", p.MemoryBytes)
+	}
+	if !strings.Contains(strings.Join(p.Unsupported, "\n"), "MemoryHigh") {
+		t.Error("MemoryHigh should be surfaced as not-applied")
+	}
+}
+
+// A negated CapabilityBoundingSet keeps the full set minus the named caps, so
+// setpriv must drop only those (no -all), not wipe every capability.
+func TestParse_NegatedBoundingSet(t *testing.T) {
+	p, err := Parse(strings.NewReader("[Service]\nCapabilityBoundingSet=~CAP_SYS_ADMIN CAP_NET_RAW\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.DropAllCaps {
+		t.Error("negated set must not drop all caps")
+	}
+	got := p.SetprivArgs()
+	want := []string{"setpriv", "--bounding-set", "-cap_sys_admin,-cap_net_raw"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SetprivArgs() = %v, want %v", got, want)
 	}
 }
 
