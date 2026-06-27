@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dew.toml `[host] expose = [PORT,...]`. The host only ever dials its own
   loopback on a declared port — the guest can't make it reach anything else.
 
+### Fixed
+
+- **`dew services` now lists dew.toml `[[service]]` images, not just the
+  built-in five.** It previously showed only the managed registry
+  (postgres/redis/mysql/mongo/minio), so custom images (mailpit, anycable)
+  were invisible even while running. The catalog now merges the built-ins
+  with the project's dew.toml services (a custom image overrides a same-named
+  built-in) and falls back to a plain `127.0.0.1:PORT` connection string for
+  images without a known URI scheme.
+
 ## [0.7.52] - 2026-06-26
 
 ### Added
