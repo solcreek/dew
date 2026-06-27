@@ -4,8 +4,53 @@ package services
 
 import (
 	"fmt"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 )
+
+// HostAlias is the hostname the guest and its containers resolve to the
+// macOS host (the VZ NAT gateway). See initramfs/build.sh (init-stage2).
+const HostAlias = "host.internal"
+
+// hostAliasRef matches a host.internal[:port] / host.dew.internal[:port]
+// reference inside a service env value, e.g. ANYCABLE_RPC_HOST=host.internal:50051
+// or REDIS_URL=redis://host.dew.internal:6379/0. The port group is optional so a
+// bare host.internal reference is still detected (port 0, reported portless).
+var hostAliasRef = regexp.MustCompile(`host\.(?:dew\.)?internal(?::(\d+))?`)
+
+// HostInternalPorts returns the distinct, ascending ports a service's env
+// reaches on the macOS host via host.internal / host.dew.internal. A bare
+// reference with no port yields a single 0 entry so callers can still warn
+// about the 0.0.0.0-bind requirement without a specific port. Returns nil when
+// the env names no host alias at all.
+//
+// dew uses this to surface a heads-up at boot: a host service reached this way
+// must bind 0.0.0.0 (a 127.0.0.1 bind is unreachable from the VM), and the
+// failure is otherwise a silent connection-refused inside the container.
+func HostInternalPorts(env []string) []int {
+	seen := map[int]bool{}
+	var ports []int
+	for _, e := range env {
+		for _, m := range hostAliasRef.FindAllStringSubmatch(e, -1) {
+			port := 0
+			if m[1] != "" {
+				p, err := strconv.Atoi(m[1])
+				if err != nil || p < 1 || p > 65535 {
+					continue
+				}
+				port = p
+			}
+			if !seen[port] {
+				seen[port] = true
+				ports = append(ports, port)
+			}
+		}
+	}
+	sort.Ints(ports)
+	return ports
+}
 
 type Service struct {
 	Name    string
@@ -77,6 +122,27 @@ func ListenProbeCmd(port int) string {
 	return fmt.Sprintf(
 		`cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$2 ~ ":%04X$" && $4=="0A"{f=1} END{exit !f}'`,
 		port)
+}
+
+// HostServiceHint renders the boot-time advisory for a service whose env
+// reaches the macOS host via host.internal. ports comes from
+// HostInternalPorts (a 0 means a portless reference). Returns "" when ports is
+// empty so callers can skip silently.
+func HostServiceHint(service string, ports []int) string {
+	if len(ports) == 0 {
+		return ""
+	}
+	var refs []string
+	for _, p := range ports {
+		if p == 0 {
+			refs = append(refs, HostAlias)
+		} else {
+			refs = append(refs, fmt.Sprintf("%s:%d", HostAlias, p))
+		}
+	}
+	return fmt.Sprintf(
+		"%s reaches the host at %s — bind that host service to 0.0.0.0 (not 127.0.0.1) so the VM can reach it",
+		service, strings.Join(refs, ", "))
 }
 
 // LogPath is where dew-oci-run writes a detached service's stdout/stderr

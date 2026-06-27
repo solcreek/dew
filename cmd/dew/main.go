@@ -1823,8 +1823,9 @@ func execVsockStreamArgv(conn net.Conn, token, command string, args []string, ti
 type stagedService struct {
 	name    string
 	port    int
-	bundle  string // guest path of the staged bundle (/oci-stage/<name>)
-	dataArg string // "hostsrc:contdest" for dew-oci-run --data, or ""
+	bundle  string   // guest path of the staged bundle (/oci-stage/<name>)
+	dataArg string   // "hostsrc:contdest" for dew-oci-run --data, or ""
+	env     []string // service env, retained so dew can warn about host.internal refs
 }
 
 type serviceFailure struct {
@@ -1923,6 +1924,7 @@ func stageServiceList(ctx context.Context, svcs []services.Service, stageRoot st
 		staged = append(staged, stagedService{
 			name: svc.Name, port: svc.Port,
 			bundle: "/oci-stage/" + svc.Name, dataArg: dataArg,
+			env: svc.Env,
 		})
 	}
 	return staged, failures
@@ -2673,6 +2675,27 @@ func cmdUp(args []string) error {
 			startedEv["conn"] = services.ConnString(*svc, hostFwd)
 		}
 		emit(startedEv)
+	}
+
+	// host.internal heads-up. A service whose env points at host.internal:PORT
+	// (e.g. ANYCABLE_RPC_HOST=host.internal:50051 calling back to a host RPC)
+	// only reaches the macOS host if that host process binds 0.0.0.0 — a
+	// 127.0.0.1 bind is invisible to the VM and the symptom is an opaque
+	// connection-refused inside the container. We can't probe reachability now
+	// (the host process commonly starts after dew), so surface the bind rule
+	// up front, naming the service and port.
+	for _, s := range stagedSvcs {
+		ports := services.HostInternalPorts(s.env)
+		if len(ports) == 0 {
+			continue
+		}
+		emit(map[string]interface{}{
+			"type": "hint", "topic": "host-service",
+			"service": s.name, "ports": ports, "bind": "0.0.0.0",
+		})
+		if !flagJSON && !flagEvents {
+			fmt.Fprintf(os.Stderr, "  note: %s\n", services.HostServiceHint(s.name, ports))
+		}
 	}
 
 	// Services-only: there's no dev server to start or port to probe — either

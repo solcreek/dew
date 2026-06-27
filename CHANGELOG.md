@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Boot-time heads-up when a service reaches the host via `host.internal`.**
+  If a `[[service]]`'s env points at `host.internal:PORT` (e.g.
+  `ANYCABLE_RPC_HOST=host.internal:50051` calling back to a host RPC), `dew up`
+  now prints a note naming the service and port and the `0.0.0.0`-bind
+  requirement — turning the otherwise silent connection-refused (host process
+  bound to `127.0.0.1`) into an actionable hint. Also emitted as a structured
+  `hint` event for `--events`/`--json` consumers.
+
 ## [0.7.51] - 2026-06-26
 
 ### Added
