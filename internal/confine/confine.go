@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -145,7 +146,7 @@ func Parse(r io.Reader) (Plan, error) {
 		switch key {
 		case "MemoryMax", "MemoryLimit":
 			// The hard cap → cgroup memory.max.
-			b, perc, err := parseBytes(val)
+			b, perc, err := ParseSize(val)
 			if err != nil {
 				return p, fmt.Errorf("%s=%q: %w", key, val, err)
 			}
@@ -233,7 +234,7 @@ func applyBoundingSet(p *Plan, val string, note func(string)) {
 		for _, c := range strings.Fields(strings.TrimPrefix(val, "~")) {
 			cap := strings.ToLower(c)
 			if p.DropAllCaps {
-				p.KeepCaps = removeCap(p.KeepCaps, cap)
+				p.KeepCaps = slices.DeleteFunc(p.KeepCaps, func(x string) bool { return x == cap })
 			} else {
 				p.DropCaps = append(p.DropCaps, cap)
 			}
@@ -246,17 +247,6 @@ func applyBoundingSet(p *Plan, val string, note func(string)) {
 	}
 }
 
-// removeCap returns caps with all occurrences of c removed.
-func removeCap(caps []string, c string) []string {
-	out := caps[:0:0]
-	for _, x := range caps {
-		if x != c {
-			out = append(out, x)
-		}
-	}
-	return out
-}
-
 func parseBool(s string) bool {
 	switch strings.ToLower(s) {
 	case "yes", "true", "1", "on":
@@ -265,9 +255,10 @@ func parseBool(s string) bool {
 	return false
 }
 
-// parseBytes parses a systemd size (base-1024 K/M/G/T/P suffix, or bare bytes).
-// Returns (bytes, isPercentage, error). "infinity" → (0,false,nil).
-func parseBytes(s string) (int64, bool, error) {
+// ParseSize parses a systemd size (base-1024 K/M/G/T/P suffix, or bare bytes).
+// Returns (bytes, isPercentage, error). "infinity"/"" → (0,false,nil). Exported
+// so the host --cgroup parser shares one size grammar with --confine.
+func ParseSize(s string) (int64, bool, error) {
 	if s == "" || strings.EqualFold(s, "infinity") {
 		return 0, false, nil
 	}
@@ -331,13 +322,20 @@ func parseCPUQuota(s string) (int64, error) {
 	if err != nil || pct <= 0 {
 		return 0, fmt.Errorf("invalid percentage")
 	}
-	f := pct / 100 * period
-	if f > float64(1<<63-1) { // also catches +Inf; guards int64 overflow
-		return 0, fmt.Errorf("quota out of range")
+	return QuotaFromFloat(pct / 100 * period)
+}
+
+// QuotaFromFloat converts a computed cpu.max quota to int64, rejecting values
+// that overflow int64 (a finite-but-huge float, or +Inf — both > MaxInt64) and
+// values that round to 0 (NaN lands here too, since int64(NaN) == 0). Exported
+// so the host --cgroup parser shares this guard.
+func QuotaFromFloat(f float64) (int64, error) {
+	if f > float64(1<<63-1) {
+		return 0, fmt.Errorf("cpu quota out of range")
 	}
 	q := int64(f)
 	if q == 0 {
-		return 0, fmt.Errorf("quota too small (rounds to 0)")
+		return 0, fmt.Errorf("cpu quota too small (rounds to 0)")
 	}
 	return q, nil
 }

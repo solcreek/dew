@@ -3768,9 +3768,8 @@ func parseVolume(s string) (src, dest string, err error) {
 // typo fails loudly rather than silently leaving a limit unset.
 func parseCgroup(s string) (vm.CgroupLimits, error) {
 	var cg vm.CgroupLimits
-	if strings.TrimSpace(s) == "" {
-		return cg, dewerr.New(dewerr.CodeUsage, "--cgroup: empty spec")
-	}
+	// An empty or all-whitespace spec falls through the loop and is caught by
+	// the trailing !cg.Set() check, so no separate empty guard is needed.
 	for _, part := range strings.Split(s, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -3811,42 +3810,28 @@ func parseCgroup(s string) (vm.CgroupLimits, error) {
 	return cg, nil
 }
 
-// parseByteSize parses a 1024-based size with a K/M/G/T/P suffix (matching the
-// systemd sizes confine.parseBytes accepts), or a bare byte count. Returns a
-// positive byte count; rejects overflow.
+// parseByteSize parses a positive 1024-based size for --cgroup memory. It
+// shares one size grammar with --confine via confine.ParseSize; percentages
+// and non-positive sizes (incl. "infinity"/empty, which ParseSize maps to 0)
+// are rejected here since a cgroup cap must be a concrete positive byte count.
 func parseByteSize(s string) (int64, error) {
-	if s == "" {
-		return 0, fmt.Errorf("empty size")
+	b, isPct, err := confine.ParseSize(s)
+	if err != nil {
+		return 0, err
 	}
-	mult := int64(1)
-	switch s[len(s)-1] {
-	case 'K', 'k':
-		mult = 1 << 10
-	case 'M', 'm':
-		mult = 1 << 20
-	case 'G', 'g':
-		mult = 1 << 30
-	case 'T', 't':
-		mult = 1 << 40
-	case 'P', 'p':
-		mult = 1 << 50
+	if isPct {
+		return 0, fmt.Errorf("percentage not supported: %q", s)
 	}
-	num := s
-	if mult != 1 {
-		num = s[:len(s)-1]
-	}
-	n, err := strconv.ParseInt(num, 10, 64)
-	if err != nil || n <= 0 {
+	if b <= 0 {
 		return 0, fmt.Errorf("invalid size %q", s)
 	}
-	if n > (1<<63-1)/mult {
-		return 0, fmt.Errorf("size too large: %q", s)
-	}
-	return n * mult, nil
+	return b, nil
 }
 
 // parseCPUQuota converts a cpu spec into a cpu.max quota numerator for a
-// 100000us period: "200%" → 200000, "2" → 200000, "50%" → 50000.
+// 100000us period: "200%" → 200000, "2" → 200000, "50%" → 50000. The "%" form
+// and the overflow/round-to-0 guard are shared with --confine via
+// confine.QuotaFromFloat; this adds the bare-core-count form on top.
 func parseCPUQuota(s string) (int64, error) {
 	const period = 100000
 	if s == "" {
@@ -3857,28 +3842,13 @@ func parseCPUQuota(s string) (int64, error) {
 		if err != nil || pct <= 0 {
 			return 0, fmt.Errorf("invalid percentage %q", s)
 		}
-		return quotaFromFloat(pct/100*period, s)
+		return confine.QuotaFromFloat(pct / 100 * period)
 	}
 	cores, err := strconv.ParseFloat(s, 64)
 	if err != nil || cores <= 0 {
 		return 0, fmt.Errorf("invalid core count %q", s)
 	}
-	return quotaFromFloat(cores*period, s)
-}
-
-// quotaFromFloat converts a computed cpu.max quota to int64, rejecting values
-// that overflow int64 (a finite-but-huge float, or +Inf — both > MaxInt64) and
-// values that round to 0 (NaN lands here too, since int64(NaN) == 0). Without
-// the range guard a bogus/negative quota could reach the kernel cmdline.
-func quotaFromFloat(f float64, s string) (int64, error) {
-	if f > float64(1<<63-1) {
-		return 0, fmt.Errorf("cpu quota %q is out of range", s)
-	}
-	q := int64(f)
-	if q == 0 {
-		return 0, fmt.Errorf("cpu quota %q is too small (rounds to 0)", s)
-	}
-	return q, nil
+	return confine.QuotaFromFloat(cores * period)
 }
 
 // parseShare accepts three forms:
