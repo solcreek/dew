@@ -57,6 +57,35 @@ type serviceRow struct {
 	Conn      string `json:"conn"`
 }
 
+// pickPrimaryHostPort reduces guest→[]host (from forward-list) to one host
+// port per guest port, deterministically. Multiple forwards can share a guest
+// port when a dew.toml `ports` entry remaps a second host port onto a
+// service's primary container port (e.g. "1080:8025" alongside port 8025), and
+// forward-list order is unspecified because the daemon stores forwards in a
+// map. The forward whose host port equals the guest port wins — a service's
+// primary forward defaults to host==guest — otherwise the smallest host port.
+// Without this `dew services` could nondeterministically report an extra's
+// host port (and connection string) for the main service row.
+func pickPrimaryHostPort(hostPortsByGuest map[int][]int) map[int]int {
+	out := make(map[int]int, len(hostPortsByGuest))
+	for gp, hps := range hostPortsByGuest {
+		pick := -1
+		for _, hp := range hps {
+			if hp == gp { // a primary forward's default host==guest mapping
+				pick = hp
+				break
+			}
+			if pick == -1 || hp < pick {
+				pick = hp
+			}
+		}
+		if pick >= 0 {
+			out[gp] = pick
+		}
+	}
+	return out
+}
+
 // cmdServices lists the predefined services and their client connection
 // strings, annotating which are currently running (forwarded) and on
 // what host port. This replaces the previous need to dig through
@@ -73,7 +102,10 @@ func cmdServices(args []string) error {
 	// Best-effort: learn which services are actually forwarded and on
 	// what host port (which may differ from the default after a busy-
 	// port fallback). A missing daemon just means "nothing running".
-	hostPortByGuest := map[int]int{}
+	// A guest port can carry more than one forward when a dew.toml `ports`
+	// entry remaps a second host port onto a service's primary container
+	// port, so collect all host ports per guest and reduce deterministically.
+	hostPortsByGuest := map[int][]int{}
 	if resp, err := sendDaemonRequest(daemon.ExecRequest{Kind: "forward-list"}); err == nil {
 		if fwds, ok := resp["forwards"].([]any); ok {
 			for _, f := range fwds {
@@ -81,11 +113,12 @@ func cmdServices(args []string) error {
 				gp, _ := m["GuestPort"].(float64)
 				hp, _ := m["HostPort"].(float64)
 				if gp > 0 {
-					hostPortByGuest[int(gp)] = int(hp)
+					hostPortsByGuest[int(gp)] = append(hostPortsByGuest[int(gp)], int(hp))
 				}
 			}
 		}
 	}
+	hostPortByGuest := pickPrimaryHostPort(hostPortsByGuest)
 
 	catalog, err := serviceCatalog(".")
 	if err != nil {
