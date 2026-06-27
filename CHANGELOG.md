@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.51] - 2026-06-26
+
 ### Added
 
 - **`host.internal` hostname for reaching the macOS host from the VM.** The
