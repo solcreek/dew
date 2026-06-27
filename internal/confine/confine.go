@@ -218,9 +218,17 @@ func applyBoundingSet(p *Plan, val string, note func(string)) {
 		return
 	}
 	if strings.HasPrefix(val, "~") {
-		// "keep all except these" — drop only the named caps.
+		// Negation removes the named caps. If a positive set was already
+		// established (DropAllCaps with KeepCaps), remove them from it so a
+		// later ~CAP_X actually revokes CAP_X; otherwise it's "keep all except
+		// these" applied to the full inherited set (DropCaps).
 		for _, c := range strings.Fields(strings.TrimPrefix(val, "~")) {
-			p.DropCaps = append(p.DropCaps, strings.ToLower(c))
+			cap := strings.ToLower(c)
+			if p.DropAllCaps {
+				p.KeepCaps = removeCap(p.KeepCaps, cap)
+			} else {
+				p.DropCaps = append(p.DropCaps, cap)
+			}
 		}
 		return
 	}
@@ -228,6 +236,17 @@ func applyBoundingSet(p *Plan, val string, note func(string)) {
 	for _, c := range strings.Fields(val) {
 		p.KeepCaps = append(p.KeepCaps, strings.ToLower(c))
 	}
+}
+
+// removeCap returns caps with all occurrences of c removed.
+func removeCap(caps []string, c string) []string {
+	out := caps[:0:0]
+	for _, x := range caps {
+		if x != c {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 func parseBool(s string) bool {

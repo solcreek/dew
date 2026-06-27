@@ -107,6 +107,21 @@ func TestParse_BoundingSetEmptyReset(t *testing.T) {
 	}
 }
 
+// A ~negation after a positive set must revoke the cap from the kept set, not
+// leave it (which would be more permissive than systemd).
+func TestParse_NegationAfterPositiveSet(t *testing.T) {
+	p, err := Parse(strings.NewReader(
+		"[Service]\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SYS_ADMIN\nCapabilityBoundingSet=~CAP_SYS_ADMIN\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := p.SetprivArgs()
+	want := []string{"setpriv", "--bounding-set", "-all,+cap_net_bind_service"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SetprivArgs() = %v, want %v (CAP_SYS_ADMIN must be revoked)", got, want)
+	}
+}
+
 func TestParse_OnlySectionService(t *testing.T) {
 	// MemoryMax in a non-[Service] section must be ignored.
 	p, _ := Parse(strings.NewReader("[Unit]\nMemoryMax=999M\n[Slice]\nTasksMax=5\n"))
