@@ -861,6 +861,12 @@ func parseFlagsReset(args []string, reset bool) (vm.Config, []string, error) {
 		flagVMName = ""
 		flagExposeHost = nil
 		flagConfine = ""
+		flagProfile = ""
+		// NB: flagJSON/flagStream/flagEvents/flagDryRun are deliberately NOT
+		// reset here. They are set by the position-independent early global
+		// pass (so `dew --json run …` works even though parseFlags never sees
+		// --json), and resetting them here would wipe that. They are parsed
+		// again within parseFlags when they appear after the subcommand.
 	}
 
 	for i := 0; i < len(args); i++ {

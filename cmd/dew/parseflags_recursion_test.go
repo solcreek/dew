@@ -26,3 +26,22 @@ func TestParseFlags_PostPositionalDoesNotWipePriorGlobals(t *testing.T) {
 		t.Errorf("positional not returned: remaining=%v", remaining)
 	}
 }
+
+// flagProfile is parsed only by parseFlags (not the early global pass), so the
+// reset must clear it for test isolation — a prior --profile must not leak into
+// a later call that omits it.
+func TestParseFlags_ProfileResetForIsolation(t *testing.T) {
+	if _, _, err := parseFlags([]string{"--profile", "standard", "--", "true"}); err != nil {
+		t.Fatal(err)
+	}
+	if flagProfile != "standard" {
+		t.Fatalf("flagProfile = %q, want standard", flagProfile)
+	}
+	// A later call without --profile must not see the leaked value.
+	if _, _, err := parseFlags([]string{"--", "true"}); err != nil {
+		t.Fatal(err)
+	}
+	if flagProfile != "" {
+		t.Errorf("flagProfile leaked: got %q, want \"\"", flagProfile)
+	}
+}
