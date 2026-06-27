@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.55] - 2026-06-27
+
+### Changed
+
+- **Faster cold start.** Diskless profiles (`minimal` — `dew run`'s default) no
+  longer wait ~1s for a `/dev/vda` that never appears: the guest waits for the
+  data disk only when one is actually attached, signalled by a new `dew.disk=1`
+  kernel-cmdline marker. Measured `dew run --profile minimal` ~1.4s → ~0.4s. On
+  top of that, `dew run` reaches the guest agent over the same tight retry path
+  `dew up` already used (detected within ~10ms of the agent coming up instead of
+  up to 100ms later), and the service-readiness probe is front-loaded so an
+  early port bind is caught near-instantly.
+
+### Fixed
+
+- **`dew vm status` is now a reuse-vs-boot gate.** It exits `103` (`conflict`,
+  matching what `dew exec` / `dew vm forward` already return for "no running
+  VM") when no VM is present, and `0` when one is running, booting, or an
+  ephemeral `dew run` — so `if dew vm status; then reuse; else boot; fi` finally
+  works instead of always taking the reuse branch. Human and `--json` output are
+  unchanged. Note: a bare `dew vm status` under `set -e` now aborts when nothing
+  runs; gate it in an `if`/`||`, or read the `--json` `running`/`phase` fields
+  (see `docs/exit-codes.md`).
+
 ## [0.7.54] - 2026-06-27
 
 ### Added
