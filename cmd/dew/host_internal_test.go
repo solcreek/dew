@@ -48,3 +48,48 @@ func TestOCIRunPropagatesHostAliases(t *testing.T) {
 		t.Error("dew-oci-run no longer copies the host alias lines into the container /etc/hosts")
 	}
 }
+
+// dew-agent must not wait on the DHCP lease: it rides vsock, OCI images are
+// host-pulled, port forwards are vsock, and co-located services talk over
+// localhost, so the guest NIC isn't on the boot critical path. init-stage2
+// therefore backgrounds bring_up_network (lease + host.internal + egress policy)
+// in the default case and starts the agent without blocking on it. A restricted
+// egress policy is the exception — the OUTPUT DROP must be in force before
+// anything can egress — so there the bring-up stays synchronous.
+func TestInitStage2BackgroundsNetworkOffCriticalPath(t *testing.T) {
+	script := readBuildScript(t)
+
+	for _, want := range []string{
+		"bring_up_network()", // the network bring-up is a function
+		"apply_netpolicy()",  // egress policy factored out so it can run in either path
+		"bring_up_network &", // backgrounded in the default case
+		"NET_PID=$!",         // its PID is captured for the later wait barriers
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("init-stage2 no longer takes DHCP off the critical path (missing %q)", want)
+		}
+	}
+
+	// Restricted policy keeps the bring-up synchronous and preserves the
+	// default-DROP egress barrier.
+	if !strings.Contains(script, `if [ "$NETPOLICY" = "restricted" ]; then`) {
+		t.Error("init-stage2 lost the restricted-policy synchronous branch")
+	}
+	if !strings.Contains(script, "OUTPUT  DROP") {
+		t.Error("init-stage2 lost the restricted-policy OUTPUT DROP barrier")
+	}
+
+	// The agent must start AFTER the backgrounded bring-up, so it never waits
+	// on DHCP. Anchor on the boot-time start guard (unique to init-stage2), not
+	// the earlier build-time agent copy elsewhere in build.sh.
+	bg := strings.Index(script, "bring_up_network &")
+	agent := strings.Index(script, "[ -x /usr/local/bin/dew-agent ] && [ -e /dev/vsock ]")
+	if bg < 0 || agent < 0 || agent < bg {
+		t.Errorf("dew-agent boot start (idx %d) must come after the backgrounded bring_up_network (idx %d)", agent, bg)
+	}
+
+	// Network-dependent boot steps wait on the lease before proceeding.
+	if !strings.Contains(script, `wait "$NET_PID"`) {
+		t.Error("init-stage2 no longer waits on NET_PID before the network-dependent boot steps")
+	}
+}

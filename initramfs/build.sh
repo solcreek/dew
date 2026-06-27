@@ -694,58 +694,23 @@ mountpoint -q /sys || mount -t sysfs sysfs /sys
 mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
 mountpoint -q /dev/pts || { mkdir -p /dev/pts; mount -t devpts devpts /dev/pts; }
 
-# network. Apple VZ's host-managed NAT is racy at first-boot: usually
-# it answers DHCP within ~2 s, occasionally not until ~60-80 s. The
-# default busybox udhcpc invocation (`-t 3 -q`) retries the 3-packet
-# discovery burst forever (no `-n`), so the visible symptom is the
-# user staring at "udhcpc: broadcasting discover" repeating every 30 s
-# while init-stage2 blocks. `-n -t 30 -T 3` makes ONE patient
-# attempt: 30 discovers spaced 3 s apart (~90 s window), then exit
-# pass-or-fail so init-stage2 can proceed either way.
-if ip link show eth0 >/dev/null 2>&1; then
-    ip link set eth0 up 2>/dev/null || true
-    for i in 1 2 3 4 5 6 7 8 9 10; do
-        [ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = "1" ] && break
-        sleep 0.1
-    done
-    udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -n -t 30 -T 3 || true
-    echo "nameserver 1.1.1.1" > /etc/resolv.conf
-fi
-
-# Expose the macOS host as a stable hostname. Apple VZ's NAT gateway (the
-# DHCP router — typically 192.168.64.1, but VZ may renumber the subnet across
-# reboots) IS the host, so the guest and its containers can reach a host
-# service bound to 0.0.0.0 there. Resolve it once and publish host.internal /
-# host.dew.internal in /etc/hosts (mirrors docker's host.docker.internal) so
-# dev config never has to hardcode the gateway IP. dew-oci-run copies this line
-# into each container's hosts file. (A host service bound to 127.0.0.1 stays
-# unreachable from the guest — same limitation as docker's alias.)
-#
-# Written unconditionally (not only when eth0 exists) so localhost always
-# resolves locally even on a no-network profile; the host.internal line is
-# added only when a default route — hence a gateway — is known.
-#
-# host.lo.internal (127.0.0.2) is the reverse host-forward alias: when the user
-# runs `dew up --expose-host PORT`, dew-agent listens on 127.0.0.2:PORT and
-# tunnels to the host over vsock, so a host service bound to 127.0.0.1 (not just
-# 0.0.0.0) is reachable, bypassing NAT entirely. The alias always resolves; it
-# only connects when a port was exposed. 127.0.0.2 (not .1) so the forwarder
-# never shadows a container's own localhost services.
-HOST_GW=$(ip route 2>/dev/null | awk '$1=="default" && $2=="via" {print $3; exit}')
+# /etc/hosts: localhost and host.lo.internal resolve immediately — neither
+# needs the network, and the reverse host-forward (host.lo.internal → 127.0.0.2,
+# the vsock tunnel dew-agent serves for `dew up --expose-host`) must work even
+# before DHCP. 127.0.0.2 (not .1) so the forwarder never shadows a container's
+# own localhost services. The host.internal NAT-gateway line is appended later
+# by bring_up_network, once a default route exists. dew-oci-run copies both
+# .internal lines into each container's hosts file.
 {
     printf '127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n'
     printf '127.0.0.2\thost.lo.internal\n'
-    [ -n "$HOST_GW" ] && printf '%s\thost.internal host.dew.internal\n' "$HOST_GW"
 } > /etc/hosts
 
-# Egress policy. When the host passes dew.netpolicy=restricted on the
-# kernel cmdline, set OUTPUT default to DROP and explicitly accept:
-#   - loopback
-#   - DNS to the configured resolver (so /etc/resolv.conf still works)
-#   - the IPv4 addresses listed in dew.allow=ip1,ip2,...
-# When dew.netpolicy is unset (the default), egress is open as before
-# — this is opt-in for v1; default-deny + hostname allowlist is a
-# follow-up that needs a DNS-aware proxy.
+# Egress policy is parsed up front because it decides whether the network
+# bring-up may be backgrounded (see the dispatch below). dew.netpolicy=restricted
+# means default-DROP OUTPUT plus loopback/DNS/dew.allow= accepts; unset means
+# egress is open (opt-in for v1; default-deny + hostname allowlist is a follow-up
+# needing a DNS-aware proxy).
 NETPOLICY=""
 ALLOW_IPS=""
 for param in $(cat /proc/cmdline 2>/dev/null); do
@@ -754,10 +719,13 @@ for param in $(cat /proc/cmdline 2>/dev/null); do
         dew.allow=*)     ALLOW_IPS="${param#dew.allow=}" ;;
     esac
 done
-if [ "$NETPOLICY" = "restricted" ] && command -v iptables >/dev/null 2>&1; then
-    # Load the netfilter modules iptables needs. The nft backend is
-    # Alpine's default; ip_tables/iptable_filter cover the legacy
-    # backend that older user scripts may use directly.
+
+# apply_netpolicy enforces dew.netpolicy=restricted; a no-op otherwise.
+apply_netpolicy() {
+    [ "$NETPOLICY" = "restricted" ] && command -v iptables >/dev/null 2>&1 || return 0
+    # Load the netfilter modules iptables needs. The nft backend is Alpine's
+    # default; ip_tables/iptable_filter cover the legacy backend older user
+    # scripts may use directly.
     modprobe nf_tables 2>/dev/null || true
     modprobe nft_compat 2>/dev/null || true
     modprobe ip_tables 2>/dev/null || true
@@ -779,6 +747,52 @@ if [ "$NETPOLICY" = "restricted" ] && command -v iptables >/dev/null 2>&1; then
         IFS="$OLD_IFS"
     fi
     echo "dew: network policy = restricted (default DROP; ${ALLOW_IPS:-no extra hosts})"
+}
+
+# bring_up_network does the slow, network-coupled boot work: bring eth0 up, get a
+# DHCP lease, publish host.internal → the gateway, then enforce the egress
+# policy. Apple VZ's NAT is racy at first boot — usually answers in ~2 s,
+# occasionally not for ~60-80 s; `-n -t 30 -T 3` makes ONE patient ~90 s attempt
+# then proceeds pass-or-fail, instead of the busybox default of retrying the
+# 3-packet discovery burst forever (the "broadcasting discover" spam).
+bring_up_network() {
+    if ip link show eth0 >/dev/null 2>&1; then
+        ip link set eth0 up 2>/dev/null || true
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+            [ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = "1" ] && break
+            sleep 0.1
+        done
+        udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -n -t 30 -T 3 || true
+        echo "nameserver 1.1.1.1" > /etc/resolv.conf
+        # Apple VZ's NAT gateway (the DHCP router — typically 192.168.64.1, but
+        # VZ may renumber across reboots) IS the host, so a host service bound to
+        # 0.0.0.0 is reachable there. Publish host.internal / host.dew.internal
+        # (dew's host.docker.internal) so dev config never hardcodes the gateway.
+        # A 127.0.0.1-bound host service stays unreachable this way — that's what
+        # host.lo.internal (written above) is for.
+        HOST_GW=$(ip route 2>/dev/null | awk '$1=="default" && $2=="via" {print $3; exit}')
+        [ -n "$HOST_GW" ] && printf '%s\thost.internal host.dew.internal\n' "$HOST_GW" >> /etc/hosts
+    fi
+    apply_netpolicy
+}
+
+# Take DHCP off the critical path. dew-agent rides vsock (not eth0), OCI images
+# are pulled on the host and overlaid in (no guest fetch), port forwards are
+# vsock proxies, host.lo.internal is vsock, and co-located services talk over
+# localhost — so nothing the host orchestrates right after boot needs the guest
+# NIC. Backgrounding the lease lets the agent answer ~0.5-2 s sooner. EXCEPTION:
+# under a restricted egress policy the OUTPUT DROP is a security barrier that
+# must be in force before anything can egress (and would itself block an
+# in-flight DHCP), so there we keep the original synchronous order. The
+# network-dependent boot steps below (first-boot apk, dew.cmd) wait on NET_PID;
+# the host-driven `npm install` relies on the lease's head start plus npm's own
+# retries rather than a guest-side barrier.
+NET_PID=""
+if [ "$NETPOLICY" = "restricted" ]; then
+    bring_up_network
+else
+    bring_up_network &
+    NET_PID=$!
 fi
 
 # virtiofs mounts (need fuse + virtiofs modules after switch_root)
@@ -908,11 +922,19 @@ python_first_boot_apk() {
     fi
 }
 
+# The first-boot runtime install fetches packages over apk, so it needs the
+# lease — wait for the backgrounded bring_up_network (a no-op when it already
+# ran synchronously under a restricted policy, where NET_PID is empty).
+if [ -f /.dew-node-profile ] || [ -f /.dew-python-profile ]; then
+    [ -n "$NET_PID" ] && wait "$NET_PID" 2>/dev/null
+fi
 [ -f /.dew-node-profile ]   && node_first_boot_apk
 [ -f /.dew-python-profile ] && python_first_boot_apk
 
-# startup command
+# startup command (dew.cmd, set by `dew start <cmd>`). A baked boot command may
+# expect the network, so wait for the backgrounded lease first.
 if [ -n "$DEW_CMD" ]; then
+    [ -n "$NET_PID" ] && wait "$NET_PID" 2>/dev/null
     DECODED=$(echo "$DEW_CMD" | base64 -d 2>/dev/null)
     [ -n "$DECODED" ] && sh -c "$DECODED" &
 fi
