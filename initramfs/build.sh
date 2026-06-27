@@ -925,8 +925,13 @@ done
 DEW_CGROUP_ACTIVE=""
 if grep -q cgroup2 /proc/filesystems 2>/dev/null; then
     mountpoint -q /sys/fs/cgroup || mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
-    mkdir -p /sys/fs/cgroup/dew
-    if [ -n "$DEW_CPU_QUOTA" ] || [ -n "$DEW_MEM_LIMIT" ] || [ -n "$DEW_PIDS_MAX" ]; then
+    # Confirm cgroup2 is actually mounted before touching it. cgroup.controllers
+    # exists only on a real cgroup2 mount; if the mount failed, writes would
+    # land as regular files and DEW_CGROUP_ACTIVE would falsely imply active
+    # limits. Gate the apply path (and the leaf mkdir) on it.
+    if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+      mkdir -p /sys/fs/cgroup/dew
+      if [ -n "$DEW_CPU_QUOTA" ] || [ -n "$DEW_MEM_LIMIT" ] || [ -n "$DEW_PIDS_MAX" ]; then
         # Delegate controllers from the root so the dew leaf exposes
         # memory.max/pids.max/cpu.max. The root cgroup is exempt from the
         # cgroup-v2 "no internal processes" rule, so PID 1 may stay in it.
@@ -947,6 +952,9 @@ if grep -q cgroup2 /proc/filesystems 2>/dev/null; then
         [ -n "$DEW_MEM_LIMIT" ] && [ ! -f /sys/fs/cgroup/dew/memory.max ] && echo "dew: warning: memory cap requested but memory controller unavailable; not applied"
         [ -n "$DEW_PIDS_MAX" ]  && [ ! -f /sys/fs/cgroup/dew/pids.max ]   && echo "dew: warning: pids cap requested but pids controller unavailable; not applied"
         DEW_CGROUP_ACTIVE=1
+      fi
+    elif [ -n "$DEW_CPU_QUOTA$DEW_MEM_LIMIT$DEW_PIDS_MAX" ]; then
+      echo "dew: warning: cgroup2 is not mounted; --cgroup limits not applied"
     fi
 fi
 

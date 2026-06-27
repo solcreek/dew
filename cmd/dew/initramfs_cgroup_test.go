@@ -29,6 +29,13 @@ func TestInitramfsBuildScript_CgroupApply(t *testing.T) {
 	if !strings.Contains(script, "cgroup.subtree_control") {
 		t.Error("init-stage2 never enables controllers via cgroup.subtree_control; leaf memory.max/pids.max/cpu.max would not exist")
 	}
+
+	// The apply path must be gated on cgroup2 actually being mounted
+	// (cgroup.controllers exists only on a real cgroup2 mount), or a failed
+	// mount would land writes as regular files and falsely set DEW_CGROUP_ACTIVE.
+	if !strings.Contains(script, "/sys/fs/cgroup/cgroup.controllers") {
+		t.Error("init-stage2 does not gate the cgroup apply on a real cgroup2 mount (cgroup.controllers)")
+	}
 	if !strings.Contains(script, "/sys/fs/cgroup/dew/pids.max") {
 		t.Error("init-stage2 never writes pids.max on the dew leaf")
 	}
