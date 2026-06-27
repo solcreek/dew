@@ -49,7 +49,7 @@ func bringUpStaged(
 			if probeReady(s) {
 				o.ready = true
 			} else {
-				o.failReason = "service did not start accepting connections within 30s"
+				o.failReason = "service did not start accepting connections within ~30s"
 				o.failLogs = diag(s.name)
 			}
 			outcomes[i] = o

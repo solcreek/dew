@@ -1617,7 +1617,7 @@ func cmdRun(args []string) error {
 				continue
 			}
 			if !o.ready {
-				fmt.Fprintf(os.Stderr, "dew: service %s did not start accepting connections within 30s\n", s.name)
+				fmt.Fprintf(os.Stderr, "dew: service %s did not start accepting connections within ~30s\n", s.name)
 				continue
 			}
 			hostFwd := s.port
