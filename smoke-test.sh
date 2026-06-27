@@ -423,11 +423,16 @@ if [ -f "$INITRD_STD" ] && [ -f "$KERNEL" ] && command -v python3 >/dev/null 2>&
     # Confirm the listener actually bound before the stack depends on it. If
     # the port was still occupied (e.g. lsof absent → kill_port no-op'd),
     # http.server exits immediately and the later host.lo.internal vsock
-    # check would otherwise fail for the wrong reason. Probe explicitly.
+    # check would otherwise fail for the wrong reason. Require BOTH that our
+    # http.server PID is still alive AND that the port answers HTTP — a squatter
+    # already serving on the port must not pass as "our listener bound".
     HOST_LISTENER_OK=0
     for _ in $(seq 1 20); do
-        curl -sS --max-time 1 -o /dev/null "http://127.0.0.1:$HOST_LO_PORT/" 2>/dev/null \
-            && { HOST_LISTENER_OK=1; break; }
+        if ps -p "$HOST_LISTENER_PID" -o command= 2>/dev/null | grep -q 'http\.server' \
+            && curl -sS --max-time 1 -o /dev/null "http://127.0.0.1:$HOST_LO_PORT/" 2>/dev/null; then
+            HOST_LISTENER_OK=1
+            break
+        fi
         sleep 0.2
     done
     if [ "$HOST_LISTENER_OK" = 1 ]; then
