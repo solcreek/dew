@@ -901,6 +901,16 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 			cfg.Network = true
 		case "--rosetta":
 			cfg.EnableRosetta = true
+		case "--cgroup":
+			i++
+			if i >= len(args) {
+				return cfg, nil, dewerr.New(dewerr.CodeUsage, "--cgroup requires limits (e.g. memory=256M,pids=256,cpu=200%)")
+			}
+			cg, perr := parseCgroup(args[i])
+			if perr != nil {
+				return cfg, nil, perr
+			}
+			cfg.Cgroup = cg
 		case "--network-policy":
 			i++
 			if i >= len(args) {
@@ -1159,6 +1169,15 @@ func appendGuestParams(cfg *vm.Config) {
 	}
 	if cfg.EnableRosetta {
 		cfg.CmdLine += " dew.rosetta=1"
+	}
+	if cfg.Cgroup.MemoryBytes > 0 {
+		cfg.CmdLine += fmt.Sprintf(" dew.mem_limit=%d", cfg.Cgroup.MemoryBytes)
+	}
+	if cfg.Cgroup.PidsMax > 0 {
+		cfg.CmdLine += fmt.Sprintf(" dew.pids_max=%d", cfg.Cgroup.PidsMax)
+	}
+	if cfg.Cgroup.CPUQuota > 0 {
+		cfg.CmdLine += fmt.Sprintf(" dew.cpu_quota=%d", cfg.Cgroup.CPUQuota)
 	}
 	if cfg.Network && cfg.NetworkPolicy == "restricted" {
 		cfg.CmdLine += " dew.netpolicy=restricted"
@@ -3610,6 +3629,107 @@ func parseVolume(s string) (src, dest string, err error) {
 		}
 	}
 	return "/var/lib/dew/volumes/" + left, dst, nil
+}
+
+// parseCgroup parses a `--cgroup` spec: a comma-separated list of
+// key=value limits applied to the guest's /sys/fs/cgroup/dew leaf.
+//
+//	memory=256M    memory.max — K/M/G suffix is 1024-based; bare = bytes
+//	pids=256       pids.max — integer
+//	cpu=200%       cpu.max — N% of one core, or a bare core count (2 = 200%)
+//
+// Unknown keys, malformed values, and non-positive numbers are errors so a
+// typo fails loudly rather than silently leaving a limit unset.
+func parseCgroup(s string) (vm.CgroupLimits, error) {
+	var cg vm.CgroupLimits
+	if strings.TrimSpace(s) == "" {
+		return cg, dewerr.New(dewerr.CodeUsage, "--cgroup: empty spec")
+	}
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(part, "=")
+		if !ok {
+			return cg, dewerr.Newf(dewerr.CodeUsage, "--cgroup: expected key=value, got %q", part)
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		switch k {
+		case "memory", "mem":
+			b, err := parseByteSize(v)
+			if err != nil {
+				return cg, dewerr.Newf(dewerr.CodeUsage, "--cgroup memory: %v", err)
+			}
+			cg.MemoryBytes = b
+		case "pids", "tasks":
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil || n <= 0 {
+				return cg, dewerr.Newf(dewerr.CodeUsage, "--cgroup pids: invalid count %q", v)
+			}
+			cg.PidsMax = n
+		case "cpu":
+			q, err := parseCPUQuota(v)
+			if err != nil {
+				return cg, dewerr.Newf(dewerr.CodeUsage, "--cgroup cpu: %v", err)
+			}
+			cg.CPUQuota = q
+		default:
+			return cg, dewerr.Newf(dewerr.CodeUsage, "--cgroup: unknown key %q (want memory, pids, cpu)", k)
+		}
+	}
+	if !cg.Set() {
+		return cg, dewerr.New(dewerr.CodeUsage, "--cgroup: no limits parsed")
+	}
+	return cg, nil
+}
+
+// parseByteSize parses a 1024-based size like "256M", "1G", "512K", or a
+// bare byte count. Returns a positive byte count.
+func parseByteSize(s string) (int64, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty size")
+	}
+	mult := int64(1)
+	switch s[len(s)-1] {
+	case 'K', 'k':
+		mult = 1024
+	case 'M', 'm':
+		mult = 1024 * 1024
+	case 'G', 'g':
+		mult = 1024 * 1024 * 1024
+	}
+	num := s
+	if mult != 1 {
+		num = s[:len(s)-1]
+	}
+	n, err := strconv.ParseInt(num, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("invalid size %q", s)
+	}
+	return n * mult, nil
+}
+
+// parseCPUQuota converts a cpu spec into a cpu.max quota numerator for a
+// 100000us period: "200%" → 200000, "2" → 200000, "50%" → 50000.
+func parseCPUQuota(s string) (int64, error) {
+	const period = 100000
+	if s == "" {
+		return 0, fmt.Errorf("empty cpu spec")
+	}
+	if strings.HasSuffix(s, "%") {
+		pct, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
+		if err != nil || pct <= 0 {
+			return 0, fmt.Errorf("invalid percentage %q", s)
+		}
+		return int64(pct / 100 * period), nil
+	}
+	cores, err := strconv.ParseFloat(s, 64)
+	if err != nil || cores <= 0 {
+		return 0, fmt.Errorf("invalid core count %q", s)
+	}
+	return int64(cores * period), nil
 }
 
 // parseShare accepts three forms:

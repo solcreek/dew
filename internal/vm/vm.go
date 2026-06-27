@@ -83,9 +83,32 @@ type Config struct {
 	// rather than silently doing nothing.
 	EnableRosetta bool
 
+	// Cgroup, when any field is set, caps the guest workload via cgroup v2.
+	// The values cross to the guest on the kernel cmdline (dew.mem_limit,
+	// dew.pids_max, dew.cpu_quota); init-stage2 applies them to
+	// /sys/fs/cgroup/dew and runs dew-agent (and everything it execs)
+	// inside it. Zero-value fields are left unlimited.
+	Cgroup CgroupLimits
+
 	// Console overrides the serial console file handles.
 	// If nil, os.Stdin/os.Stdout are used (interactive mode).
 	Console *ConsoleFiles
+}
+
+// CgroupLimits holds the parsed `--cgroup` limits applied to the guest's
+// /sys/fs/cgroup/dew leaf. A zero field means "leave unlimited".
+type CgroupLimits struct {
+	MemoryBytes int64 // cgroup memory.max
+	PidsMax     int64 // cgroup pids.max
+	// CPUQuota is the quota (in microseconds) granted every 100000us period,
+	// i.e. the numerator the guest writes as `<quota> 100000` into cpu.max.
+	// 100000 == 1 core, 200000 == 2 cores, 50000 == half a core.
+	CPUQuota int64
+}
+
+// Set reports whether any limit is configured.
+func (c CgroupLimits) Set() bool {
+	return c.MemoryBytes > 0 || c.PidsMax > 0 || c.CPUQuota > 0
 }
 
 // PortForward maps a host TCP port to a guest TCP port via vsock.

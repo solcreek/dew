@@ -887,21 +887,36 @@ fi
 # kernel cmdline params
 DEW_CPU_QUOTA=""
 DEW_MEM_LIMIT=""
+DEW_PIDS_MAX=""
 DEW_CMD=""
 for param in $(cat /proc/cmdline); do
     case "$param" in
         dew.cpu_quota=*) DEW_CPU_QUOTA="${param#dew.cpu_quota=}" ;;
         dew.mem_limit=*) DEW_MEM_LIMIT="${param#dew.mem_limit=}" ;;
+        dew.pids_max=*)  DEW_PIDS_MAX="${param#dew.pids_max=}" ;;
         dew.cmd=*)       DEW_CMD="${param#dew.cmd=}" ;;
     esac
 done
 
-# cgroup v2
+# cgroup v2. The /sys/fs/cgroup/dew leaf always exists (the agent reports it
+# as writable); limits are applied only when `--cgroup` passed them. Without
+# delegating controllers from the root these memory.max/pids.max/cpu.max files
+# wouldn't exist on the leaf, so the limit writes would no-op — which is why
+# this gates the whole apply path on DEW_CGROUP_ACTIVE.
+DEW_CGROUP_ACTIVE=""
 if grep -q cgroup2 /proc/filesystems 2>/dev/null; then
     mountpoint -q /sys/fs/cgroup || mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
     mkdir -p /sys/fs/cgroup/dew
-    [ -n "$DEW_CPU_QUOTA" ] && echo "$DEW_CPU_QUOTA 100000" > /sys/fs/cgroup/dew/cpu.max 2>/dev/null
-    [ -n "$DEW_MEM_LIMIT" ] && echo "$DEW_MEM_LIMIT" > /sys/fs/cgroup/dew/memory.max 2>/dev/null
+    if [ -n "$DEW_CPU_QUOTA" ] || [ -n "$DEW_MEM_LIMIT" ] || [ -n "$DEW_PIDS_MAX" ]; then
+        # Delegate controllers from the root so the dew leaf exposes
+        # memory.max/pids.max/cpu.max. The root cgroup is exempt from the
+        # cgroup-v2 "no internal processes" rule, so PID 1 may stay in it.
+        echo "+cpu +memory +pids" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+        [ -n "$DEW_CPU_QUOTA" ] && echo "$DEW_CPU_QUOTA 100000" > /sys/fs/cgroup/dew/cpu.max 2>/dev/null
+        [ -n "$DEW_MEM_LIMIT" ] && echo "$DEW_MEM_LIMIT" > /sys/fs/cgroup/dew/memory.max 2>/dev/null
+        [ -n "$DEW_PIDS_MAX" ]  && echo "$DEW_PIDS_MAX"  > /sys/fs/cgroup/dew/pids.max 2>/dev/null
+        DEW_CGROUP_ACTIVE=1
+    fi
 fi
 
 # unprivileged user with sudo
@@ -926,7 +941,15 @@ chmod 440 /etc/sudoers.d/dew 2>/dev/null || true
 # DEW_EXEC_USER=dew opts into unprivileged-user exec for untrusted code.
 AGENT_ENV=""
 if [ -x /usr/local/bin/dew-agent ] && [ -e /dev/vsock ]; then
-    env $AGENT_ENV /usr/local/bin/dew-agent >/dev/null 2>&1 &
+    if [ -n "$DEW_CGROUP_ACTIVE" ]; then
+        # Run the agent — and so everything it execs — inside the capped leaf
+        # so `--cgroup` actually contains the guest workload. Trade-off: the
+        # agent shares the cap, so a memory cap small enough to OOM the
+        # workload can also kill the agent (documented).
+        ( echo $$ > /sys/fs/cgroup/dew/cgroup.procs 2>/dev/null; exec env $AGENT_ENV /usr/local/bin/dew-agent >/dev/null 2>&1 ) &
+    else
+        env $AGENT_ENV /usr/local/bin/dew-agent >/dev/null 2>&1 &
+    fi
     echo "dew-agent: vsock ready"
 fi
 
