@@ -78,9 +78,12 @@ func TestInitramfsBuildScript_DiskWaitGatedOnDewDisk(t *testing.T) {
 	if waitIdx == -1 {
 		t.Fatal("could not find the /dev/vda probe-wait loop in build.sh — test needs updating")
 	}
-	guardIdx := strings.LastIndex(script[:waitIdx], "grep -q 'dew.disk=1' /proc/cmdline")
+	// Fixed-string + whole-word match (grep -Fw) so the marker can't be matched
+	// by a regex wildcard (the '.' in dew.disk) or as a substring of a longer
+	// token. Kept in sync with the guard line in build.sh.
+	guardIdx := strings.LastIndex(script[:waitIdx], "grep -qFw 'dew.disk=1' /proc/cmdline")
 	if guardIdx == -1 {
-		t.Fatal("the /dev/vda wait loop is not gated on dew.disk=1 — diskless (minimal) boots will burn the ~1s device-probe timeout")
+		t.Fatal("the /dev/vda wait loop is not gated on a fixed-string dew.disk=1 match — diskless (minimal) boots will burn the ~1s device-probe timeout")
 	}
 	// The guard must still be open at the loop: no `fi` closes it in between.
 	if strings.Contains(script[guardIdx:waitIdx], "\nfi\n") {

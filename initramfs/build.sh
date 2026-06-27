@@ -610,7 +610,7 @@ modprobe vmw_vsock_virtio_transport 2>/dev/null || true
 # the block-device attach). A diskless profile (minimal) has no /dev/vda, so
 # without this gate the loop runs its full ~1s timeout every boot waiting for a
 # device that never appears — and minimal is `dew run`'s default profile.
-if grep -q 'dew.disk=1' /proc/cmdline 2>/dev/null; then
+if grep -qFw 'dew.disk=1' /proc/cmdline 2>/dev/null; then
     for i in 1 2 3 4 5 6 7 8 9 10; do
         [ -b /dev/vda ] && break
         sleep 0.1
