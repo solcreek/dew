@@ -142,7 +142,13 @@ func handleConn(conn net.Conn) {
 
 		case protocol.TypeSetExposes:
 			var req protocol.SetExposesRequest
-			json.Unmarshal(data, &req)
+			// Fail closed on a malformed frame before mutating listener state:
+			// a corrupt SetExposes must not reconcile (and possibly tear down)
+			// the guest's expose listeners.
+			if err := json.Unmarshal(data, &req); err != nil {
+				protocol.WriteJSON(conn, &protocol.ConnectResponse{Error: "bad set_exposes request"})
+				return
+			}
 			if !isAuthorized(req.Token) {
 				protocol.WriteJSON(conn, &protocol.ConnectResponse{Error: "unauthorized"})
 				return
