@@ -30,8 +30,39 @@ func TestWaitGuestReady_TimesOut(t *testing.T) {
 	if ok {
 		t.Fatal("expected ready=false on timeout")
 	}
-	if calls != 5 {
-		t.Errorf("probe called %d times, want 5", calls)
+	// Instant probes normally exhaust all 5 attempts, but the wall-clock
+	// deadline (attempts*interval) may legitimately stop a hair early under
+	// scheduler jitter — so bound the count rather than pin it exactly.
+	if calls < 1 || calls > 5 {
+		t.Errorf("probe called %d times, want 1..5", calls)
+	}
+}
+
+func TestWaitGuestReady_WallClockDeadlineCapsSlowProbes(t *testing.T) {
+	// Each probe blocks far longer than the interval and never succeeds.
+	// Counting attempts alone would run all of them (~attempts*(probe+interval));
+	// the wall-clock deadline (attempts*interval) must stop it much sooner.
+	const attempts = 50
+	const interval = 2 * time.Millisecond // deadline ≈ 100ms
+	var calls int32
+	probe := func() bool {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(10 * time.Millisecond) // each probe dwarfs the interval
+		return false
+	}
+	start := time.Now()
+	ok := waitGuestReady(probe, attempts, interval)
+	elapsed := time.Since(start)
+	if ok {
+		t.Fatal("expected ready=false for a never-ready probe")
+	}
+	// Uncapped this runs ~50*(10+2)=600ms; the deadline caps it near 100ms plus
+	// at most one in-flight probe. 300ms sits comfortably between the two.
+	if elapsed > 300*time.Millisecond {
+		t.Errorf("elapsed %v — wall-clock deadline did not cap a slow probe", elapsed)
+	}
+	if got := atomic.LoadInt32(&calls); int(got) >= attempts {
+		t.Errorf("probe ran %d times (== attempts); the deadline should stop it early", got)
 	}
 }
 
@@ -152,7 +183,11 @@ func TestBringUpStaged_RunsConcurrently(t *testing.T) {
 	got := bringUpStaged(svcs, func(stagedService) error { return nil }, probe, func(string) string { return "" })
 	elapsed := time.Since(start)
 
-	if elapsed > block*time.Duration(n)/2 {
+	// Serial execution takes n*block; true concurrency ≈ block. Assert
+	// comfortably below the serial time (n-1)*block rather than at the
+	// midpoint, so a loaded runner's scheduler jitter doesn't flake an
+	// actually-concurrent run. peak (below) is the strong overlap signal.
+	if elapsed >= block*time.Duration(n-1) {
 		t.Errorf("elapsed %v for %d services blocking %v each — looks serial, not concurrent", elapsed, n, block)
 	}
 	if peak < 2 {

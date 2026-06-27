@@ -460,6 +460,26 @@ mount -t overlay overlay \
     "$RUN/merged"
 cp "$BUNDLE/config.json" "$RUN/bundle/config.json"
 
+# If init-stage2 backgrounded the DHCP lease, host.internal may not be in
+# /etc/hosts yet (it's appended once the gateway is known). Snapshotting now
+# would bake a hosts file without host.internal, and the container would miss
+# it permanently. Wait for the bring-up to clear its marker so the snapshot
+# below captures host.internal. The marker is absent on a network-less VM and
+# clears in well under a second on a healthy lease, so this is a no-op in the
+# common case. The ~30s cap only bounds how long a launch blocks on a
+# pathologically slow lease instead of stalling toward udhcpc's ~90s window. If
+# the cap is hit we proceed without host.internal and warn: the readiness probe
+# (a LISTEN-socket check) is independent of DHCP, so a service can still come up
+# while silently missing host.internal until the container is restarted.
+i=0
+while [ -e /run/dew-net-pending ] && [ "$i" -lt 300 ]; do
+    sleep 0.1
+    i=$((i + 1))
+done
+if [ -e /run/dew-net-pending ]; then
+    echo "dew-oci-run: warning: DHCP lease still pending after ~30s; $NAME launched without host.internal (restart it once the lease lands to pick the alias up)" >&2
+fi
+
 # Give the container working name resolution. Many minimal images ship no
 # /etc/hosts, so a Go/musl resolver sends `localhost` to DNS ([::1]:53, which
 # is refused) instead of resolving it locally — breaking same-VM config like
@@ -774,6 +794,11 @@ bring_up_network() {
         [ -n "$HOST_GW" ] && printf '%s\thost.internal host.dew.internal\n' "$HOST_GW" >> /etc/hosts
     fi
     apply_netpolicy
+    # Network bring-up is done (host.internal written if we have a NIC, or
+    # legitimately absent if not) — release any container launch waiting to
+    # snapshot /etc/hosts. Harmless when the marker was never set (restricted
+    # path, where the bring-up was synchronous before any container could run).
+    rm -f /run/dew-net-pending
 }
 
 # Take DHCP off the critical path. dew-agent rides vsock (not eth0), OCI images
@@ -791,9 +816,27 @@ NET_PID=""
 if [ "$NETPOLICY" = "restricted" ]; then
     bring_up_network
 else
+    # Mark the lease in flight: host.internal isn't in /etc/hosts until the
+    # background bring_up_network appends it, and dew-oci-run snapshots the
+    # guest's .internal lines into each container at launch. A container
+    # started in this window would permanently miss host.internal, so
+    # dew-oci-run waits for this marker to clear before snapshotting.
+    : > /run/dew-net-pending
     bring_up_network &
     NET_PID=$!
 fi
+
+# wait_network blocks on the backgrounded bring_up_network exactly once, then
+# clears NET_PID so a later barrier can't wait (and mis-reap) a stale PID. A
+# final call before handing off reaps the child if no network-dependent step
+# needed it — otherwise the lease process lingers as a zombie under PID 1. A
+# no-op under a restricted policy, where the bring-up ran synchronously and
+# NET_PID is empty.
+wait_network() {
+    [ -n "$NET_PID" ] || return 0
+    wait "$NET_PID" 2>/dev/null
+    NET_PID=""
+}
 
 # virtiofs mounts (need fuse + virtiofs modules after switch_root)
 modprobe fuse 2>/dev/null || true
@@ -926,7 +969,7 @@ python_first_boot_apk() {
 # lease — wait for the backgrounded bring_up_network (a no-op when it already
 # ran synchronously under a restricted policy, where NET_PID is empty).
 if [ -f /.dew-node-profile ] || [ -f /.dew-python-profile ]; then
-    [ -n "$NET_PID" ] && wait "$NET_PID" 2>/dev/null
+    wait_network
 fi
 [ -f /.dew-node-profile ]   && node_first_boot_apk
 [ -f /.dew-python-profile ] && python_first_boot_apk
@@ -934,10 +977,14 @@ fi
 # startup command (dew.cmd, set by `dew start <cmd>`). A baked boot command may
 # expect the network, so wait for the backgrounded lease first.
 if [ -n "$DEW_CMD" ]; then
-    [ -n "$NET_PID" ] && wait "$NET_PID" 2>/dev/null
+    wait_network
     DECODED=$(echo "$DEW_CMD" | base64 -d 2>/dev/null)
     [ -n "$DECODED" ] && sh -c "$DECODED" &
 fi
+
+# Reap the lease child if no network-dependent step waited on it, so it
+# doesn't linger as a zombie under PID 1 (a no-op once NET_PID is cleared).
+wait_network
 
 echo ""
 echo "  dew vm ready"

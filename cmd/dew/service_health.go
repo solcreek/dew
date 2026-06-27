@@ -49,7 +49,7 @@ func bringUpStaged(
 			if probeReady(s) {
 				o.ready = true
 			} else {
-				o.failReason = "service did not start accepting connections within 30s"
+				o.failReason = "service did not start accepting connections within ~30s"
 				o.failLogs = diag(s.name)
 			}
 			outcomes[i] = o
@@ -68,17 +68,37 @@ func bringUpStaged(
 const (
 	readyProbeInterval = 100 * time.Millisecond
 	readyProbeAttempts = 300
+	// readyProbeExecTimeout bounds each individual listen-probe exec. The
+	// overall ~30s budget is enforced by waitGuestReady's wall-clock deadline;
+	// this bound just caps a single hung probe so the gate can overshoot the
+	// deadline by at most one exec (≤5s) rather than inheriting the agent
+	// default (up to 30s per attempt) and stalling startup.
+	readyProbeExecTimeout = 5 * time.Second
+	// serviceDiagExecTimeout bounds the best-effort log-tail collected when a
+	// service fails. The concurrent launcher waits for every service goroutine,
+	// so an unbounded diag exec on a slow guest would delay all results — cap it
+	// rather than inherit the agent default.
+	serviceDiagExecTimeout = 5 * time.Second
 )
 
-// waitGuestReady calls probe repeatedly until it returns true or the
-// attempt budget is exhausted, sleeping interval between tries. probe
-// is injected (rather than calling the guest directly) so the readiness
-// polling is unit-testable without a running VM. Returns true once the
-// service is confirmed ready, false on timeout.
+// waitGuestReady calls probe repeatedly until it returns true, the attempt
+// budget is exhausted, or the wall-clock deadline (attempts*interval) passes,
+// sleeping interval between tries. probe is injected (rather than calling the
+// guest directly) so the readiness polling is unit-testable without a running
+// VM. Returns true once the service is confirmed ready, false on timeout.
+//
+// The deadline matters because a probe exec is not free: it can take up to
+// readyProbeExecTimeout each, so counting attempts alone could stretch the gate
+// far past attempts*interval. Bounding wall-clock keeps it honest with the
+// "within ~30s" the caller reports; the worst overshoot is one in-flight probe.
 func waitGuestReady(probe func() bool, attempts int, interval time.Duration) bool {
+	deadline := time.Now().Add(time.Duration(attempts) * interval)
 	for i := 0; i < attempts; i++ {
 		if probe() {
 			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
 		}
 		if i < attempts-1 {
 			time.Sleep(interval)
