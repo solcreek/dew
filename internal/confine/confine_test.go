@@ -130,6 +130,8 @@ func TestParse_InvalidNumericDirectives(t *testing.T) {
 		"[Service]\nTasksMax=-5\n",
 		"[Service]\nCPUQuota=abc\n",
 		"[Service]\nCPUQuota=0.0001%\n", // rounds to 0
+		"[Service]\nMemoryMax=0\n",      // 0 is not a valid hard cap
+		"[Service]\nMemoryMax=0M\n",
 	} {
 		if _, err := Parse(strings.NewReader(unit)); err == nil {
 			t.Errorf("expected parse error for unit:\n%s", unit)

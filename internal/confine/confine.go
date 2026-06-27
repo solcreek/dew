@@ -292,7 +292,9 @@ func parseBytes(s string) (int64, bool, error) {
 		num = s[:len(s)-1]
 	}
 	n, err := strconv.ParseInt(strings.TrimSpace(num), 10, 64)
-	if err != nil || n < 0 {
+	if err != nil || n <= 0 {
+		// Reject 0 (and 0K/0M/…) so MemoryMax=0 fails like a non-positive
+		// TasksMax/CPUQuota rather than being silently treated as unlimited.
 		return 0, false, fmt.Errorf("invalid size")
 	}
 	if n > (1<<63-1)/mult {
