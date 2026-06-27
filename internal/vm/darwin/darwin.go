@@ -55,8 +55,17 @@ func New(cfg vm.Config) (*DarwinVM, error) {
 // Idempotent: a base that already carries the marker is returned unchanged, so
 // the marker can never appear twice in /proc/cmdline.
 func diskCmdLine(base, diskPath string) string {
-	if diskPath == "" || strings.Contains(base, "dew.disk=1") {
+	if diskPath == "" {
 		return base
+	}
+	// Match the marker as a whole cmdline token, not a substring: a
+	// strings.Contains check would false-positive on a superset like
+	// "dew.disk=10" and wrongly skip appending the real "dew.disk=1",
+	// disabling the guest's /dev/vda wait gate for a disk profile.
+	for _, tok := range strings.Fields(base) {
+		if tok == "dew.disk=1" {
+			return base
+		}
 	}
 	return base + " dew.disk=1"
 }

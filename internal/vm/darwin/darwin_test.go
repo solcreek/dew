@@ -27,10 +27,16 @@ func TestDiskCmdLine(t *testing.T) {
 	if got, want := diskCmdLine(withShare, "/x/std.img"), withShare+" dew.disk=1"; got != want {
 		t.Errorf("preserves existing flags: got %q, want %q", got, want)
 	}
-	// Idempotent: a base that already carries the marker isn't given a second.
+	// Idempotent: a base that already carries the exact marker isn't given a second.
 	withMarker := "console=hvc0 dew.disk=1"
 	if got := diskCmdLine(withMarker, "/x/std.img"); got != withMarker {
 		t.Errorf("idempotent: diskCmdLine(%q, disk) = %q, want unchanged (no duplicate marker)", withMarker, got)
+	}
+	// A superset token (dew.disk=10) is NOT the marker — whole-token matching
+	// must still append the real "dew.disk=1" rather than false-positive on it.
+	withSuperset := "console=hvc0 dew.disk=10"
+	if got, want := diskCmdLine(withSuperset, "/x/std.img"), withSuperset+" dew.disk=1"; got != want {
+		t.Errorf("superset token false-positive: diskCmdLine(%q, disk) = %q, want %q", withSuperset, got, want)
 	}
 }
 
