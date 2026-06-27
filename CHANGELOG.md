@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`host.lo.internal` + `dew up --expose-host PORT` — reach a `127.0.0.1`-bound
+  macOS host service from the VM.** Where `host.internal` needs the host service
+  bound to `0.0.0.0` and rides the NAT gateway, the reverse host-forward tunnels
+  declared ports over vsock: the guest (and its containers) reach
+  `host.lo.internal:PORT`, the agent forwards to the host, and dew dials
+  `127.0.0.1:PORT` on macOS. Works against a loopback-only host service (the dev
+  default) and bypasses the network stack entirely, so the macOS 26 VZ NAT
+  regression can't break it. Declare ports with `--expose-host` (repeatable) or
+  dew.toml `[host] expose = [PORT,...]`. The host only ever dials its own
+  loopback on a declared port — the guest can't make it reach anything else.
+
 ### Fixed
 
 - **`dew services` now lists dew.toml `[[service]]` images, not just the

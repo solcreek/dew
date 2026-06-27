@@ -101,6 +101,25 @@ It resolves to the VM's NAT gateway in both the guest and its containers,
 so you never hardcode the `192.168.64.x` gateway IP. The host service must
 bind `0.0.0.0` (not `127.0.0.1`) to be reachable from the VM.
 
+If the host service is bound to **`127.0.0.1`** (the dev default) — or you
+want to sidestep the macOS 26 VZ NAT regression — expose it explicitly and
+reach it at `host.lo.internal` instead. dew tunnels the declared ports over
+vsock straight to the host's loopback, no `0.0.0.0` bind and no NAT:
+
+```bash
+dew up --expose-host 50051
+# in the VM: host.lo.internal:50051 → the host's 127.0.0.1:50051
+```
+
+```toml
+# or, in dew.toml:
+[host]
+expose = [50051]
+```
+
+dew only ever dials its own loopback on a port you declared, so the VM can't
+reach anything else on the host.
+
 ### Run any container
 
 Run a single OCI image in a microVM — no Docker daemon, sub-second boot,
@@ -240,6 +259,7 @@ Dev:
   dew up --with postgres,redis   Dev with built-in services
   dew up --init                  Write a starter dew.toml
   dew up --services-only         Boot services without a dev server
+  dew up --expose-host PORT      Reach a host 127.0.0.1 service in the VM
   dew down                       Stop dev environment
 
 Share:

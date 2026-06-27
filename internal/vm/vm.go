@@ -140,4 +140,11 @@ type VM interface {
 	// VsockConnect opens a vsock connection to the guest on the given
 	// port. Returns net.Conn for platform-agnostic usage.
 	VsockConnect(port uint32) (net.Conn, error)
+
+	// VsockListen returns a host-side listener that accepts guest-initiated
+	// vsock connections on the given port — the mirror of VsockConnect. It
+	// backs the reverse host-forward (a VM service reaching a macOS host
+	// service): the guest dials the host, the host proxies to 127.0.0.1.
+	// Backends without host vsock listening return an error.
+	VsockListen(port uint32) (net.Listener, error)
 }

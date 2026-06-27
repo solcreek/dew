@@ -27,7 +27,18 @@ const Filename = "dew.toml"
 type File struct {
 	Project  Project   `toml:"project"`
 	Dev      Dev       `toml:"dev"`
+	Host     Host      `toml:"host"`
 	Services []Service `toml:"service"`
+}
+
+// Host configures access from the VM back to the macOS host.
+type Host struct {
+	// Expose lists macOS host ports to make reachable from inside the VM
+	// over a vsock reverse-forward, surfaced in the guest as
+	// host.lo.internal:<port>. Unlike host.internal (the NAT gateway, which
+	// needs the host service bound to 0.0.0.0), this reaches a host service
+	// bound to 127.0.0.1 and bypasses the network stack entirely.
+	Expose []int `toml:"expose"`
 }
 
 // Project holds project-level settings.
@@ -101,6 +112,11 @@ func (f *File) validate() error {
 	}
 	if f.Dev.Port < 0 || f.Dev.Port > 65535 {
 		return fmt.Errorf("%s: dev.port %d out of range", Filename, f.Dev.Port)
+	}
+	for _, p := range f.Host.Expose {
+		if p < 1 || p > 65535 {
+			return fmt.Errorf("%s: host.expose port %d out of range (1..65535)", Filename, p)
+		}
 	}
 	seen := make(map[string]bool, len(f.Services))
 	for i := range f.Services {
