@@ -1569,31 +1569,48 @@ func cmdRun(args []string) error {
 		for _, f := range svcFailures {
 			fmt.Fprintf(os.Stderr, "dew: service %s failed: %s\n", f.name, f.reason)
 		}
-		for _, s := range stagedSvcs {
-			launch := "dew-oci-run --detach"
-			if s.dataArg != "" {
-				launch += " --data " + s.dataArg
-			}
-			launch += " " + s.bundle + " " + s.name
-			res, rerr := runGuest(launch)
-			if rerr != nil || (res != nil && res.ExitCode != 0) {
-				reason := "container failed to start"
-				if rerr != nil {
-					reason = rerr.Error()
-				} else if res != nil && strings.TrimSpace(res.Stderr) != "" {
-					reason = strings.TrimSpace(res.Stderr)
+		// Launch + readiness-probe every service concurrently (wait ≈ the
+		// slowest, not the sum). dew-oci-run only confirms crun is "running",
+		// not that the service bound its port, so the gate polls the guest's
+		// IPv4 LISTEN socket before forwarding — a service that came up then
+		// died isn't advertised.
+		outcomes := bringUpStaged(stagedSvcs,
+			func(s stagedService) error {
+				launch := "dew-oci-run --detach"
+				if s.dataArg != "" {
+					launch += " --data " + s.dataArg
 				}
-				fmt.Fprintf(os.Stderr, "dew: service %s failed: %s\n", s.name, reason)
+				launch += " " + s.bundle + " " + s.name
+				res, rerr := runGuest(launch)
+				if rerr != nil {
+					return rerr
+				}
+				if res != nil && res.ExitCode != 0 {
+					if msg := strings.TrimSpace(res.Stderr); msg != "" {
+						return errors.New(msg)
+					}
+					return errors.New("container failed to start")
+				}
+				return nil
+			},
+			func(s stagedService) bool {
+				return waitGuestReady(func() bool {
+					pr, perr := runGuest(services.ListenProbeCmd(s.port))
+					return perr == nil && pr != nil && pr.ExitCode == 0
+				}, readyProbeAttempts, readyProbeInterval)
+			},
+			func(string) string { return "" }, // dew run doesn't surface log tails
+		)
+		// Forward + report serially, in stagedSvcs order. Only a ready service
+		// gets a forward (matching the prior behaviour — a dead guest port
+		// isn't advertised on the host).
+		for i, s := range stagedSvcs {
+			o := outcomes[i]
+			if !o.launched {
+				fmt.Fprintf(os.Stderr, "dew: service %s failed: %s\n", s.name, o.failReason)
 				continue
 			}
-			// dew-oci-run only confirms crun is "running", not that the service
-			// bound its port — poll the guest's IPv4 LISTEN socket before
-			// forwarding, so a service that came up then died isn't advertised.
-			ready := waitGuestReady(func() bool {
-				pr, perr := runGuest(services.ListenProbeCmd(s.port))
-				return perr == nil && pr != nil && pr.ExitCode == 0
-			}, readyProbeAttempts, readyProbeInterval)
-			if !ready {
+			if !o.ready {
 				fmt.Fprintf(os.Stderr, "dew: service %s did not start accepting connections within 30s\n", s.name)
 				continue
 			}
@@ -2640,84 +2657,114 @@ func cmdUp(args []string) error {
 			spin.Fail(fmt.Sprintf("%s: %s", f.name, f.reason))
 		}
 	}
-	for _, s := range stagedSvcs {
-		emit(map[string]interface{}{"type": "service", "status": "starting", "name": s.name, "port": s.port})
+	if len(stagedSvcs) > 0 {
+		for _, s := range stagedSvcs {
+			emit(map[string]interface{}{"type": "service", "status": "starting", "name": s.name, "port": s.port})
+		}
 		if spin != nil {
-			spin.Step(fmt.Sprintf("%s (port %d)", s.name, s.port))
+			if len(stagedSvcs) == 1 {
+				spin.Step(fmt.Sprintf("%s (port %d)", stagedSvcs[0].name, stagedSvcs[0].port))
+			} else {
+				spin.Step(fmt.Sprintf("starting %d services", len(stagedSvcs)))
+			}
 		}
-		runCmd := "dew-oci-run --detach"
-		if s.dataArg != "" {
-			runCmd += " --data " + s.dataArg
-		}
-		runCmd += " " + s.bundle + " " + s.name
+
+		// Launch + readiness-probe every service concurrently: each is
+		// independent, so the wait is the slowest service, not the sum.
 		// dew-oci-run exits non-zero (and logs to stderr) if crun didn't come
-		// up, so don't claim "started" — and don't forward a dead port.
-		res, rerr := execInVM(runCmd)
-		if rerr != nil || (res != nil && res.ExitCode != 0) {
-			reason := "container failed to start"
-			if rerr != nil {
-				reason = rerr.Error()
-			} else if res != nil && strings.TrimSpace(res.Stderr) != "" {
-				reason = strings.TrimSpace(res.Stderr)
-			}
-			ev := map[string]interface{}{"type": "service", "status": "failed", "name": s.name, "error": reason}
-			appendServiceDiag(ev, execInVM, s.name)
-			emit(ev)
-			if spin != nil {
-				spin.Fail(fmt.Sprintf("%s: %s", s.name, reason))
-			}
-			continue
-		}
+		// up, so a launch error means "don't claim started, don't forward a
+		// dead port". The health gate then polls the guest's IPv4 LISTEN
+		// socket — dew-oci-run only confirms the crun process is "running",
+		// not that the service bound its port — so a service that came up then
+		// died is reported "failed" with its log, not as ready.
+		outcomes := bringUpStaged(stagedSvcs,
+			func(s stagedService) error {
+				runCmd := "dew-oci-run --detach"
+				if s.dataArg != "" {
+					runCmd += " --data " + s.dataArg
+				}
+				runCmd += " " + s.bundle + " " + s.name
+				res, rerr := execInVM(runCmd)
+				if rerr != nil {
+					return rerr
+				}
+				if res != nil && res.ExitCode != 0 {
+					if msg := strings.TrimSpace(res.Stderr); msg != "" {
+						return errors.New(msg)
+					}
+					return errors.New("container failed to start")
+				}
+				return nil
+			},
+			func(s stagedService) bool {
+				return waitGuestReady(func() bool {
+					pr, perr := execInVMTimeout(services.ListenProbeCmd(s.port), 5*time.Second)
+					return perr == nil && pr != nil && pr.ExitCode == 0
+				}, readyProbeAttempts, readyProbeInterval)
+			},
+			func(name string) string { return serviceDiag(execInVM, name) },
+		)
 
-		// Add the port forward. AddForward falls back to a free host port
-		// when the requested one is busy (e.g. a local postgres already on
-		// 5432), so capture the ACTUAL bound port — otherwise the started
-		// event would advertise a port nothing is listening on.
-		hostFwd := s.port
-		if addr, err := dmn.AddForward(s.port, s.port); err != nil {
-			fmt.Fprintf(os.Stderr, "dew: forward %s:%d: %v\n", s.name, s.port, err)
-		} else {
-			hostFwd = forwardedPort(addr, s.port)
-		}
-		cfg.Forwards = append(cfg.Forwards, vm.PortForward{HostPort: hostFwd, GuestPort: s.port})
-		if hostFwd != s.port && !flagJSON && !flagEvents {
-			fmt.Fprintf(os.Stderr, "  %s: host :%d busy → forwarding :%d\n", s.name, s.port, hostFwd)
-		}
-
-		// Health gate: `dew-oci-run` only confirms the crun process is
-		// "running", not that the service bound its port. Poll the guest's
-		// IPv4 LISTEN socket and only report "started" once it truly
-		// accepts connections; otherwise report "failed" with the captured
-		// log so a service that came up then died doesn't masquerade as
-		// ready (the recurring "started but the port is dead" report).
-		ready := waitGuestReady(func() bool {
-			pr, perr := execInVMTimeout(services.ListenProbeCmd(s.port), 5*time.Second)
-			return perr == nil && pr != nil && pr.ExitCode == 0
-		}, readyProbeAttempts, readyProbeInterval)
-		if !ready {
-			ev := map[string]interface{}{
-				"type": "service", "status": "failed", "name": s.name,
-				"port":  s.port,
-				"error": "service did not start accepting connections within 30s",
+		// Emit results and register forwards serially, in stagedSvcs order, so
+		// output and cfg.Forwards stay deterministic regardless of which
+		// service finished first.
+		for i, s := range stagedSvcs {
+			o := outcomes[i]
+			if !o.launched {
+				ev := map[string]interface{}{"type": "service", "status": "failed", "name": s.name, "error": o.failReason}
+				if o.failLogs != "" {
+					ev["logs"] = o.failLogs
+				}
+				emit(ev)
+				if spin != nil {
+					spin.Fail(fmt.Sprintf("%s: %s", s.name, o.failReason))
+				}
+				continue
 			}
-			appendServiceDiag(ev, execInVM, s.name)
-			emit(ev)
-			if spin != nil {
-				spin.Fail(fmt.Sprintf("%s never became ready", s.name))
-			}
-			continue
-		}
 
-		// Report the actual host port and a ready-to-use connection string
-		// so agents don't have to reconstruct credentials.
-		startedEv := map[string]interface{}{
-			"type": "service", "status": "started", "name": s.name,
-			"port": s.port, "host_port": hostFwd,
+			// Add the port forward (for every launched service, ready or not,
+			// matching the prior behaviour). AddForward falls back to a free
+			// host port when the requested one is busy (e.g. a local postgres
+			// already on 5432), so capture the ACTUAL bound port — otherwise
+			// the started event would advertise a port nothing is listening on.
+			hostFwd := s.port
+			if addr, err := dmn.AddForward(s.port, s.port); err != nil {
+				fmt.Fprintf(os.Stderr, "dew: forward %s:%d: %v\n", s.name, s.port, err)
+			} else {
+				hostFwd = forwardedPort(addr, s.port)
+			}
+			cfg.Forwards = append(cfg.Forwards, vm.PortForward{HostPort: hostFwd, GuestPort: s.port})
+			if hostFwd != s.port && !flagJSON && !flagEvents {
+				fmt.Fprintf(os.Stderr, "  %s: host :%d busy → forwarding :%d\n", s.name, s.port, hostFwd)
+			}
+
+			if !o.ready {
+				ev := map[string]interface{}{
+					"type": "service", "status": "failed", "name": s.name,
+					"port":  s.port,
+					"error": o.failReason,
+				}
+				if o.failLogs != "" {
+					ev["logs"] = o.failLogs
+				}
+				emit(ev)
+				if spin != nil {
+					spin.Fail(fmt.Sprintf("%s never became ready", s.name))
+				}
+				continue
+			}
+
+			// Report the actual host port and a ready-to-use connection string
+			// so agents don't have to reconstruct credentials.
+			startedEv := map[string]interface{}{
+				"type": "service", "status": "started", "name": s.name,
+				"port": s.port, "host_port": hostFwd,
+			}
+			if svc := services.Lookup(s.name); svc != nil {
+				startedEv["conn"] = services.ConnString(*svc, hostFwd)
+			}
+			emit(startedEv)
 		}
-		if svc := services.Lookup(s.name); svc != nil {
-			startedEv["conn"] = services.ConnString(*svc, hostFwd)
-		}
-		emit(startedEv)
 	}
 
 	// host.internal heads-up. A service whose env points at host.internal:PORT
