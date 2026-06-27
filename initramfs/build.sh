@@ -463,11 +463,14 @@ cp "$BUNDLE/config.json" "$RUN/bundle/config.json"
 # If init-stage2 backgrounded the DHCP lease, host.internal may not be in
 # /etc/hosts yet (it's appended once the gateway is known). Snapshotting now
 # would bake a hosts file without host.internal, and the container would miss
-# it permanently. Wait (bounded) for the bring-up to clear its marker so the
-# snapshot below captures host.internal. The marker is absent on a network-less
-# VM or once the lease has landed, so this is a no-op in the common case.
+# it permanently. Wait for the bring-up to clear its marker so the snapshot
+# below captures host.internal. The marker is absent on a network-less VM and
+# clears in well under a second on a healthy lease, so this is a no-op in the
+# common case. The ~30s cap matches the host's readiness budget: a lease slower
+# than that fails the service's readiness gate anyway, so blocking longer here
+# (toward udhcpc's ~90s window) would only delay a launch that's already doomed.
 i=0
-while [ -e /run/dew-net-pending ] && [ "$i" -lt 50 ]; do
+while [ -e /run/dew-net-pending ] && [ "$i" -lt 300 ]; do
     sleep 0.1
     i=$((i + 1))
 done
