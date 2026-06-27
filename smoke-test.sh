@@ -410,7 +410,7 @@ fi
 INITRD_STD="$INITRD_DIR/initramfs-standard.cpio.gz"
 if [ -f "$INITRD_STD" ] && [ -f "$KERNEL" ] && command -v python3 >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
     pkill -9 -f 'dew start\|dew run\|dew up' 2>/dev/null
-    rm -f ~/.local/state/dew/default.sock /tmp/dew-smoke-stack.img
+    rm -f ~/.local/state/dew/default.sock /tmp/dew-smoke-stack.img /tmp/dew-smoke-stack.log
     HOST_LO_PORT=50071
     # A 127.0.0.1-ONLY host listener: unreachable via host.internal (NAT) by
     # design — that's the whole point of host.lo.internal. python's http.server
@@ -537,7 +537,7 @@ TOML
     kill -9 $STACK_PID 2>/dev/null; wait $STACK_PID 2>/dev/null
     kill $HOST_LISTENER_PID 2>/dev/null
     pkill -9 -f 'dew start\|dew up' 2>/dev/null
-    rm -f ~/.local/state/dew/default.sock /tmp/dew-smoke-stack.img
+    rm -f ~/.local/state/dew/default.sock /tmp/dew-smoke-stack.img "$STACK_LOG"
     rm -rf "$PROJ"
 else
     test_result "stack: multi-service dew.toml + host.lo.internal" "skip"
