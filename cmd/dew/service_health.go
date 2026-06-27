@@ -59,12 +59,59 @@ func bringUpStaged(
 	return outcomes
 }
 
+// pollFloor is the tight initial cadence the readiness probe starts at before
+// backing off to its steady interval (see pollBackoff). A service's listen
+// socket usually binds early in the budget, so the first polls fire ~10ms
+// apart to catch the bind within a few ms of it happening instead of up to a
+// full steady interval late; a genuinely slow start backs off to the steady
+// cap to avoid busy-spinning. Mostly the cadence within the budget changes
+// (the budget itself shrinks only marginally — see waitGuestReady).
+//
+// The token handshake deliberately does NOT use this: its poll is an expensive
+// vsock connect against a not-yet-listening agent, so tightening early polls
+// there just burns more failed connects with no payoff (measured net-negative
+// for `dew run`). That wait instead uses connectVsockDeadline's own tight
+// internal retry — see cmdRun / sendToken.
+const pollFloor = 10 * time.Millisecond
+
+// pollBackoff yields successive poll sleeps starting at min(floor, steady) and
+// doubling up to steady. Used by waitGuestReady so a service whose port binds
+// early is detected promptly rather than waiting out a flat interval. Construct
+// with newPollBackoff; call next() once per sleep.
+type pollBackoff struct {
+	cur, steady time.Duration
+}
+
+// newPollBackoff starts the cadence at min(floor, steady) — so a steady
+// interval below the floor (as fast unit tests pass) never sleeps longer than
+// it asked for — and doubles toward steady.
+func newPollBackoff(floor, steady time.Duration) *pollBackoff {
+	start := steady
+	if floor < start {
+		start = floor
+	}
+	return &pollBackoff{cur: start, steady: steady}
+}
+
+// next returns the duration to sleep before the next poll, then advances
+// (doubling, capped at steady).
+func (b *pollBackoff) next() time.Duration {
+	d := b.cur
+	b.cur *= 2
+	if b.cur > b.steady {
+		b.cur = b.steady
+	}
+	return d
+}
+
 // Readiness polling cadence shared by `dew up` and `dew run`. A container
 // typically binds its port in well under a second, so poll at a fine interval
 // rather than a flat 1s — under the old 1s a service ready at ~180ms still
 // waited up to a full second to be detected (and that cost was paid per
-// service when they were started serially). readyProbeAttempts keeps a ~30s
-// overall budget for a genuinely slow first start (cold image, DB init).
+// service when they were started serially). The first polls are tighter still
+// (pollFloor, backing off to readyProbeInterval) so an early bind is caught
+// near-instantly. readyProbeAttempts keeps a ~30s overall budget for a
+// genuinely slow first start (cold image, DB init).
 const (
 	readyProbeInterval = 100 * time.Millisecond
 	readyProbeAttempts = 300
@@ -91,8 +138,18 @@ const (
 // readyProbeExecTimeout each, so counting attempts alone could stretch the gate
 // far past attempts*interval. Bounding wall-clock keeps it honest with the
 // "within ~30s" the caller reports; the worst overshoot is one in-flight probe.
+//
+// Sleeps follow a pollBackoff (pollFloor → interval) rather than a flat
+// interval: a service that binds its port early is detected within ~pollFloor
+// of doing so instead of up to a full interval later. The wall-clock deadline
+// stays attempts*interval, but since the loop is attempt-limited and the early
+// sleeps are shorter than interval, exhausting all attempts now takes
+// marginally less than attempts*interval — so a worst-case "never ready"
+// verdict can land a few hundred ms sooner. Size attempts/interval for the
+// deadline you want rather than relying on the exact attempt count.
 func waitGuestReady(probe func() bool, attempts int, interval time.Duration) bool {
 	deadline := time.Now().Add(time.Duration(attempts) * interval)
+	backoff := newPollBackoff(pollFloor, interval)
 	for i := 0; i < attempts; i++ {
 		if probe() {
 			return true
@@ -101,7 +158,7 @@ func waitGuestReady(probe func() bool, attempts int, interval time.Duration) boo
 			return false
 		}
 		if i < attempts-1 {
-			time.Sleep(interval)
+			time.Sleep(backoff.next())
 		}
 	}
 	return false

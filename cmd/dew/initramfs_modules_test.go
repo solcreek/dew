@@ -67,6 +67,30 @@ func TestInitramfsBuildScript_RefreshesLocalBinEveryBoot(t *testing.T) {
 		"/usr/local/bin refresh is inside the first-boot block — must run on every boot or initramfs binary upgrades never reach an existing disk")
 }
 
+// The /dev/vda probe-wait loop must be gated on dew.disk=1 (the host sets it
+// only when it attaches a data disk). A diskless profile (minimal — `dew run`'s
+// default) has no /dev/vda, so an ungated loop burns its full ~1s timeout every
+// boot waiting for a device that never appears. Guards the gate against being
+// dropped and the regression returning.
+func TestInitramfsBuildScript_DiskWaitGatedOnDewDisk(t *testing.T) {
+	script := readBuildScript(t)
+	waitIdx := strings.Index(script, "[ -b /dev/vda ] && break")
+	if waitIdx == -1 {
+		t.Fatal("could not find the /dev/vda probe-wait loop in build.sh — test needs updating")
+	}
+	// Fixed-string + whole-word match (grep -Fw) so the marker can't be matched
+	// by a regex wildcard (the '.' in dew.disk) or as a substring of a longer
+	// token. Kept in sync with the guard line in build.sh.
+	guardIdx := strings.LastIndex(script[:waitIdx], "grep -qFw 'dew.disk=1' /proc/cmdline")
+	if guardIdx == -1 {
+		t.Fatal("the /dev/vda wait loop is not gated on a fixed-string dew.disk=1 match — diskless (minimal) boots will burn the ~1s device-probe timeout")
+	}
+	// The guard must still be open at the loop: no `fi` closes it in between.
+	if strings.Contains(script[guardIdx:waitIdx], "\nfi\n") {
+		t.Error("a `fi` closes the dew.disk=1 guard before the /dev/vda wait loop — the loop is no longer gated")
+	}
+}
+
 // Alpine 3.21's linux-virt aarch64 kernel ships in EFI zboot format
 // (PE32+ wrapper + gzip payload). Apple VZ on Apple Silicon rejects it
 // with VZErrorDomain Code=1 — it requires a raw ARM64 Image. This

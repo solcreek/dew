@@ -10,6 +10,36 @@ import (
 	"github.com/solcreek/dew/internal/vm"
 )
 
+// dew.disk=1 must be appended exactly when a data disk is attached, so the
+// guest waits for /dev/vda only then — a diskless profile (minimal) otherwise
+// burns init's ~1s device-probe timeout every boot. In lockstep with
+// configureDisk (attaches iff DiskPath != "").
+func TestDiskCmdLine(t *testing.T) {
+	const base = "console=hvc0"
+	if got := diskCmdLine(base, ""); got != base {
+		t.Errorf("diskless: diskCmdLine(%q, \"\") = %q, want unchanged", base, got)
+	}
+	if got, want := diskCmdLine(base, "/x/node.img"), base+" dew.disk=1"; got != want {
+		t.Errorf("with disk: diskCmdLine = %q, want %q", got, want)
+	}
+	// Preserves existing cmdline flags; the marker is appended after them.
+	withShare := "console=hvc0 dew.share=oci-stage:/oci-stage"
+	if got, want := diskCmdLine(withShare, "/x/std.img"), withShare+" dew.disk=1"; got != want {
+		t.Errorf("preserves existing flags: got %q, want %q", got, want)
+	}
+	// Idempotent: a base that already carries the exact marker isn't given a second.
+	withMarker := "console=hvc0 dew.disk=1"
+	if got := diskCmdLine(withMarker, "/x/std.img"); got != withMarker {
+		t.Errorf("idempotent: diskCmdLine(%q, disk) = %q, want unchanged (no duplicate marker)", withMarker, got)
+	}
+	// A superset token (dew.disk=10) is NOT the marker — whole-token matching
+	// must still append the real "dew.disk=1" rather than false-positive on it.
+	withSuperset := "console=hvc0 dew.disk=10"
+	if got, want := diskCmdLine(withSuperset, "/x/std.img"), withSuperset+" dew.disk=1"; got != want {
+		t.Errorf("superset token false-positive: diskCmdLine(%q, disk) = %q, want %q", withSuperset, got, want)
+	}
+}
+
 func TestNew_KernelRequired(t *testing.T) {
 	_, err := New(vm.Config{})
 	if err == nil {

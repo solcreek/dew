@@ -45,9 +45,34 @@ func New(cfg vm.Config) (*DarwinVM, error) {
 	return &DarwinVM{cfg: cfg, state: vm.StateStopped}, nil
 }
 
+// diskCmdLine appends the dew.disk=1 marker to the kernel command line when a
+// data disk is attached (diskPath != ""), so the guest's init waits for
+// /dev/vda only when one will actually appear. A diskless profile (minimal —
+// `dew run`'s default) otherwise burns init's full device-probe timeout (~1s)
+// every boot waiting for a /dev/vda that never comes. Kept in lockstep with
+// configureDisk, which attaches the block device under this same condition.
+//
+// Idempotent: a base that already carries the marker is returned unchanged, so
+// the marker can never appear twice in /proc/cmdline.
+func diskCmdLine(base, diskPath string) string {
+	if diskPath == "" {
+		return base
+	}
+	// Match the marker as a whole cmdline token, not a substring: a
+	// strings.Contains check would false-positive on a superset like
+	// "dew.disk=10" and wrongly skip appending the real "dew.disk=1",
+	// disabling the guest's /dev/vda wait gate for a disk profile.
+	for _, tok := range strings.Fields(base) {
+		if tok == "dew.disk=1" {
+			return base
+		}
+	}
+	return base + " dew.disk=1"
+}
+
 func (d *DarwinVM) buildConfig() (*vz.VirtualMachineConfiguration, error) {
 	opts := []vz.LinuxBootLoaderOption{
-		vz.WithCommandLine(d.cfg.CmdLine),
+		vz.WithCommandLine(diskCmdLine(d.cfg.CmdLine, d.cfg.DiskPath)),
 	}
 	if d.cfg.Initrd != "" {
 		opts = append(opts, vz.WithInitrd(d.cfg.Initrd))

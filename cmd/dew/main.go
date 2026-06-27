@@ -649,6 +649,12 @@ func main() {
 		}
 	}
 	if err != nil {
+		// A query command (dew vm status) that already emitted its own report
+		// just wants its exit code honored — no error banner over the top.
+		var se statusExit
+		if errors.As(err, &se) {
+			os.Exit(int(se.Code))
+		}
 		code := dewerr.CodeOf(err)
 		if flagJSON {
 			emitErrorJSON(err, code)
@@ -1494,32 +1500,25 @@ func cmdRun(args []string) error {
 	// readiness is latched as soon as the boot banner appears.
 	sExec := serialexec.New(hostReader, hostWriter)
 
-	// Wait for guest agent to come up on vsock, then send the auth
-	// token. The wait is a wall-clock deadline, not an attempt count:
-	// a single connect attempt can eat seconds (or, against a guest
-	// with no vsock transport, would block forever without the bound
-	// in vsockConnectAttempt), so counting iterations measured nothing.
-	// 60s covers cold first-boot of any profile.
+	// Wait for guest agent to come up on vsock, then send the auth token.
+	// connectVsockDeadline retries the connect on a tight (~10ms) internal
+	// cadence until the agent's listener accepts or the wall-clock budget runs
+	// out, so the agent is reached within ~10ms of coming up rather than up to
+	// a full 100ms later under a hand-rolled coarse poll. It's the same path
+	// sendToken uses for `dew up` / `vm start`; share it here. The bound is
+	// wall-clock, not attempt count, because a connect against a guest with no
+	// vsock transport blocks (see connectVsockDeadline). 60s covers cold
+	// first-boot of any profile.
 	fmt.Fprintf(os.Stderr, "dew: waiting for guest agent\n")
 	const vsockReadySec = 60
-	agentDeadline := time.Now().Add(budget.window(vsockReadySec * time.Second))
 	var tokenSent bool
-	for {
-		remaining := time.Until(agentDeadline)
-		if remaining <= 0 {
-			break
-		}
-		conn, err := vsockConnectAttempt(d, cfg.VsockPort, remaining)
-		if err == nil {
-			req := vsockProto.SetTokenRequest{Type: vsockProto.TypeSetToken, Token: token}
-			vsockProto.WriteJSON(conn, &req)
-			var resp vsockProto.ConnectResponse
-			vsockProto.ReadJSONTimeout(conn, &resp, 5*time.Second)
-			conn.Close()
-			tokenSent = resp.OK
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
+	if conn, err := connectVsockDeadline(d, cfg.VsockPort, budget.window(vsockReadySec*time.Second)); err == nil {
+		req := vsockProto.SetTokenRequest{Type: vsockProto.TypeSetToken, Token: token}
+		vsockProto.WriteJSON(conn, &req)
+		var resp vsockProto.ConnectResponse
+		vsockProto.ReadJSONTimeout(conn, &resp, 5*time.Second)
+		conn.Close()
+		tokenSent = resp.OK
 	}
 	if tokenSent {
 		_ = vmstate.Write(stateDir, vmstate.State{

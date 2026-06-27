@@ -88,6 +88,34 @@ On success:
 removing or renaming a field increments the major. Major bumps keep
 the previous major working for at least one minor cycle.
 
+## Query commands as gates
+
+A few commands report state rather than perform an action; their exit
+code answers the query so a shell can branch on it directly.
+
+- **`dew vm status`** exits `0` when a VM is present (running, booting,
+  or an ephemeral `dew run`) and `103` (`conflict`) when none is —
+  matching the `conflict` that `dew exec` / `dew vm forward` already
+  return for "no running VM". This makes it a reuse-vs-boot gate:
+
+  ```sh
+  if dew vm status >/dev/null 2>&1; then
+    : # a VM is up — reuse it
+  else
+    dew vm start --profile node
+  fi
+  ```
+
+  It still prints its human (or `--json`) report; only the exit code is added,
+  and the `--json` envelope stays `{"ok": true, "data": {"running": …, "phase": …}}`.
+  Because a bare `dew vm status` now exits non-zero when nothing runs, a
+  `set -e` script that runs it unguarded will abort — gate it in an `if`/`||`.
+  Parsing `--json` is **not** equivalent to checking `data.running` alone:
+  `running` reflects only daemon-socket reachability, so a **booting** or
+  **ephemeral `dew run`** VM reports `running: false` even though the exit code
+  treats it as present. The JSON-equivalent gate is
+  `running == true || data.phase in {"booting", "running"}`.
+
 ## Stability promise
 
 - Codes never get re-mapped. `100 == auth` is permanent.
