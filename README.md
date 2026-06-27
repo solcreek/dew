@@ -113,7 +113,9 @@ way the guest does.
 bind stays unreachable (same caveat as docker's alias):
 
 ```bash
-# host process on 0.0.0.0:50051 → from the VM: host.internal:50051
+# bind the host service to 0.0.0.0 (a 127.0.0.1 bind is unreachable):
+python3 -m http.server 50051 --bind 0.0.0.0
+# then from the VM (or a --net=host container): curl http://host.internal:50051
 ```
 
 **`host.lo.internal` — a vsock tunnel straight to the host's loopback.**
