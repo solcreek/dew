@@ -558,7 +558,13 @@ TOML
     fi
 
     kill -9 -- "$STACK_PID" 2>/dev/null; wait "$STACK_PID" 2>/dev/null
-    kill -- "$HOST_LISTENER_PID" 2>/dev/null
+    # Only kill the listener if that PID is still our http.server. A bind
+    # failure could have killed it early and, over the long stack wait, the
+    # PID may have been recycled by an unrelated host process — so match the
+    # command before signalling rather than trusting the captured PID.
+    if ps -p "$HOST_LISTENER_PID" -o command= 2>/dev/null | grep -q 'http\.server'; then
+        kill -- "$HOST_LISTENER_PID" 2>/dev/null
+    fi
     pkill -9 -f 'dew start\|dew up' 2>/dev/null
     rm -f ~/.local/state/dew/default.sock /tmp/dew-smoke-stack.img "$STACK_LOG"
     rm -rf "$PROJ"
