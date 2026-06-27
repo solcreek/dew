@@ -265,6 +265,9 @@ func parseBytes(s string) (int64, bool, error) {
 	if err != nil || n < 0 {
 		return 0, false, fmt.Errorf("invalid size")
 	}
+	if n > (1<<63-1)/mult {
+		return 0, false, fmt.Errorf("size too large")
+	}
 	return n * mult, false, nil
 }
 

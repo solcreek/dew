@@ -21,7 +21,9 @@ func TestParseCgroup(t *testing.T) {
 	}{
 		{"memory MiB", "memory=256M", vm.CgroupLimits{MemoryBytes: 256 * 1024 * 1024}, false},
 		{"mem alias + GiB", "mem=1G", vm.CgroupLimits{MemoryBytes: 1024 * 1024 * 1024}, false},
+		{"TiB suffix (matches confine)", "memory=1T", vm.CgroupLimits{MemoryBytes: 1 << 40}, false},
 		{"bare bytes", "memory=1048576", vm.CgroupLimits{MemoryBytes: 1048576}, false},
+		{"overflow rejected", "memory=99999999999999G", vm.CgroupLimits{}, true},
 		{"pids", "pids=256", vm.CgroupLimits{PidsMax: 256}, false},
 		{"tasks alias", "tasks=64", vm.CgroupLimits{PidsMax: 64}, false},
 		{"cpu percent", "cpu=200%", vm.CgroupLimits{CPUQuota: 200000}, false},

@@ -3776,8 +3776,9 @@ func parseCgroup(s string) (vm.CgroupLimits, error) {
 	return cg, nil
 }
 
-// parseByteSize parses a 1024-based size like "256M", "1G", "512K", or a
-// bare byte count. Returns a positive byte count.
+// parseByteSize parses a 1024-based size with a K/M/G/T/P suffix (matching the
+// systemd sizes confine.parseBytes accepts), or a bare byte count. Returns a
+// positive byte count; rejects overflow.
 func parseByteSize(s string) (int64, error) {
 	if s == "" {
 		return 0, fmt.Errorf("empty size")
@@ -3785,11 +3786,15 @@ func parseByteSize(s string) (int64, error) {
 	mult := int64(1)
 	switch s[len(s)-1] {
 	case 'K', 'k':
-		mult = 1024
+		mult = 1 << 10
 	case 'M', 'm':
-		mult = 1024 * 1024
+		mult = 1 << 20
 	case 'G', 'g':
-		mult = 1024 * 1024 * 1024
+		mult = 1 << 30
+	case 'T', 't':
+		mult = 1 << 40
+	case 'P', 'p':
+		mult = 1 << 50
 	}
 	num := s
 	if mult != 1 {
@@ -3798,6 +3803,9 @@ func parseByteSize(s string) (int64, error) {
 	n, err := strconv.ParseInt(num, 10, 64)
 	if err != nil || n <= 0 {
 		return 0, fmt.Errorf("invalid size %q", s)
+	}
+	if n > (1<<63-1)/mult {
+		return 0, fmt.Errorf("size too large: %q", s)
 	}
 	return n * mult, nil
 }
