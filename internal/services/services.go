@@ -87,6 +87,20 @@ type Service struct {
 	// Used e.g. to force mysql to bind IPv4 so the forwarded port is
 	// reachable.
 	Args []string
+	// Extra are additional host→container forwards beyond Port, for a service
+	// that exposes more than one port (e.g. mailpit's SMTP port alongside its
+	// web UI). Only Port is health-gated; the extras are forwarded as declared.
+	Extra []ExtraForward
+}
+
+// ExtraForward is one additional host→container port forward for a service.
+// Host is the REQUESTED macOS-side port; the actually-bound host port can
+// differ when daemon.State.AddForward falls back to a free port because the
+// requested one is busy. Container is the port the service listens on inside
+// the VM (they differ only when the user remaps, e.g. "1080:8025").
+type ExtraForward struct {
+	Host      int
+	Container int
 }
 
 var Registry = map[string]Service{
