@@ -380,6 +380,148 @@ else
     test_result "hang guard: mute guest" "skip"
 fi
 
+# --- Test 6e: multi-service dew.toml stack + host.lo.internal (field-eval topology) ---
+# Sediments the external field evaluation's canonical stack into a regression
+# guard: three arbitrary OCI services (redis + mailpit + anycable-go) composed
+# into ONE standard-profile VM via dew.toml [[service]], plus the reverse
+# host-forward. Asserts, end to end:
+#   1. all three boot and forward to the host (mailpit :8025 → 200; redis :6379
+#      + anycable :8080 reachable)
+#   2. service-to-service on localhost works (anycable connects to redis)
+#   3. host.internal resolves to the NAT gateway inside the guest
+#   4. host.lo.internal (127.0.0.2) tunnels over vsock to a 127.0.0.1-ONLY host
+#      listener — the loopback-host-callback case host.internal cannot do
+#   5. `dew services` lists the dew.toml [[service]] images, not just built-ins
+# Heavy (standard profile + three image pulls): skips without the standard
+# initramfs, python3 (host listener), or curl.
+INITRD_STD="$INITRD_DIR/initramfs-standard.cpio.gz"
+if [ -f "$INITRD_STD" ] && [ -f "$KERNEL" ] && command -v python3 >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+    pkill -9 -f 'dew start\|dew run\|dew up' 2>/dev/null
+    rm -f ~/.local/state/dew/default.sock /tmp/dew-smoke-stack.img
+    HOST_LO_PORT=50071
+    # A 127.0.0.1-ONLY host listener: unreachable via host.internal (NAT) by
+    # design — that's the whole point of host.lo.internal. python's http.server
+    # answers 200 on GET / and binds loopback only.
+    lsof -ti:$HOST_LO_PORT 2>/dev/null | xargs -r kill -9 2>/dev/null
+    python3 -m http.server "$HOST_LO_PORT" --bind 127.0.0.1 >/dev/null 2>&1 &
+    HOST_LISTENER_PID=$!
+    PROJ=$(mktemp -d -t dew-smoke-stack)
+    cat > "$PROJ/dew.toml" <<TOML
+[project]
+profile = "standard"
+
+[[service]]
+name = "redis"
+image = "redis:7-alpine"
+port = 6379
+
+[[service]]
+name = "mailpit"
+image = "axllent/mailpit:latest"
+port = 8025
+
+[[service]]
+name = "anycable"
+image = "anycable/anycable-go:1.5"
+port = 8080
+env = ["REDIS_URL=redis://localhost:6379/0", "ANYCABLE_HOST=0.0.0.0"]
+
+[host]
+expose = [$HOST_LO_PORT]
+TOML
+    STACK_LOG=/tmp/dew-smoke-stack.log
+    (
+        cd "$PROJ"
+        $DEW up --services-only --profile standard --kernel "$KERNEL" --initrd "$INITRD_STD" \
+            --memory 2048 --disk /tmp/dew-smoke-stack.img >$STACK_LOG 2>&1
+    ) &
+    STACK_PID=$!
+    # Readiness: poll mailpit's HTTP UI (serves / → 200) for up to 240s; the
+    # first run pulls three images over the network.
+    STACK_OK=0
+    for i in $(seq 1 120); do
+        sleep 2
+        code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://localhost:8025/ 2>/dev/null || echo 000)
+        [ "$code" = "200" ] && { STACK_OK=1; break; }
+    done
+    if [ "$STACK_OK" = "1" ]; then
+        test_result "stack: 3 OCI services in one VM, mailpit :8025 serves" "pass"
+    else
+        test_result "stack: 3-service stack never came up (waited 240s)" "fail"
+    fi
+
+    if [ "$STACK_OK" = "1" ]; then
+        # 1. redis + anycable forwarded to the host.
+        if (exec 3<>/dev/tcp/127.0.0.1/6379) 2>/dev/null; then
+            exec 3>&- 3<&-
+            test_result "stack: redis :6379 forwarded to host" "pass"
+        else
+            test_result "stack: redis :6379 not forwarded" "fail"
+        fi
+        ACODE=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:8080/health 2>/dev/null || echo 000)
+        if [ "$ACODE" != "000" ]; then
+            test_result "stack: anycable :8080 forwarded to host (HTTP $ACODE)" "pass"
+        else
+            test_result "stack: anycable :8080 not forwarded" "fail"
+        fi
+
+        # 2. service-to-service on localhost: anycable reached redis, no DNS error.
+        ALOG=$($DEW logs anycable 2>/dev/null)
+        if echo "$ALOG" | grep -qiE 'subscrib|provider=redis|connected to redis' \
+            && ! echo "$ALOG" | grep -qi 'lookup localhost'; then
+            test_result "stack: anycable → redis on localhost (service-to-service)" "pass"
+        else
+            test_result "stack: anycable → redis on localhost failed" "fail"
+        fi
+
+        # 3. host.internal resolves to the NAT gateway inside the guest.
+        HI=$($DEW exec "grep host.internal /etc/hosts" 2>/dev/null)
+        if echo "$HI" | grep -qE '192\.168\.[0-9]+\.[0-9]+[[:space:]].*host\.internal'; then
+            test_result "stack: host.internal → NAT gateway" "pass"
+        else
+            test_result "stack: host.internal did not map to a gateway (got '$HI')" "fail"
+        fi
+
+        # 4. host.lo.internal: maps to 127.0.0.2 AND tunnels over vsock to the
+        #    127.0.0.1-only host listener.
+        HLO=$($DEW exec "grep host.lo.internal /etc/hosts" 2>/dev/null)
+        if echo "$HLO" | grep -q '127.0.0.2'; then
+            test_result "stack: host.lo.internal → 127.0.0.2 (reverse-forward alias)" "pass"
+        else
+            test_result "stack: host.lo.internal did not map to 127.0.0.2 (got '$HLO')" "fail"
+        fi
+        REACH=$($DEW exec "wget -q -O /dev/null -T 5 http://host.lo.internal:$HOST_LO_PORT/ && echo lo-ok" 2>/dev/null)
+        if echo "$REACH" | grep -q 'lo-ok'; then
+            test_result "stack: host.lo.internal:$HOST_LO_PORT reaches host 127.0.0.1 over vsock" "pass"
+        else
+            test_result "stack: host.lo.internal vsock tunnel to host loopback failed" "fail"
+        fi
+
+        # 5. dew services lists the dew.toml [[service]] images, not just built-ins.
+        SVC=$(cd "$PROJ" && $DEW services 2>/dev/null)
+        if echo "$SVC" | grep -q 'mailpit' && echo "$SVC" | grep -q 'anycable'; then
+            test_result "stack: dew services lists dew.toml services (mailpit + anycable)" "pass"
+        else
+            test_result "stack: dew services omitted dew.toml services" "fail"
+        fi
+    else
+        # Stack never came up — the dependent assertions are unmeasurable, skip.
+        test_result "stack: redis/anycable forward" "skip"
+        test_result "stack: service-to-service localhost" "skip"
+        test_result "stack: host.internal gateway" "skip"
+        test_result "stack: host.lo.internal vsock tunnel" "skip"
+        test_result "stack: dew services listing" "skip"
+    fi
+
+    kill -9 $STACK_PID 2>/dev/null; wait $STACK_PID 2>/dev/null
+    kill $HOST_LISTENER_PID 2>/dev/null
+    pkill -9 -f 'dew start\|dew up' 2>/dev/null
+    rm -f ~/.local/state/dew/default.sock /tmp/dew-smoke-stack.img
+    rm -rf "$PROJ"
+else
+    test_result "stack: multi-service dew.toml + host.lo.internal" "skip"
+fi
+
 # --- Test 7: Detect (unit-level) ---
 GO_TEST=$(cd "$(dirname "$0")" && go test ./internal/detect/ -count=1 2>&1 | tail -1)
 if echo "$GO_TEST" | grep -q "ok"; then
