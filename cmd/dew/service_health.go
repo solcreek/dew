@@ -74,6 +74,11 @@ const (
 	// deadline by at most one exec (≤5s) rather than inheriting the agent
 	// default (up to 30s per attempt) and stalling startup.
 	readyProbeExecTimeout = 5 * time.Second
+	// serviceDiagExecTimeout bounds the best-effort log-tail collected when a
+	// service fails. The concurrent launcher waits for every service goroutine,
+	// so an unbounded diag exec on a slow guest would delay all results — cap it
+	// rather than inherit the agent default.
+	serviceDiagExecTimeout = 5 * time.Second
 )
 
 // waitGuestReady calls probe repeatedly until it returns true, the attempt

@@ -2708,7 +2708,14 @@ func cmdUp(args []string) error {
 					return perr == nil && pr != nil && pr.ExitCode == 0
 				}, readyProbeAttempts, readyProbeInterval)
 			},
-			func(name string) string { return serviceDiag(execInVM, name) },
+			func(name string) string {
+				// Bound the best-effort log tail: bringUpStaged waits for every
+				// service goroutine, so an unbounded diag on a slow guest would
+				// delay all of them.
+				return serviceDiag(func(c string) (*RunResult, error) {
+					return execInVMTimeout(c, serviceDiagExecTimeout)
+				}, name)
+			},
 		)
 
 		// Emit results and register forwards serially, in stagedSvcs order, so
