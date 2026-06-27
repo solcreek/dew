@@ -33,7 +33,25 @@ func TestParseFlags_SystemdProfileGuarded(t *testing.T) {
 
 // A real profile must still parse.
 func TestParseFlags_StandardProfileOK(t *testing.T) {
-	if _, _, err := parseFlags([]string{"--profile", "standard", "--", "true"}); err != nil {
-		t.Fatalf("--profile standard should parse, got: %v", err)
+	for _, p := range []string{"minimal", "node", "python", "standard"} {
+		if _, _, err := parseFlags([]string{"--profile", p, "--", "true"}); err != nil {
+			t.Fatalf("--profile %s should parse, got: %v", p, err)
+		}
+	}
+}
+
+// A misspelled profile must fail with a clear usage error listing the valid
+// names, not fall through to a confusing asset-download failure.
+func TestParseFlags_UnknownProfileRejected(t *testing.T) {
+	_, _, err := parseFlags([]string{"--profile", "noed", "--", "true"})
+	if err == nil {
+		t.Fatal("unknown profile should error")
+	}
+	var de *dewerr.Error
+	if !errors.As(err, &de) || de.Code != dewerr.CodeUsage {
+		t.Fatalf("want CodeUsage, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "minimal, node, python, standard") {
+		t.Errorf("error should list valid profiles, got: %v", err)
 	}
 }

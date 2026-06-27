@@ -990,6 +990,15 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 						"systemd-based rootfs. See docs/systemd-profile.md for the design and status; "+
 						"for now, `dew run --confine <unit.service>` approximates a unit's hardening.")
 			}
+			// Validate against the built profiles so a typo gets a clear error
+			// instead of falling through to resolveAssets and a confusing
+			// "initramfs not found" download failure from GitHub Releases.
+			switch flagProfile {
+			case "minimal", "node", "python", "standard":
+			default:
+				return cfg, nil, dewerr.Newf(dewerr.CodeUsage,
+					"unknown profile %q; valid: minimal, node, python, standard", flagProfile)
+			}
 		case "--name":
 			i++
 			if i >= len(args) {
