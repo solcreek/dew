@@ -275,7 +275,7 @@ func TestStatus_ExitsConflictWhenNotRunning(t *testing.T) {
 
 // statusVMPresent is the exit-code decision: a VM that is running, booting, or
 // an ephemeral run counts as present (exit 0); nothing — or only a stale
-// socket — is absent (exit CodeNotFound). Booting must count so a gate doesn't
+// socket — is absent (exit CodeConflict). Booting must count so a gate doesn't
 // boot a second VM over one mid-boot.
 func TestStatusVMPresent(t *testing.T) {
 	cases := []struct {
