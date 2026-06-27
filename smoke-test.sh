@@ -534,8 +534,8 @@ TOML
         test_result "stack: dew services listing" "skip"
     fi
 
-    kill -9 $STACK_PID 2>/dev/null; wait $STACK_PID 2>/dev/null
-    kill $HOST_LISTENER_PID 2>/dev/null
+    kill -9 -- "$STACK_PID" 2>/dev/null; wait "$STACK_PID" 2>/dev/null
+    kill -- "$HOST_LISTENER_PID" 2>/dev/null
     pkill -9 -f 'dew start\|dew up' 2>/dev/null
     rm -f ~/.local/state/dew/default.sock /tmp/dew-smoke-stack.img "$STACK_LOG"
     rm -rf "$PROJ"
