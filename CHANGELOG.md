@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without systemd: it derives cgroup limits (`MemoryMax`/`TasksMax`/`CPUQuota`)
   and a `setpriv` privilege drop (`User=`/`DynamicUser=`,
   `CapabilityBoundingSet=`, `NoNewPrivileges=`) and runs the command under them
-  (implies `--profile standard`). It is explicitly an approximation —
+  (forces `--profile standard` when the unit drops privileges). It is explicitly an approximation —
   directives it can't enforce (`SystemCallFilter`, `ProtectSystem`, …) are
   printed as warnings rather than silently dropped.
 
