@@ -1,3 +1,5 @@
+//go:build darwin
+
 package daemon
 
 import (
@@ -39,7 +41,13 @@ func (s *State) StartHostExpose(ports []int) error {
 		allow[p] = true
 	}
 
+	// Close any listener from a prior StartHostExpose before replacing it, so a
+	// second call (e.g. a re-up without full teardown) can't leak the old
+	// listener and its accept loop serving with a stale allow-set/token.
 	s.expose.mu.Lock()
+	if s.expose.listener != nil {
+		s.expose.listener.Close()
+	}
 	s.expose.listener = ln
 	s.expose.mu.Unlock()
 

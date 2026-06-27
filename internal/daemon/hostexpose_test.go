@@ -3,12 +3,14 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
 	"testing"
 	"time"
 
+	"github.com/solcreek/dew/internal/vm"
 	vsockProto "github.com/solcreek/dew/internal/vsock"
 )
 
@@ -143,5 +145,52 @@ func TestServeReverseDial_SurfacesDialError(t *testing.T) {
 	resp := readResp(t, guestClient)
 	if resp.OK || resp.Error == "" {
 		t.Errorf("got %+v, want the dial error surfaced", resp)
+	}
+}
+
+// listenerVM is a vm.VM whose VsockListen hands out real loopback listeners so
+// the reverse-forward lifecycle is testable without Virtualization.framework.
+type listenerVM struct{ handed []net.Listener }
+
+func (v *listenerVM) Start(context.Context) error                  { return nil }
+func (v *listenerVM) Stop(context.Context) error                   { return nil }
+func (v *listenerVM) State() vm.State                              { return vm.StateRunning }
+func (v *listenerVM) WaitForState(context.Context, vm.State) error { return nil }
+func (v *listenerVM) VsockConnect(uint32) (net.Conn, error)        { return nil, errors.New("no vsock") }
+func (v *listenerVM) VsockListen(uint32) (net.Listener, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	v.handed = append(v.handed, ln)
+	return ln, nil
+}
+
+// A second StartHostExpose must close the prior listener — otherwise the old
+// accept loop leaks and keeps serving with a stale allow-set/token.
+func TestStartHostExpose_ClosesPriorListener(t *testing.T) {
+	fv := &listenerVM{}
+	s := &State{VM: fv, Token: "tok"}
+	defer s.StopHostExpose()
+
+	if err := s.StartHostExpose([]int{50051}); err != nil {
+		t.Fatalf("first StartHostExpose: %v", err)
+	}
+	if err := s.StartHostExpose([]int{50052}); err != nil {
+		t.Fatalf("second StartHostExpose: %v", err)
+	}
+	if len(fv.handed) != 2 {
+		t.Fatalf("handed %d listeners, want 2", len(fv.handed))
+	}
+	// The first listener must be closed: Accept returns immediately with err.
+	done := make(chan error, 1)
+	go func() { _, err := fv.handed[0].Accept(); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("prior listener still accepting; StartHostExpose leaked it")
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("prior listener was not closed (Accept still blocking)")
 	}
 }
