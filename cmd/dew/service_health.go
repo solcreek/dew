@@ -64,8 +64,8 @@ func bringUpStaged(
 // socket usually binds early in the budget, so the first polls fire ~10ms
 // apart to catch the bind within a few ms of it happening instead of up to a
 // full steady interval late; a genuinely slow start backs off to the steady
-// cap to avoid busy-spinning. Only the cadence within the (unchanged) budget
-// changes.
+// cap to avoid busy-spinning. Mostly the cadence within the budget changes
+// (the budget itself shrinks only marginally — see waitGuestReady).
 //
 // The token handshake deliberately does NOT use this: its poll is an expensive
 // vsock connect against a not-yet-listening agent, so tightening early polls
@@ -141,8 +141,12 @@ const (
 //
 // Sleeps follow a pollBackoff (pollFloor → interval) rather than a flat
 // interval: a service that binds its port early is detected within ~pollFloor
-// of doing so instead of up to a full interval later, trimming the common
-// fast-start case without changing the overall budget (attempts*interval).
+// of doing so instead of up to a full interval later. The wall-clock deadline
+// stays attempts*interval, but since the loop is attempt-limited and the early
+// sleeps are shorter than interval, exhausting all attempts now takes
+// marginally less than attempts*interval — so a worst-case "never ready"
+// verdict can land a few hundred ms sooner. Size attempts/interval for the
+// deadline you want rather than relying on the exact attempt count.
 func waitGuestReady(probe func() bool, attempts int, interval time.Duration) bool {
 	deadline := time.Now().Add(time.Duration(attempts) * interval)
 	backoff := newPollBackoff(pollFloor, interval)
