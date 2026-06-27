@@ -61,6 +61,10 @@ func (stubVM) VsockConnect(uint32) (net.Conn, error) {
 	return nil, fmt.Errorf("stub VM has no vsock")
 }
 
+func (stubVM) VsockListen(uint32) (net.Listener, error) {
+	return nil, fmt.Errorf("stub VM has no vsock listener")
+}
+
 // Dual-stack: the forward MUST bind both 127.0.0.1 and ::1 so
 // `localhost` works regardless of which family the resolver
 // returns first. Without this, the IPv6 leg of localhost ends up
