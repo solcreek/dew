@@ -55,7 +55,7 @@ echo "=== Dew Smoke Test ==="
 echo ""
 
 # --- Test 1: Binary runs ---
-VER=$($DEW version 2>&1)
+VER=$("$DEW" version 2>&1)
 if echo "$VER" | grep -q "dew"; then
     test_result "binary runs ($VER)" "pass"
 else
@@ -66,10 +66,10 @@ fi
 INITRD_MIN="$INITRD_DIR/initramfs-minimal.cpio.gz"
 if [ -f "$INITRD_MIN" ] && [ -f "$KERNEL" ]; then
     rm -f ~/.local/state/dew/default.sock
-    $DEW start --profile minimal --kernel "$KERNEL" --initrd "$INITRD_MIN" --network 2>/dev/null &
+    "$DEW" start --profile minimal --kernel "$KERNEL" --initrd "$INITRD_MIN" --network 2>/dev/null &
     PID=$!
     for i in $(seq 1 60); do [ -S ~/.local/state/dew/default.sock ] && break; sleep 0.5; done
-    RESULT=$($DEW exec "echo smoke-ok" 2>&1)
+    RESULT=$("$DEW" exec "echo smoke-ok" 2>&1)
     kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -f ~/.local/state/dew/default.sock
     if [ "$RESULT" = "smoke-ok" ]; then
         test_result "minimal: boot + exec" "pass"
@@ -84,7 +84,7 @@ fi
 INITRD_MIN="$INITRD_DIR/initramfs-minimal.cpio.gz"
 if [ -f "$INITRD_MIN" ] && [ -f "$KERNEL" ]; then
     rm -f ~/.local/state/dew/default.sock
-    $DEW start --profile minimal --kernel "$KERNEL" --initrd "$INITRD_MIN" \
+    "$DEW" start --profile minimal --kernel "$KERNEL" --initrd "$INITRD_MIN" \
         --network --forward 19876:9876 2>/dev/null &
     PID=$!
     for i in $(seq 1 60); do [ -S ~/.local/state/dew/default.sock ] && break; sleep 0.5; done
@@ -92,7 +92,7 @@ if [ -f "$INITRD_MIN" ] && [ -f "$KERNEL" ]; then
     # echo's backslash-escape handling is a compile-time option, and
     # without expansion curl never sees the CRLF header terminator and
     # times out waiting for the response to complete.
-    $DEW exec "printf 'HTTP/1.0 200 OK\r\n\r\nsmoke-port' | nc -l -p 9876 &" 2>/dev/null
+    "$DEW" exec "printf 'HTTP/1.0 200 OK\r\n\r\nsmoke-port' | nc -l -p 9876 &" 2>/dev/null
     sleep 1
     RESULT=$(curl -s --max-time 3 http://localhost:19876/ 2>/dev/null)
     kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -f ~/.local/state/dew/default.sock
@@ -108,7 +108,7 @@ fi
 # --- Test 4: Network isolation (no NIC) ---
 INITRD_MIN="$INITRD_DIR/initramfs-minimal.cpio.gz"
 if [ -f "$INITRD_MIN" ] && [ -f "$KERNEL" ]; then
-    RESULT=$($DEW run --kernel "$KERNEL" --initrd "$INITRD_MIN" \
+    RESULT=$("$DEW" run --kernel "$KERNEL" --initrd "$INITRD_MIN" \
         -- "ip link show eth0 2>&1" 2>/dev/null)
     # busybox `ip` says "can't find device"; iproute2 says "does not
     # exist" — accept both so the assertion survives initramfs rebuilds.
@@ -130,20 +130,20 @@ if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ]; then
     # First boot. Poll for node: the CI-built initramfs bakes it
     # (immediate), the Darwin-local build installs it on first boot
     # (apk, needs network + time) — the test must pass with either.
-    $DEW start --profile node --kernel "$KERNEL" --initrd "$INITRD_NODE" --network 2>/dev/null &
+    "$DEW" start --profile node --kernel "$KERNEL" --initrd "$INITRD_NODE" --network 2>/dev/null &
     PID=$!
     for i in $(seq 1 120); do [ -S ~/.local/state/dew/default.sock ] && break; sleep 0.5; done
     for i in $(seq 1 45); do
-        NODE_V=$($DEW exec "node --version" 2>/dev/null)
+        NODE_V=$("$DEW" exec "node --version" 2>/dev/null)
         [ -n "$NODE_V" ] && break
         sleep 2
     done
     kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -f ~/.local/state/dew/default.sock; sleep 1
     # Second boot
-    $DEW start --profile node --kernel "$KERNEL" --initrd "$INITRD_NODE" --network 2>/dev/null &
+    "$DEW" start --profile node --kernel "$KERNEL" --initrd "$INITRD_NODE" --network 2>/dev/null &
     PID=$!
     for i in $(seq 1 60); do [ -S ~/.local/state/dew/default.sock ] && break; sleep 0.5; done
-    RESULT=$($DEW exec "node -e 'console.log(\"node-ok\")'" 2>&1)
+    RESULT=$("$DEW" exec "node -e 'console.log(\"node-ok\")'" 2>&1)
     kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -f ~/.local/state/dew/default.sock
     if [ "$RESULT" = "node-ok" ]; then
         test_result "node: second boot (no segfault)" "pass"
@@ -161,17 +161,17 @@ fi
 INITRD_STD="$INITRD_DIR/initramfs-standard.cpio.gz"
 if [ -f "$INITRD_STD" ] && [ -f "$KERNEL" ]; then
     rm -f ~/.local/state/dew/default.sock /tmp/dew-smoke-std.img
-    $DEW start --kernel "$KERNEL" --initrd "$INITRD_STD" \
+    "$DEW" start --kernel "$KERNEL" --initrd "$INITRD_STD" \
         --network --memory 2048 --disk /tmp/dew-smoke-std.img 2>/dev/null &
     PID=$!
     for i in $(seq 1 120); do [ -S ~/.local/state/dew/default.sock ] && break; sleep 0.5; done
-    RESULT=$($DEW exec "crun --version 2>&1 | head -1" 2>&1)
+    RESULT=$("$DEW" exec "crun --version 2>&1 | head -1" 2>&1)
     if echo "$RESULT" | grep -q "crun"; then
         test_result "standard: crun runtime available" "pass"
     else
         test_result "standard: crun runtime available" "fail"
     fi
-    LAUNCHER=$($DEW exec "test -x /usr/local/bin/dew-oci-run && echo launcher-ok" 2>&1)
+    LAUNCHER=$("$DEW" exec "test -x /usr/local/bin/dew-oci-run && echo launcher-ok" 2>&1)
     if echo "$LAUNCHER" | grep -q "launcher-ok"; then
         test_result "standard: dew-oci-run launcher present" "pass"
     else
@@ -202,7 +202,7 @@ if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ]; then
         # result to /bin/sh -c, so we pass ONE pre-quoted shell line
         # rather than `sh -c '<pipeline>'` (which would degenerate to
         # `sh -c` running with no script).
-        OUT=$($DEW run --profile node --network --kernel "$KERNEL" --initrd "$INITRD_NODE" \
+        OUT=$("$DEW" run --profile node --network --kernel "$KERNEL" --initrd "$INITRD_NODE" \
               -- 'ip -4 addr show eth0 2>/dev/null | awk "/inet /{print \$2; exit}"' 2>&1)
         D=$(($(date +%s)-S))
         if echo "$OUT" | grep -qE '192\.168\.[0-9]+\.[0-9]+/'; then
@@ -243,7 +243,7 @@ if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ] && command -v npm >/dev/null 2>&1; 
     if [ -d "$PROJ/my-app" ]; then
         (
             cd "$PROJ/my-app"
-            $DEW up --kernel "$KERNEL" --initrd "$INITRD_NODE" >$LOG 2>&1
+            "$DEW" up --kernel "$KERNEL" --initrd "$INITRD_NODE" >$LOG 2>&1
         ) &
         UP_PID=$!
         START=$(date +%s)
@@ -309,7 +309,7 @@ if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ] && command -v npm >/dev/null 2>&1; 
     if [ -d "$PROJ/my-app" ]; then
         (
             cd "$PROJ/my-app"
-            $DEW up --kernel "$KERNEL" --initrd "$INITRD_NODE" >$LOG 2>&1
+            "$DEW" up --kernel "$KERNEL" --initrd "$INITRD_NODE" >$LOG 2>&1
         ) &
         UP_PID=$!
         START=$(date +%s)
@@ -361,7 +361,7 @@ if [ -f "$KERNEL" ] && command -v go >/dev/null 2>&1; then
     if [ -x "$MUTE_DIR/init" ]; then
         (cd "$MUTE_DIR" && echo init | cpio -o -H newc 2>/dev/null | gzip > mute.cpio.gz)
         START_S=$(date +%s)
-        $DEW run --kernel "$KERNEL" --initrd "$MUTE_DIR/mute.cpio.gz" \
+        "$DEW" run --kernel "$KERNEL" --initrd "$MUTE_DIR/mute.cpio.gz" \
             -- echo hang-guard >/dev/null 2>&1 &
         RUNPID=$!
         # Watchdog: if the hang regresses, fail the test instead of
@@ -448,7 +448,7 @@ TOML
         # exec so $! (STACK_PID) is the real `dew up` process, not the
         # subshell wrapping it — otherwise kill -9 $STACK_PID reaps the
         # subshell and orphans `dew up` (and its VM), leaking ports.
-        exec $DEW up --services-only --profile standard --kernel "$KERNEL" --initrd "$INITRD_STD" \
+        exec "$DEW" up --services-only --profile standard --kernel "$KERNEL" --initrd "$INITRD_STD" \
             --memory 2048 --disk /tmp/dew-smoke-stack.img >"$STACK_LOG" 2>&1
     ) &
     STACK_PID=$!
@@ -482,7 +482,7 @@ TOML
         fi
 
         # 2. service-to-service on localhost: anycable reached redis, no DNS error.
-        ALOG=$($DEW logs anycable 2>/dev/null)
+        ALOG=$("$DEW" logs anycable 2>/dev/null)
         if echo "$ALOG" | grep -qiE 'subscrib|provider=redis|connected to redis' \
             && ! echo "$ALOG" | grep -qi 'lookup localhost'; then
             test_result "stack: anycable → redis on localhost (service-to-service)" "pass"
@@ -495,8 +495,8 @@ TOML
         # guest's actual default-route gateway (the VZ NAT host) — rather than a
         # hardcoded 192.168.* prefix, which would break if VZ ever renumbered
         # the subnet even though host.internal stayed correct.
-        HI_IP=$($DEW exec "awk '/host.internal/{print \$1; exit}' /etc/hosts" 2>/dev/null | tr -d '[:space:]')
-        GW_IP=$($DEW exec "ip route 2>/dev/null | awk '/^default/{print \$3; exit}'" 2>/dev/null | tr -d '[:space:]')
+        HI_IP=$("$DEW" exec "awk '/host.internal/{print \$1; exit}' /etc/hosts" 2>/dev/null | tr -d '[:space:]')
+        GW_IP=$("$DEW" exec "ip route 2>/dev/null | awk '/^default/{print \$3; exit}'" 2>/dev/null | tr -d '[:space:]')
         if [ -n "$HI_IP" ] && [ "$HI_IP" = "$GW_IP" ]; then
             test_result "stack: host.internal → default gateway ($HI_IP)" "pass"
         else
@@ -505,13 +505,13 @@ TOML
 
         # 4. host.lo.internal: maps to 127.0.0.2 AND tunnels over vsock to the
         #    127.0.0.1-only host listener.
-        HLO=$($DEW exec "grep host.lo.internal /etc/hosts" 2>/dev/null)
+        HLO=$("$DEW" exec "grep host.lo.internal /etc/hosts" 2>/dev/null)
         if echo "$HLO" | grep -q '127.0.0.2'; then
             test_result "stack: host.lo.internal → 127.0.0.2 (reverse-forward alias)" "pass"
         else
             test_result "stack: host.lo.internal did not map to 127.0.0.2 (got '$HLO')" "fail"
         fi
-        REACH=$($DEW exec "wget -q -O /dev/null -T 5 http://host.lo.internal:$HOST_LO_PORT/ && echo lo-ok" 2>/dev/null)
+        REACH=$("$DEW" exec "wget -q -O /dev/null -T 5 http://host.lo.internal:$HOST_LO_PORT/ && echo lo-ok" 2>/dev/null)
         if echo "$REACH" | grep -q 'lo-ok'; then
             test_result "stack: host.lo.internal:$HOST_LO_PORT reaches host 127.0.0.1 over vsock" "pass"
         else
@@ -519,7 +519,7 @@ TOML
         fi
 
         # 5. dew services lists the dew.toml [[service]] images, not just built-ins.
-        SVC=$(cd "$PROJ" && $DEW services 2>/dev/null)
+        SVC=$(cd "$PROJ" && "$DEW" services 2>/dev/null)
         if echo "$SVC" | grep -q 'mailpit' && echo "$SVC" | grep -q 'anycable'; then
             test_result "stack: dew services lists dew.toml services (mailpit + anycable)" "pass"
         else
