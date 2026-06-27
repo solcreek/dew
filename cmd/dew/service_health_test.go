@@ -66,6 +66,45 @@ func TestWaitGuestReady_WallClockDeadlineCapsSlowProbes(t *testing.T) {
 	}
 }
 
+func TestPollBackoff_DoublesToCap(t *testing.T) {
+	bo := newPollBackoff(10*time.Millisecond, 100*time.Millisecond)
+	want := []time.Duration{10, 20, 40, 80, 100, 100, 100}
+	for i, w := range want {
+		if got := bo.next(); got != w*time.Millisecond {
+			t.Errorf("next #%d = %v, want %v", i, got, w*time.Millisecond)
+		}
+	}
+}
+
+// A steady interval below the floor (as the fast unit tests pass, e.g. 1ms)
+// must never produce a sleep longer than that interval — the cadence starts at
+// the steady cap and stays there, so waitGuestReady's tiny-interval callers
+// keep their old timing.
+func TestPollBackoff_SteadyBelowFloorClampsToSteady(t *testing.T) {
+	bo := newPollBackoff(pollFloor, time.Millisecond)
+	for i := 0; i < 3; i++ {
+		if got := bo.next(); got != time.Millisecond {
+			t.Errorf("next #%d = %v, want 1ms (clamped to steady)", i, got)
+		}
+	}
+}
+
+// The boot-latency win: a service/agent ready on its 2nd poll must be detected
+// after the tight initial backoff (~pollFloor), not a full readyProbeInterval.
+// A flat 100ms interval would make this take ≥100ms; guards against reverting.
+func TestWaitGuestReady_FrontLoadsEarlyReady(t *testing.T) {
+	calls := 0
+	start := time.Now()
+	ok := waitGuestReady(func() bool { calls++; return calls >= 2 }, readyProbeAttempts, readyProbeInterval)
+	elapsed := time.Since(start)
+	if !ok || calls != 2 {
+		t.Fatalf("ready=%v calls=%d, want true/2", ok, calls)
+	}
+	if elapsed >= readyProbeInterval {
+		t.Errorf("elapsed %v ≥ readyProbeInterval %v — an early-ready probe was not front-loaded", elapsed, readyProbeInterval)
+	}
+}
+
 func TestWaitGuestReady_SucceedsImmediately(t *testing.T) {
 	calls := 0
 	ok := waitGuestReady(func() bool { calls++; return true }, 30, time.Hour)
