@@ -9,6 +9,17 @@ import (
 	"github.com/solcreek/dew/internal/services"
 )
 
+// Readiness polling cadence shared by `dew up` and `dew run`. A container
+// typically binds its port in well under a second, so poll at a fine interval
+// rather than a flat 1s — under the old 1s a service ready at ~180ms still
+// waited up to a full second to be detected (and that cost was paid per
+// service when they were started serially). readyProbeAttempts keeps a ~30s
+// overall budget for a genuinely slow first start (cold image, DB init).
+const (
+	readyProbeInterval = 100 * time.Millisecond
+	readyProbeAttempts = 300
+)
+
 // waitGuestReady calls probe repeatedly until it returns true or the
 // attempt budget is exhausted, sleeping interval between tries. probe
 // is injected (rather than calling the guest directly) so the readiness

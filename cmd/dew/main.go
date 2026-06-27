@@ -1592,7 +1592,7 @@ func cmdRun(args []string) error {
 			ready := waitGuestReady(func() bool {
 				pr, perr := runGuest(services.ListenProbeCmd(s.port))
 				return perr == nil && pr != nil && pr.ExitCode == 0
-			}, 30, time.Second)
+			}, readyProbeAttempts, readyProbeInterval)
 			if !ready {
 				fmt.Fprintf(os.Stderr, "dew: service %s did not start accepting connections within 30s\n", s.name)
 				continue
@@ -2693,7 +2693,7 @@ func cmdUp(args []string) error {
 		ready := waitGuestReady(func() bool {
 			pr, perr := execInVMTimeout(services.ListenProbeCmd(s.port), 5*time.Second)
 			return perr == nil && pr != nil && pr.ExitCode == 0
-		}, 30, time.Second)
+		}, readyProbeAttempts, readyProbeInterval)
 		if !ready {
 			ev := map[string]interface{}{
 				"type": "service", "status": "failed", "name": s.name,

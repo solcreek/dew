@@ -41,6 +41,21 @@ func TestWaitGuestReady_SucceedsImmediately(t *testing.T) {
 	}
 }
 
+// The shared readiness budget must stay fine-grained enough to detect a
+// fast-binding service promptly, yet long enough overall to tolerate a slow
+// cold start. Guards against silently reverting to a coarse interval or
+// shrinking the total window.
+func TestReadyProbeBudget(t *testing.T) {
+	if readyProbeInterval > 250*time.Millisecond {
+		t.Errorf("readyProbeInterval = %v, want ≤ 250ms so a ~180ms bind is caught quickly", readyProbeInterval)
+	}
+	total := time.Duration(readyProbeAttempts) * readyProbeInterval
+	if total < 20*time.Second {
+		t.Errorf("readiness budget = %v (%d × %v), want ≥ 20s for a slow first start",
+			total, readyProbeAttempts, readyProbeInterval)
+	}
+}
+
 func TestAppendServiceDiag_CapturesLogs(t *testing.T) {
 	exec := func(cmd string) (*RunResult, error) {
 		if strings.Contains(cmd, "tail") {
