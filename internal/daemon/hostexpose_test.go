@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -90,9 +91,9 @@ func TestServeReverseDial_ProxiesToLoopback(t *testing.T) {
 func TestServeReverseDial_RejectsBadToken(t *testing.T) {
 	guestClient, guestServer := net.Pipe()
 	defer guestClient.Close()
-	dialed := false
+	var dialed atomic.Bool
 	go serveReverseDial(guestServer, map[int]bool{50051: true}, "real", func(int) (net.Conn, error) {
-		dialed = true
+		dialed.Store(true)
 		return nil, nil
 	})
 
@@ -103,7 +104,7 @@ func TestServeReverseDial_RejectsBadToken(t *testing.T) {
 	if resp.OK || resp.Error != "unauthorized" {
 		t.Errorf("got %+v, want unauthorized", resp)
 	}
-	if dialed {
+	if dialed.Load() {
 		t.Error("dialed despite bad token")
 	}
 }
@@ -113,9 +114,9 @@ func TestServeReverseDial_RejectsBadToken(t *testing.T) {
 func TestServeReverseDial_RejectsUndeclaredPort(t *testing.T) {
 	guestClient, guestServer := net.Pipe()
 	defer guestClient.Close()
-	dialed := false
+	var dialed atomic.Bool
 	go serveReverseDial(guestServer, map[int]bool{50051: true}, "tok", func(int) (net.Conn, error) {
-		dialed = true
+		dialed.Store(true)
 		return nil, nil
 	})
 
@@ -126,7 +127,7 @@ func TestServeReverseDial_RejectsUndeclaredPort(t *testing.T) {
 	if resp.OK || resp.Error == "" {
 		t.Errorf("got %+v, want a 'not exposed' error", resp)
 	}
-	if dialed {
+	if dialed.Load() {
 		t.Error("dialed an undeclared port")
 	}
 }
