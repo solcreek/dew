@@ -94,17 +94,34 @@ the app itself runs on the host and only its backing services live in dew.
 This is the docker-compose-shaped path: several arbitrary OCI images,
 health-gated and port-forwarded, in one microVM with no container daemon.
 
-To reach a service running on the **macOS host** (e.g. a websocket gateway
-in the VM calling back to a host RPC), use the hostname `host.internal`
-(alias `host.dew.internal`) — dew's equivalent of `host.docker.internal`.
-It resolves to the VM's NAT gateway in both the guest and its containers,
-so you never hardcode the `192.168.64.x` gateway IP. The host service must
-bind `0.0.0.0` (not `127.0.0.1`) to be reachable from the VM.
+### Reach the macOS host from the VM
 
-If the host service is bound to **`127.0.0.1`** (the dev default) — or you
-want to sidestep the macOS 26 VZ NAT regression — expose it explicitly and
-reach it at `host.lo.internal` instead. dew tunnels the declared ports over
-vsock straight to the host's loopback, no `0.0.0.0` bind and no NAT:
+A service in the VM often has to call back to a process on your Mac — a
+websocket gateway hitting a host RPC, an app talking to a database you run
+natively. dew gives you two host aliases so you never hardcode the
+`192.168.64.x` gateway IP. Both resolve inside the guest **and** inside
+`--net=host` containers, so a `dew.toml` service reaches the host the same
+way the guest does.
+
+| Alias | Reaches a host service bound to | Path | Use when |
+|---|---|---|---|
+| `host.internal` (alias `host.dew.internal`) | `0.0.0.0` (all interfaces) | VZ NAT gateway | the host service already listens on all interfaces |
+| `host.lo.internal` | **`127.0.0.1`** (the dev default) | vsock → host loopback | the service is loopback-only, or you want to dodge the macOS 26 VZ NAT regression |
+
+**`host.internal` — the NAT-gateway alias**, dew's equivalent of
+`host.docker.internal`. The host service must bind `0.0.0.0`; a `127.0.0.1`
+bind stays unreachable (same caveat as docker's alias):
+
+```bash
+# host process on 0.0.0.0:50051 → from the VM: host.internal:50051
+```
+
+**`host.lo.internal` — a vsock tunnel straight to the host's loopback.**
+This is the one for the common dev case where the host service is bound to
+`127.0.0.1` (a Rails RPC, a local Postgres, etc.). Declare the ports to
+expose; dew forwards each over vsock to the host's `127.0.0.1` — no
+`0.0.0.0` rebind, and because it never touches the network stack it is
+**immune to the macOS 26 VZ NAT regression**:
 
 ```bash
 dew up --expose-host 50051
