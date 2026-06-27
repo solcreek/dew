@@ -122,6 +122,25 @@ func TestParse_NegationAfterPositiveSet(t *testing.T) {
 	}
 }
 
+// Malformed numeric directives must fail parsing rather than silently drop an
+// intended cap; "infinity" stays a legitimate unset.
+func TestParse_InvalidNumericDirectives(t *testing.T) {
+	for _, unit := range []string{
+		"[Service]\nTasksMax=abc\n",
+		"[Service]\nTasksMax=-5\n",
+		"[Service]\nCPUQuota=abc\n",
+		"[Service]\nCPUQuota=0.0001%\n", // rounds to 0
+	} {
+		if _, err := Parse(strings.NewReader(unit)); err == nil {
+			t.Errorf("expected parse error for unit:\n%s", unit)
+		}
+	}
+	// infinity is a valid "unset", not an error.
+	if _, err := Parse(strings.NewReader("[Service]\nTasksMax=infinity\nCPUQuota=infinity\n")); err != nil {
+		t.Errorf("infinity should not error: %v", err)
+	}
+}
+
 func TestParse_OnlySectionService(t *testing.T) {
 	// MemoryMax in a non-[Service] section must be ignored.
 	p, _ := Parse(strings.NewReader("[Unit]\nMemoryMax=999M\n[Slice]\nTasksMax=5\n"))

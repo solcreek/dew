@@ -161,11 +161,19 @@ func Parse(r io.Reader) (Plan, error) {
 			// it instead of silently lowering the hard cap.
 			note("MemoryHigh= (soft throttle not applied; only MemoryMax is enforced)")
 		case "TasksMax":
-			if n := parseCountOrInfinity(val); n > 0 {
+			n, perr := parseCountOrInfinity(val)
+			if perr != nil {
+				return p, fmt.Errorf("TasksMax=%q: %w", val, perr)
+			}
+			if n > 0 {
 				p.PidsMax = n
 			}
 		case "CPUQuota":
-			if q := parseCPUQuota(val); q > 0 {
+			q, perr := parseCPUQuota(val)
+			if perr != nil {
+				return p, fmt.Errorf("CPUQuota=%q: %w", val, perr)
+			}
+			if q > 0 {
 				p.CPUQuota = q
 			}
 		case "User":
@@ -293,29 +301,37 @@ func parseBytes(s string) (int64, bool, error) {
 	return n * mult, false, nil
 }
 
-func parseCountOrInfinity(s string) int64 {
-	if strings.EqualFold(s, "infinity") {
-		return 0
+// parseCountOrInfinity parses a positive integer; "infinity"/"" mean unset
+// (0, nil). A malformed or non-positive value is an error so an intended hard
+// cap isn't silently dropped.
+func parseCountOrInfinity(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.EqualFold(s, "infinity") {
+		return 0, nil
 	}
-	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	n, err := strconv.ParseInt(s, 10, 64)
 	if err != nil || n <= 0 {
-		return 0
+		return 0, fmt.Errorf("invalid count")
 	}
-	return n
+	return n, nil
 }
 
 // parseCPUQuota converts systemd's "N%" into a cpu.max quota for a 100000us
-// period (100% == one core == 100000). "infinity"/"" → 0.
-func parseCPUQuota(s string) int64 {
+// period (100% == one core == 100000). "infinity"/"" mean unset (0, nil); a
+// malformed value or one that rounds to a 0 quota is an error.
+func parseCPUQuota(s string) (int64, error) {
 	const period = 100000
 	s = strings.TrimSpace(s)
 	if s == "" || strings.EqualFold(s, "infinity") {
-		return 0
+		return 0, nil
 	}
-	s = strings.TrimSuffix(s, "%")
-	pct, err := strconv.ParseFloat(s, 64)
+	pct, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
 	if err != nil || pct <= 0 {
-		return 0
+		return 0, fmt.Errorf("invalid percentage")
 	}
-	return int64(pct / 100 * period)
+	q := int64(pct / 100 * period)
+	if q == 0 {
+		return 0, fmt.Errorf("quota too small (rounds to 0)")
+	}
+	return q, nil
 }
