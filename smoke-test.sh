@@ -38,6 +38,16 @@ test_result() {
     fi
 }
 
+# kill_port frees a host TCP port, portably. BSD/macOS xargs has no `-r`
+# (--no-run-if-empty), so capture the PIDs and only kill when non-empty
+# rather than piping through `xargs -r`.
+kill_port() {
+    local pids
+    pids=$(lsof -ti:"$1" 2>/dev/null)
+    [ -n "$pids" ] && kill -9 $pids 2>/dev/null
+    return 0
+}
+
 echo "=== Dew Smoke Test ==="
 echo ""
 
@@ -216,7 +226,7 @@ fi
 #      knownNativeNodePackages)
 if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ] && command -v npm >/dev/null 2>&1; then
     pkill -9 -f 'dew start\|dew run\|dew up' 2>/dev/null
-    lsof -ti:5173 2>/dev/null | xargs -r kill -9 2>/dev/null
+    kill_port 5173
     sleep 1
     rm -f ~/.local/state/dew/default.sock ~/.local/share/dew/node.img
     PROJ=$(mktemp -d -t dew-smoke-up)
@@ -277,7 +287,7 @@ fi
 # matches against knownNativeNodePackages.
 if [ -f "$INITRD_NODE" ] && [ -f "$KERNEL" ] && command -v npm >/dev/null 2>&1; then
     pkill -9 -f 'dew start\|dew run\|dew up' 2>/dev/null
-    lsof -ti:5173 2>/dev/null | xargs -r kill -9 2>/dev/null
+    kill_port 5173
     sleep 1
     rm -f ~/.local/state/dew/default.sock ~/.local/share/dew/node.img
     PROJ=$(mktemp -d -t dew-smoke-sharp)
@@ -402,7 +412,7 @@ if [ -f "$INITRD_STD" ] && [ -f "$KERNEL" ] && command -v python3 >/dev/null 2>&
     # A 127.0.0.1-ONLY host listener: unreachable via host.internal (NAT) by
     # design — that's the whole point of host.lo.internal. python's http.server
     # answers 200 on GET / and binds loopback only.
-    lsof -ti:$HOST_LO_PORT 2>/dev/null | xargs -r kill -9 2>/dev/null
+    kill_port "$HOST_LO_PORT"
     python3 -m http.server "$HOST_LO_PORT" --bind 127.0.0.1 >/dev/null 2>&1 &
     HOST_LISTENER_PID=$!
     PROJ=$(mktemp -d -t dew-smoke-stack)
