@@ -828,7 +828,11 @@ func stripLeadingGlobalFlags(args []string) []string {
 }
 
 func parseFlags(args []string) (vm.Config, []string, error) {
-	return parseFlagsReset(args, true)
+	return parseFlagsReset(vm.Config{
+		CPUs:     1,
+		MemoryMB: 512,
+		CmdLine:  "console=hvc0",
+	}, args, true)
 }
 
 // parseFlagsReset is parseFlags with control over the command-scoped-globals
@@ -836,14 +840,11 @@ func parseFlags(args []string) (vm.Config, []string, error) {
 // up flags appearing AFTER the first positional must NOT reset (reset=false) —
 // otherwise it would wipe globals already parsed before the positional in the
 // outer invocation (e.g. `dew up --reset-disk ./dir --dry-run` would lose
-// --reset-disk). The recursive call only needs the post-positional flags' side
-// effects on the globals; its returned cfg is discarded.
-func parseFlagsReset(args []string, reset bool) (vm.Config, []string, error) {
-	cfg := vm.Config{
-		CPUs:     1,
-		MemoryMB: 512,
-		CmdLine:  "console=hvc0",
-	}
+// --reset-disk). cfg is threaded in (and the recursive call is seeded with the
+// current cfg and takes its result) so post-positional flags that mutate
+// vm.Config — --cpus/--memory/--cgroup/--share/--forward — actually take
+// effect instead of being parsed into a discarded copy.
+func parseFlagsReset(cfg vm.Config, args []string, reset bool) (vm.Config, []string, error) {
 	var remaining []string
 	// Reset command-scoped globals: parseFlags runs once per command, but tests
 	// reuse the process, so a prior --image/--platform/--timeout must not leak
@@ -1128,10 +1129,12 @@ func parseFlagsReset(args []string, reset bool) (vm.Config, []string, error) {
 			collected := []string{args[i]}
 			for j := i + 1; j < len(args); j++ {
 				if strings.HasPrefix(args[j], "-") {
-					// Recurse the remaining flag stream so each
-					// known flag still gets its case-arm. reset=false so this
-					// does not wipe globals already parsed before the positional.
-					_, _, err := parseFlagsReset(args[j:], false)
+					// Parse the remaining flag stream so each known flag still
+					// gets its case-arm. reset=false so this does not wipe
+					// globals already parsed before the positional; seed with
+					// (and take back) cfg so post-positional cfg flags apply.
+					var err error
+					cfg, _, err = parseFlagsReset(cfg, args[j:], false)
 					if err != nil {
 						return cfg, nil, err
 					}

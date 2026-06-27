@@ -9,7 +9,7 @@ import "testing"
 // globals, or flags parsed BEFORE the positional get wiped. Regression for the
 // `dew up --reset-disk ./dir --dry-run` class (and --confine, --init, …).
 func TestParseFlags_PostPositionalDoesNotWipePriorGlobals(t *testing.T) {
-	_, remaining, err := parseFlags([]string{"--reset-disk", "--init", "./dir", "--dry-run"})
+	cfg, remaining, err := parseFlags([]string{"--reset-disk", "--init", "./dir", "--dry-run", "--cpus", "4"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,6 +21,10 @@ func TestParseFlags_PostPositionalDoesNotWipePriorGlobals(t *testing.T) {
 	}
 	if !flagDryRun {
 		t.Error("--dry-run (after the positional) was not parsed")
+	}
+	// Post-positional cfg-mutating flags must apply, not be discarded.
+	if cfg.CPUs != 4 {
+		t.Errorf("--cpus 4 after the positional was dropped: cfg.CPUs=%d", cfg.CPUs)
 	}
 	if len(remaining) == 0 || remaining[0] != "./dir" {
 		t.Errorf("positional not returned: remaining=%v", remaining)
