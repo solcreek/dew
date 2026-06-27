@@ -19,13 +19,18 @@ func TestDiskCmdLine(t *testing.T) {
 	if got := diskCmdLine(base, ""); got != base {
 		t.Errorf("diskless: diskCmdLine(%q, \"\") = %q, want unchanged", base, got)
 	}
-	if got := diskCmdLine(base, "/x/node.img"); got != base+" dew.disk=1" {
-		t.Errorf("with disk: diskCmdLine = %q, want %q appended with dew.disk=1", got, base)
+	if got, want := diskCmdLine(base, "/x/node.img"), base+" dew.disk=1"; got != want {
+		t.Errorf("with disk: diskCmdLine = %q, want %q", got, want)
 	}
-	// Idempotent on the existing cmdline content — only the marker is added.
+	// Preserves existing cmdline flags; the marker is appended after them.
 	withShare := "console=hvc0 dew.share=oci-stage:/oci-stage"
-	if got := diskCmdLine(withShare, "/x/std.img"); got != withShare+" dew.disk=1" {
-		t.Errorf("preserves existing flags: got %q", got)
+	if got, want := diskCmdLine(withShare, "/x/std.img"), withShare+" dew.disk=1"; got != want {
+		t.Errorf("preserves existing flags: got %q, want %q", got, want)
+	}
+	// Idempotent: a base that already carries the marker isn't given a second.
+	withMarker := "console=hvc0 dew.disk=1"
+	if got := diskCmdLine(withMarker, "/x/std.img"); got != withMarker {
+		t.Errorf("idempotent: diskCmdLine(%q, disk) = %q, want unchanged (no duplicate marker)", withMarker, got)
 	}
 }
 

@@ -51,11 +51,14 @@ func New(cfg vm.Config) (*DarwinVM, error) {
 // `dew run`'s default) otherwise burns init's full device-probe timeout (~1s)
 // every boot waiting for a /dev/vda that never comes. Kept in lockstep with
 // configureDisk, which attaches the block device under this same condition.
+//
+// Idempotent: a base that already carries the marker is returned unchanged, so
+// the marker can never appear twice in /proc/cmdline.
 func diskCmdLine(base, diskPath string) string {
-	if diskPath != "" {
-		return base + " dew.disk=1"
+	if diskPath == "" || strings.Contains(base, "dew.disk=1") {
+		return base
 	}
-	return base
+	return base + " dew.disk=1"
 }
 
 func (d *DarwinVM) buildConfig() (*vz.VirtualMachineConfiguration, error) {
