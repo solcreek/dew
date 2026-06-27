@@ -479,7 +479,10 @@ TOML
     STACK_OK=0
     for i in $(seq 1 120); do
         sleep 2
-        code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://localhost:8025/ 2>/dev/null || echo 000)
+        # Assign first, override to 000 only on curl failure: on a refused
+        # connection curl prints 000 to stdout AND exits non-zero, so a
+        # `|| echo 000` would append a second 000 (-> 000000).
+        code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://localhost:8025/ 2>/dev/null) || code=000
         [ "$code" = "200" ] && { STACK_OK=1; break; }
     done
     if [ "$STACK_OK" = "1" ]; then
@@ -496,7 +499,10 @@ TOML
         else
             test_result "stack: redis :6379 not forwarded" "fail"
         fi
-        ACODE=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:8080/health 2>/dev/null || echo 000)
+        # Same capture-then-override as the mailpit probe: with `|| echo 000`
+        # a refused connection yields ACODE=000000, which is != 000 and would
+        # falsely report the port as reachable.
+        ACODE=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:8080/health 2>/dev/null) || ACODE=000
         if [ "$ACODE" != "000" ]; then
             test_result "stack: anycable :8080 forwarded to host (HTTP $ACODE)" "pass"
         else
