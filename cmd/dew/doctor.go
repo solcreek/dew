@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/solcreek/dew/internal/detect"
+	"github.com/solcreek/dew/internal/dewfile"
 	"github.com/solcreek/dew/internal/vm/darwin"
 )
 
@@ -46,16 +48,22 @@ type DoctorReport struct {
 func cmdDoctor(args []string) error {
 	jsonMode := flagJSON
 	verbose := false
-	for _, a := range args {
-		switch a {
+	profile := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
 		case "--json":
 			jsonMode = true
 		case "--verbose", "-v":
 			verbose = true
+		case "--profile":
+			if i+1 < len(args) {
+				profile = args[i+1]
+				i++
+			}
 		}
 	}
 
-	report := runDoctorChecks(verbose)
+	report := runDoctorChecks(verbose, profile)
 
 	if jsonMode {
 		enc := json.NewEncoder(os.Stdout)
@@ -71,7 +79,43 @@ func cmdDoctor(args []string) error {
 	return nil
 }
 
-func runDoctorChecks(verbose bool) DoctorReport {
+// doctorProfiles returns the initramfs profiles doctor should verify:
+// always "minimal" (the in-process boot test boots it), plus the
+// profile THIS project actually runs — from an explicit --profile
+// override, else the project's dew.toml, else auto-detection of the
+// cwd. Without this, doctor only ever checked the minimal initramfs
+// and reported all-green while the node initramfs a Node/Rails project
+// actually boots (`dew up`, services-only) was missing or unverifiable
+// — the exact false-green that hid the 2026-06 services-only brick.
+func doctorProfiles(override string) []string {
+	profiles := []string{"minimal"}
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		for _, e := range profiles {
+			if e == p {
+				return
+			}
+		}
+		profiles = append(profiles, p)
+	}
+	if override != "" {
+		add(override)
+		return profiles
+	}
+	cwd, _ := os.Getwd()
+	if f, err := dewfile.Load(cwd); err == nil && f != nil && f.Project.Profile != "" {
+		add(f.Project.Profile)
+		return profiles
+	}
+	if p, err := detect.Detect(cwd); err == nil && p != nil {
+		add(p.Profile)
+	}
+	return profiles
+}
+
+func runDoctorChecks(verbose bool, profileOverride string) DoctorReport {
 	var checks []DoctorCheck
 
 	// macOS version
@@ -162,16 +206,15 @@ func runDoctorChecks(verbose bool) DoctorReport {
 	// Kernel + initramfs assets. Path is content-addressed when the
 	// binary was built by the release pipeline (ExpectedAssetSHA
 	// populated); falls back to the legacy un-suffixed name for
-	// dev/local builds. Doctor reports against the minimal profile;
-	// other profiles get their own paths and would need an explicit
-	// flag to inspect, which doctor doesn't expose today.
+	// dev/local builds. Doctor verifies the kernel plus EVERY profile
+	// this project actually uses (minimal + the detected/declared
+	// profile), so a missing or unverifiable node initramfs no longer
+	// hides behind a minimal-only all-green.
 	dataDir := dewDataDir()
 	kernelPath := assetCachePath(dataDir, kernelAssetName())
-	initrdPath := assetCachePath(dataDir, initrdAssetName("minimal"))
-	assets := []string{kernelPath, initrdPath}
-	for _, p := range assets {
-		name := "Asset: " + p
-		if _, err := os.Stat(p); err == nil {
+
+	statAsset := func(name, path, hint string) {
+		if _, err := os.Stat(path); err == nil {
 			checks = append(checks, DoctorCheck{Name: name, Status: CheckPass})
 		} else {
 			checks = append(checks, DoctorCheck{
@@ -179,9 +222,19 @@ func runDoctorChecks(verbose bool) DoctorReport {
 				Status:  CheckFail,
 				Code:    "missing_asset",
 				Message: "Asset not downloaded",
-				Hint:    "Run: dew assets pull",
+				Hint:    hint,
 			})
 		}
+	}
+
+	statAsset("Asset: "+kernelPath, kernelPath, "Run: dew assets pull")
+	for _, profile := range doctorProfiles(profileOverride) {
+		initrdPath := assetCachePath(dataDir, initrdAssetName(profile))
+		statAsset(
+			fmt.Sprintf("Asset (%s): %s", profile, initrdPath),
+			initrdPath,
+			"Run: dew assets pull "+profile,
+		)
 	}
 
 	// Kernel format sanity check. The 2026-06-04 M4 Max report was a
