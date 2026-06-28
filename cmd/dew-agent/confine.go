@@ -88,9 +88,17 @@ func applyReadOnlyFS(c *protocol.Confinement) error {
 	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
 		return fmt.Errorf("make / rprivate: %w", err)
 	}
-	// Create the writable exception dirs while the tree is still writable
-	// (systemd likewise materializes ReadWritePaths before protecting the fs).
+	// Materialize missing writable-exception dirs while the tree is still
+	// writable (systemd likewise creates ReadWritePaths before protecting the
+	// fs). Existing entries — including file exceptions like /etc/resolv.conf,
+	// which systemd allows — are left as-is: MkdirAll on an existing file would
+	// fail, and bindReadWrite handles files and dirs alike.
 	for _, p := range c.ReadWritePaths {
+		if _, err := os.Stat(p); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("stat read-write path %q: %w", p, err)
+		}
 		if err := os.MkdirAll(p, 0o755); err != nil {
 			return fmt.Errorf("create read-write path %q: %w", p, err)
 		}
