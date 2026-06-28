@@ -103,8 +103,8 @@ func Parse(r io.Reader) (Plan, error) {
 	}
 	// Known SystemCallFilter= @-group tokens (e.g. @system-service) are expanded
 	// from the mirrored systemd table; an UNKNOWN @-group can't be approximated,
-	// so it voids the whole directive (surfaced after the scan, set below).
-	scHasUnknownGroup := false
+	// so it voids the whole directive (surfaced after the scan, named below).
+	var scUnknownGroups []string
 
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -175,7 +175,7 @@ func Parse(r io.Reader) (Plan, error) {
 			note("AmbientCapabilities= (caps are dropped, not granted, by --confine)")
 		// Directives dew does not enforce — surface them, don't silently drop.
 		case "SystemCallFilter":
-			applySystemCalls(&p, val, &scHasUnknownGroup, note)
+			applySystemCalls(&p, val, &scUnknownGroups, note)
 		case "SystemCallArchitectures":
 			note("SystemCallArchitectures= (architecture restriction not enforced)")
 		case "RestrictAddressFamilies":
@@ -215,10 +215,11 @@ func Parse(r io.Reader) (Plan, error) {
 	// effective set in the wrong direction — a denylist would under-block), so
 	// enforce nothing and surface the whole directive as unenforced. Known groups
 	// were already expanded inline.
-	if scHasUnknownGroup {
+	if len(scUnknownGroups) > 0 {
 		p.SystemCalls = nil
 		p.SystemCallsDeny = false
-		note("SystemCallFilter= references an @-group not in dew's systemd " + systemdVersion + " table; not applied")
+		slices.Sort(scUnknownGroups)
+		note("SystemCallFilter= references @-group(s) " + strings.Join(slices.Compact(scUnknownGroups), " ") + " not in dew's systemd " + systemdVersion + " table; not applied")
 	} else if len(p.SystemCalls) > 0 {
 		// Group expansion and overlapping directives produce duplicates; sort and
 		// compact for a small, deterministic wire payload (the agent dedups too).
@@ -313,18 +314,18 @@ func applyAddressFamilies(p *Plan, val string, note func(string)) {
 // list; a leading ~ is the denylist form; otherwise it's an allowlist. Explicit
 // syscall names accumulate (normalised to lower-case); a known @-group token is
 // expanded via systemdSyscallGroups (the mirrored systemd table, 5c) into its
-// member names, while an unknown @-group sets *hasUnknownGroup so the caller can
-// void the whole directive — dropping it silently would flip the effective set
-// in the wrong direction (a denylist would under-block). Like address families,
-// dew supports a single polarity and keeps the last form if a later assignment
-// flips it.
-func applySystemCalls(p *Plan, val string, hasUnknownGroup *bool, note func(string)) {
+// member names, while an unknown @-group is appended to *unknownGroups so the
+// caller can void the whole directive and name the offending tokens — dropping
+// one silently would flip the effective set in the wrong direction (a denylist
+// would under-block). Like address families, dew supports a single polarity and
+// keeps the last form if a later assignment flips it.
+func applySystemCalls(p *Plan, val string, unknownGroups *[]string, note func(string)) {
 	if val == "" {
 		// Reset discards prior entries, including any unknown-group state, so a
 		// later explicit/known-group directive can still be enforced.
 		p.SystemCalls = nil
 		p.SystemCallsDeny = false
-		*hasUnknownGroup = false
+		*unknownGroups = nil
 		return
 	}
 	deny := strings.HasPrefix(val, "~")
@@ -333,14 +334,14 @@ func applySystemCalls(p *Plan, val string, hasUnknownGroup *bool, note func(stri
 		// prior unknown-group state with them.
 		note("SystemCallFilter= mixes allow and deny forms (approximated by the last form)")
 		p.SystemCalls = nil
-		*hasUnknownGroup = false
+		*unknownGroups = nil
 	}
 	p.SystemCallsDeny = deny
 	for _, s := range strings.Fields(strings.TrimPrefix(val, "~")) {
 		if strings.HasPrefix(s, "@") {
 			members, ok := systemdSyscallGroups[strings.ToLower(s)]
 			if !ok {
-				*hasUnknownGroup = true
+				*unknownGroups = append(*unknownGroups, strings.ToLower(s))
 				continue
 			}
 			p.SystemCalls = append(p.SystemCalls, members...)

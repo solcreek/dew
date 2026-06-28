@@ -408,8 +408,9 @@ func TestParse_SystemCallFilter(t *testing.T) {
 	if len(p.SystemCalls) != 0 || p.SystemCallsDeny {
 		t.Errorf("unknown @-group directive should enforce nothing, got %v", p.SystemCalls)
 	}
-	if !strings.Contains(strings.Join(p.Unsupported, "\n"), "not in dew's systemd") {
-		t.Error("unknown @-group SystemCallFilter should be surfaced as unenforced")
+	joinedUnknown := strings.Join(p.Unsupported, "\n")
+	if !strings.Contains(joinedUnknown, "not in dew's systemd") || !strings.Contains(joinedUnknown, "@no-such-group") {
+		t.Errorf("unknown @-group should be surfaced and named; got:\n%s", joinedUnknown)
 	}
 
 	// A reset after a group clears prior entries, so a later explicit-only
