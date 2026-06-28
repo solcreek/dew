@@ -3495,6 +3495,16 @@ func runExecStreaming(args []string, timeoutMs int, tty bool) error {
 // shell; the only time we should wrap is when there's a single string
 // that the user implicitly expects shell parsing on.
 
+func argvOrShellWrap(cliArgs []string) (command string, args []string) {
+	if len(cliArgs) == 0 {
+		return "", nil
+	}
+	if len(cliArgs) == 1 {
+		return "/bin/sh", []string{"-c", cliArgs[0]}
+	}
+	return cliArgs[0], cliArgs[1:]
+}
+
 // confineUnenforceableErr fails closed when --confine was requested (spec !=
 // nil) but the selected exec channel can't deliver and apply it. The shim only
 // runs on the vsock batch path, so: --stream is rejected; the serial fallback
@@ -3547,16 +3557,6 @@ func confinementFromPlan(p confine.Plan) *vsockProto.Confinement {
 		return nil
 	}
 	return c
-}
-
-func argvOrShellWrap(cliArgs []string) (command string, args []string) {
-	if len(cliArgs) == 0 {
-		return "", nil
-	}
-	if len(cliArgs) == 1 {
-		return "/bin/sh", []string{"-c", cliArgs[0]}
-	}
-	return cliArgs[0], cliArgs[1:]
 }
 
 func execVsockConn(conn net.Conn, token string, cmd string) (*RunResult, error) {
