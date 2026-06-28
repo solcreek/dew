@@ -89,6 +89,42 @@ type ExecRequest struct {
 	TTY  bool   `json:"tty,omitempty"`
 	Rows uint16 `json:"rows,omitempty"`
 	Cols uint16 `json:"cols,omitempty"`
+	// Confine, when set, is a privilege/isolation spec the agent applies
+	// natively before exec (mount-ns read-only fs, capability/uid drop,
+	// no_new_privs). The host derives it from a systemd unit (--confine).
+	// omitempty so the common unconfined path is unchanged and an older
+	// agent simply ignores it.
+	Confine *Confinement `json:"confine,omitempty"`
+}
+
+// Confinement is the privilege/isolation spec the host derives from a systemd
+// unit for `dew run --confine`. The agent applies it in the child before exec
+// (see the re-exec shim in dew-agent): mount namespace + read-only fs first
+// (needs caps), then no_new_privs, then capability drop, then uid/gid drop.
+// Seccomp (SystemCallFilter=/RestrictAddressFamilies=) is intentionally not
+// here yet — it is design-only (see docs/confine-enforcement.md §5).
+type Confinement struct {
+	// Privilege drop.
+	User        string   `json:"user,omitempty"`         // uid or username; "" = unchanged
+	Group       string   `json:"group,omitempty"`        // gid or group name
+	DynamicUser bool     `json:"dynamic_user,omitempty"` // no User= but DynamicUser=yes → fixed unprivileged uid
+	NoNewPrivs  bool     `json:"no_new_privs,omitempty"`
+	DropAllCaps bool     `json:"drop_all_caps,omitempty"` // empty/positive bounding set → drop all but KeepCaps
+	KeepCaps    []string `json:"keep_caps,omitempty"`     // libcap names (lowercase) kept when DropAllCaps
+	DropCaps    []string `json:"drop_caps,omitempty"`     // libcap names dropped from the inherited set otherwise
+	// Filesystem (ProtectSystem=strict + ReadWritePaths=).
+	ReadOnlyRoot   bool     `json:"read_only_root,omitempty"`
+	ReadWritePaths []string `json:"read_write_paths,omitempty"`
+}
+
+// Set reports whether the spec constrains anything (so the agent can skip the
+// re-exec shim entirely when it doesn't).
+func (c *Confinement) Set() bool {
+	if c == nil {
+		return false
+	}
+	return c.User != "" || c.Group != "" || c.DynamicUser || c.NoNewPrivs ||
+		c.DropAllCaps || len(c.DropCaps) > 0 || c.ReadOnlyRoot || len(c.ReadWritePaths) > 0
 }
 
 // InputChunk carries stdin from host to guest during a streaming exec.
