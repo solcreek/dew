@@ -228,7 +228,13 @@ func confineCloneFlags(c *protocol.Confinement) uintptr {
 // confineExecCmd builds the re-exec into the shim for a confined batch exec,
 // carrying the spec in the environment and requesting the needed namespaces.
 func confineExecCmd(ctx context.Context, req protocol.ExecRequest) *exec.Cmd {
-	spec, _ := json.Marshal(req.Confine)
+	spec, err := json.Marshal(req.Confine)
+	if err != nil {
+		// Fail closed: hand the shim a non-empty, unparseable spec so it errors
+		// out (json.Unmarshal fails) instead of running the target unconfined.
+		// An empty value would be read as "no confinement" — a silent bypass.
+		spec = []byte("dew: confine spec marshal failed")
+	}
 	argv := append([]string{confineShimMarker, req.Command}, req.Args...)
 	cmd := exec.CommandContext(ctx, "/proc/self/exe", argv...)
 	if req.Dir != "" {
