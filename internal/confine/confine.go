@@ -8,6 +8,8 @@
 // that "passes under --confine" is guaranteed to pass under real systemd.
 package confine
 
+//go:generate go run gen_syscallgroups.go
+
 import (
 	"bufio"
 	"fmt"
@@ -45,15 +47,16 @@ type Plan struct {
 	AddressFamilies     []string // AF_* names (allowlist, or denylist when AddressFamiliesDeny)
 	AddressFamiliesDeny bool     // RestrictAddressFamilies=~… : block the listed families instead
 
-	// seccomp (SystemCallFilter=), explicit syscall names applied by the agent
-	// as a BPF filter before exec. @-groups are not expanded here (5c) — a unit
-	// using them leaves these empty and the directive is surfaced as unenforced.
+	// seccomp (SystemCallFilter=), syscall names applied by the agent as a BPF
+	// filter before exec. Known @-groups (e.g. @system-service) are expanded from
+	// the mirrored systemd table; an unknown @-group leaves these empty and the
+	// directive is surfaced as unenforced.
 	SystemCalls     []string // syscall names (allowlist, or denylist when SystemCallsDeny)
 	SystemCallsDeny bool     // SystemCallFilter=~… : block the listed syscalls instead
 
 	// Unsupported lists directives present in the unit that dew does NOT
-	// enforce (SystemCallFilter= @-groups, SystemCallArchitectures=, partial
-	// filesystem protection, ...).
+	// enforce (unknown SystemCallFilter= @-groups, SystemCallArchitectures=,
+	// partial filesystem protection, ...).
 	Unsupported []string
 }
 
@@ -98,10 +101,10 @@ func Parse(r io.Reader) (Plan, error) {
 			p.Unsupported = append(p.Unsupported, d)
 		}
 	}
-	// SystemCallFilter= @-group tokens (e.g. @system-service) can't be faithfully
-	// approximated without 5c's group table, so a unit using them gets the whole
-	// directive surfaced as unenforced (set below, after the scan).
-	scHasGroups := false
+	// Known SystemCallFilter= @-group tokens (e.g. @system-service) are expanded
+	// from the mirrored systemd table; an UNKNOWN @-group can't be approximated,
+	// so it voids the whole directive (surfaced after the scan, named below).
+	var scUnknownGroups []string
 
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -172,7 +175,7 @@ func Parse(r io.Reader) (Plan, error) {
 			note("AmbientCapabilities= (caps are dropped, not granted, by --confine)")
 		// Directives dew does not enforce — surface them, don't silently drop.
 		case "SystemCallFilter":
-			applySystemCalls(&p, val, &scHasGroups, note)
+			applySystemCalls(&p, val, &scUnknownGroups, note)
 		case "SystemCallArchitectures":
 			note("SystemCallArchitectures= (architecture restriction not enforced)")
 		case "RestrictAddressFamilies":
@@ -207,14 +210,21 @@ func Parse(r io.Reader) (Plan, error) {
 	if err := sc.Err(); err != nil {
 		return p, err
 	}
-	// A SystemCallFilter= that referenced any @-group can't be faithfully
-	// approximated from the explicit names alone (dropping the group would flip
-	// the effective set in the wrong direction), so enforce nothing and surface
-	// the whole directive as unenforced.
-	if scHasGroups {
+	// A SystemCallFilter= that referenced an UNKNOWN @-group can't be faithfully
+	// approximated from the remaining names (dropping the group would flip the
+	// effective set in the wrong direction — a denylist would under-block), so
+	// enforce nothing and surface the whole directive as unenforced. Known groups
+	// were already expanded inline.
+	if len(scUnknownGroups) > 0 {
 		p.SystemCalls = nil
 		p.SystemCallsDeny = false
-		note("SystemCallFilter= uses @-groups (e.g. @system-service) which dew does not expand yet; not applied")
+		slices.Sort(scUnknownGroups)
+		note("SystemCallFilter= references @-group(s) " + strings.Join(slices.Compact(scUnknownGroups), " ") + " not in dew's systemd " + systemdVersion + " table; not applied")
+	} else if len(p.SystemCalls) > 0 {
+		// Group expansion and overlapping directives produce duplicates; sort and
+		// compact for a small, deterministic wire payload (the agent dedups too).
+		slices.Sort(p.SystemCalls)
+		p.SystemCalls = slices.Compact(p.SystemCalls)
 	}
 	if p.DynamicUser && p.UID == "" {
 		note("DynamicUser=yes approximated as uid " + DynamicUserUID + " (nobody)")
@@ -302,31 +312,40 @@ func applyAddressFamilies(p *Plan, val string, note func(string)) {
 
 // applySystemCalls parses SystemCallFilter=. An empty assignment resets the
 // list; a leading ~ is the denylist form; otherwise it's an allowlist. Explicit
-// syscall names accumulate (normalised to lower-case); @-group tokens set
-// *hasGroups so the caller can void the directive after the scan (dew doesn't
-// expand groups until 5c). Like address families, dew supports a single polarity
-// and keeps the last form if a later assignment flips it.
-func applySystemCalls(p *Plan, val string, hasGroups *bool, note func(string)) {
+// syscall names accumulate (normalised to lower-case); a known @-group token is
+// expanded via systemdSyscallGroups (the mirrored systemd table, 5c) into its
+// member names, while an unknown @-group is appended to *unknownGroups so the
+// caller can void the whole directive and name the offending tokens — dropping
+// one silently would flip the effective set in the wrong direction (a denylist
+// would under-block). Like address families, dew supports a single polarity and
+// keeps the last form if a later assignment flips it.
+func applySystemCalls(p *Plan, val string, unknownGroups *[]string, note func(string)) {
 	if val == "" {
-		// Reset discards prior entries, including any @-group seen so far, so a
-		// later explicit-only directive can still be enforced.
+		// Reset discards prior entries, including any unknown-group state, so a
+		// later explicit/known-group directive can still be enforced.
 		p.SystemCalls = nil
 		p.SystemCallsDeny = false
-		*hasGroups = false
+		*unknownGroups = nil
 		return
 	}
 	deny := strings.HasPrefix(val, "~")
-	if len(p.SystemCalls) > 0 && p.SystemCallsDeny != deny {
+	if (len(p.SystemCalls) > 0 || len(*unknownGroups) > 0) && p.SystemCallsDeny != deny {
 		// Polarity flip: dew keeps the last form, so drop prior entries and the
-		// prior @-group state with them.
+		// prior unknown-group state with them. Gate on either accumulator — a prior
+		// form of only unknown @-groups leaves SystemCalls empty but must still flip.
 		note("SystemCallFilter= mixes allow and deny forms (approximated by the last form)")
 		p.SystemCalls = nil
-		*hasGroups = false
+		*unknownGroups = nil
 	}
 	p.SystemCallsDeny = deny
 	for _, s := range strings.Fields(strings.TrimPrefix(val, "~")) {
 		if strings.HasPrefix(s, "@") {
-			*hasGroups = true
+			members, ok := systemdSyscallGroups[strings.ToLower(s)]
+			if !ok {
+				*unknownGroups = append(*unknownGroups, strings.ToLower(s))
+				continue
+			}
+			p.SystemCalls = append(p.SystemCalls, members...)
 			continue
 		}
 		// systemd allows "name:errno" to override the action per syscall; dew

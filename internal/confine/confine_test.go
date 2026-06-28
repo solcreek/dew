@@ -2,6 +2,7 @@ package confine
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -55,13 +56,22 @@ WantedBy=multi-user.target
 		t.Errorf("ReadWritePaths = %v, want [/var/lib/app]", p.ReadWritePaths)
 	}
 
+	// SystemCallFilter=@system-service is now enforced (the known group is expanded
+	// from the systemd table), so it carries syscalls and is NOT surfaced.
+	if p.SystemCallsDeny || !slices.Contains(p.SystemCalls, "read") {
+		t.Errorf("SystemCallFilter=@system-service should be enforced as an allowlist, got %d names", len(p.SystemCalls))
+	}
+
 	// Unenforced directives must be surfaced, not silently dropped. (ProtectSystem
-	// is no longer here — =strict is enforced above.)
+	// is no longer here — =strict is enforced above; SystemCallFilter is now too.)
 	joined := strings.Join(p.Unsupported, "\n")
-	for _, want := range []string{"SystemCallFilter", "MemoryDenyWriteExecute", "DynamicUser=yes approximated"} {
+	for _, want := range []string{"MemoryDenyWriteExecute", "DynamicUser=yes approximated"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("Unsupported missing %q; got:\n%s", want, joined)
 		}
+	}
+	if strings.Contains(joined, "SystemCallFilter") {
+		t.Errorf("SystemCallFilter=@system-service should no longer be unsupported; got:\n%s", joined)
 	}
 }
 
@@ -355,9 +365,10 @@ func TestParse_SystemCallFilter(t *testing.T) {
 		t.Error("SystemCallFilter should make the plan confined")
 	}
 
-	// Denylist (~), with a per-syscall errno suffix stripped to the name.
+	// Denylist (~), with a per-syscall errno suffix stripped to the name. Names
+	// are sorted for a deterministic wire payload.
 	p, _ = Parse(strings.NewReader("[Service]\nSystemCallFilter=~mkdir chmod:EPERM\n"))
-	if !reflect.DeepEqual(p.SystemCalls, []string{"mkdir", "chmod"}) || !p.SystemCallsDeny {
+	if !reflect.DeepEqual(p.SystemCalls, []string{"chmod", "mkdir"}) || !p.SystemCallsDeny {
 		t.Errorf("denylist → %v deny=%v", p.SystemCalls, p.SystemCallsDeny)
 	}
 
@@ -367,21 +378,46 @@ func TestParse_SystemCallFilter(t *testing.T) {
 		t.Errorf("reset → %v, want empty", p.SystemCalls)
 	}
 
-	// @-groups can't be expanded (5c): the whole directive is voided and surfaced
-	// as unenforced, even when mixed with explicit names.
+	// A known @-group is expanded from the systemd table (5c), merged and deduped
+	// with explicit names; it is NOT surfaced as unenforced.
 	p, _ = Parse(strings.NewReader("[Service]\nSystemCallFilter=@system-service read\n"))
-	if len(p.SystemCalls) != 0 || p.SystemCallsDeny {
-		t.Errorf("@-group directive should enforce nothing, got %v", p.SystemCalls)
+	if p.SystemCallsDeny || len(p.SystemCalls) < 50 {
+		t.Errorf("@system-service should expand to many allowed syscalls, got %d", len(p.SystemCalls))
 	}
-	if !strings.Contains(strings.Join(p.Unsupported, "\n"), "@-groups") {
-		t.Error("@-group SystemCallFilter should be surfaced as unenforced")
+	for _, want := range []string{"read", "write", "ioctl"} {
+		if !slices.Contains(p.SystemCalls, want) {
+			t.Errorf("expanded @system-service missing %q", want)
+		}
+	}
+	reads := 0
+	for _, s := range p.SystemCalls {
+		if s == "read" {
+			reads++
+		}
+	}
+	if reads != 1 {
+		t.Errorf("expanded set should be deduped (read appears %d times)", reads)
+	}
+	if strings.Contains(strings.Join(p.Unsupported, "\n"), "system-service") {
+		t.Error("a known @-group should not be surfaced as unenforced")
 	}
 
-	// A reset after an @-group clears the group latch, so a later explicit-only
+	// An UNKNOWN @-group can't be expanded: the whole directive is voided and
+	// surfaced, even when mixed with explicit names (dropping it could under-block).
+	p, _ = Parse(strings.NewReader("[Service]\nSystemCallFilter=@no-such-group read\n"))
+	if len(p.SystemCalls) != 0 || p.SystemCallsDeny {
+		t.Errorf("unknown @-group directive should enforce nothing, got %v", p.SystemCalls)
+	}
+	joinedUnknown := strings.Join(p.Unsupported, "\n")
+	if !strings.Contains(joinedUnknown, "not in dew's systemd") || !strings.Contains(joinedUnknown, "@no-such-group") {
+		t.Errorf("unknown @-group should be surfaced and named; got:\n%s", joinedUnknown)
+	}
+
+	// A reset after a group clears prior entries, so a later explicit-only
 	// directive is still enforced (not voided).
 	p, _ = Parse(strings.NewReader("[Service]\nSystemCallFilter=@system-service\nSystemCallFilter=\nSystemCallFilter=read\n"))
 	if !reflect.DeepEqual(p.SystemCalls, []string{"read"}) {
-		t.Errorf("reset after @-group should re-enable explicit enforcement, got %v", p.SystemCalls)
+		t.Errorf("reset after a group should re-enable explicit enforcement, got %v", p.SystemCalls)
 	}
 
 	// "name:errno" with no name is skipped, not appended as empty.
@@ -397,6 +433,47 @@ func TestParse_SystemCallFilter(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(p.Unsupported, "\n"), "mixes allow and deny") {
 		t.Error("SystemCallFilter polarity flip should be surfaced")
+	}
+
+	// A flip away from a prior form of ONLY unknown @-groups must clear the
+	// unknown-group state (SystemCalls was empty), so the last form is enforced
+	// rather than voided.
+	p, _ = Parse(strings.NewReader("[Service]\nSystemCallFilter=@no-such-group\nSystemCallFilter=~read\n"))
+	if !reflect.DeepEqual(p.SystemCalls, []string{"read"}) || !p.SystemCallsDeny {
+		t.Errorf("flip from unknown-group-only → %v deny=%v", p.SystemCalls, p.SystemCallsDeny)
+	}
+	if strings.Contains(strings.Join(p.Unsupported, "\n"), "@no-such-group") {
+		t.Error("flip should have cleared the prior unknown-group state")
+	}
+}
+
+// TestSystemdSyscallGroups checks the generated table is fully resolved (no
+// leftover @-references) and carries the headline groups with sane members.
+func TestSystemdSyscallGroups(t *testing.T) {
+	if systemdVersion == "" {
+		t.Fatal("systemdVersion not recorded")
+	}
+	for _, g := range []string{"@system-service", "@basic-io", "@default", "@privileged"} {
+		if _, ok := systemdSyscallGroups[g]; !ok {
+			t.Errorf("table missing %q", g)
+		}
+	}
+	for g, names := range systemdSyscallGroups {
+		if len(names) == 0 {
+			t.Errorf("%q has no members", g)
+		}
+		for _, n := range names {
+			if strings.HasPrefix(n, "@") {
+				t.Errorf("%q has unresolved reference %q", g, n)
+			}
+		}
+	}
+	if !slices.Contains(systemdSyscallGroups["@system-service"], "read") {
+		t.Error("@system-service should include read")
+	}
+	// @privileged is the dangerous set — it must NOT be folded into @system-service.
+	if slices.Contains(systemdSyscallGroups["@system-service"], "reboot") {
+		t.Error("@system-service should not include reboot")
 	}
 }
 

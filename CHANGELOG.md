@@ -19,11 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   systemd. For cross-arch compatibility, names not in the guest architecture's
   syscall table are dropped rather than failing closed — note this also drops
   misspelled/unknown names, so a mistyped entry in a denylist won't be blocked.
-  `@`-groups (e.g. `@system-service`) are not expanded yet, so a unit using them
-  is surfaced as unenforced rather than partially applied. Composes with
+  `@`-groups (e.g. `@system-service`) are expanded host-side from a table
+  mirrored from a pinned systemd release (`v257`; regenerate with
+  `go generate ./internal/confine/`); an unknown `@`-group is surfaced as
+  unenforced rather than partially applied. Composes with
   `RestrictAddressFamilies=` and the uid/caps drop. Verified by in-VM unit tests
   and boot tests (a denied syscall returns EPERM while the Go runtime keeps
-  running). x86_64-under-Rosetta targets are not filtered (native-arch only).
+  running; the `@system-service` allowlist of ~390 syscalls runs a Go binary to
+  completion). x86_64-under-Rosetta targets are not filtered (native-arch only).
 
 - **`dew run --confine` enforces `RestrictAddressFamilies=`.** The guest agent
   installs a classic-BPF seccomp filter on `socket(2)`/`socketpair(2)` that
