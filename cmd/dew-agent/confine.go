@@ -103,9 +103,10 @@ func applyReadOnlyFS(c *protocol.Confinement) error {
 	}
 	// Materialize missing writable-exception dirs while the tree is still
 	// writable (systemd likewise creates ReadWritePaths before protecting the
-	// fs). Existing entries — including file exceptions like /etc/resolv.conf,
-	// which systemd allows — are left as-is: MkdirAll on an existing file would
-	// fail, and bindReadWrite handles files and dirs alike.
+	// fs). Existing entries are left as-is: MkdirAll on an existing file would
+	// fail, and bindReadWrite handles files and dirs alike. Note dew binds a
+	// file path (e.g. /etc/resolv.conf) directly — a dew refinement; systemd
+	// instead handles non-directory paths via their closest ancestor directory.
 	for _, p := range c.ReadWritePaths {
 		if _, err := os.Stat(p); err == nil {
 			continue
@@ -142,8 +143,9 @@ func applyReadOnlyFS(c *protocol.Confinement) error {
 
 // bindReadWrite restores write access to p over the read-only root by binding
 // it onto itself and clearing MS_RDONLY. MS_REC only for directories — a
-// recursive bind of a file exception (systemd allows e.g.
-// ReadWritePaths=/etc/resolv.conf) is invalid.
+// recursive bind of a file exception (e.g. ReadWritePaths=/etc/resolv.conf) is
+// invalid. dew binds a file path directly; systemd instead handles
+// non-directory paths via their closest ancestor directory.
 func bindReadWrite(p string) error {
 	flags := uintptr(unix.MS_BIND)
 	if fi, err := os.Stat(p); err == nil && fi.IsDir() {

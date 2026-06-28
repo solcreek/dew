@@ -137,7 +137,8 @@ Shim implementation as shipped (inside the new mount ns):
 1. `mount(MS_REC|MS_PRIVATE)` on `/` so changes don't propagate to the host
    view / other execs.
 2. Materialize any missing `ReadWritePaths` (while still writable); existing
-   entries — including file exceptions like `/etc/resolv.conf` — are left as-is.
+   entries are left as-is. A file exception like `/etc/resolv.conf` is bound
+   directly (a dew refinement — see step 5).
 3. `mount("/", "/", "", MS_BIND|MS_REC, "")` — recursively bind `/` onto itself.
    This is required so the per-mount remount in step 4 has a bind mount to
    operate on (and submounts are preserved); it also keeps the read-only change
@@ -153,7 +154,10 @@ Shim implementation as shipped (inside the new mount ns):
 5. For each `ReadWritePaths` entry on the root fs: bind-mount it onto itself
    (`MS_BIND`, plus `MS_REC` only for directories — a recursive bind of a file
    is invalid) then `MS_BIND|MS_REMOUNT` without `MS_RDONLY` to restore write
-   access (works for both directory and file exceptions).
+   access. This works for both directory and file paths: dew binds a file path
+   directly, which is a **dew-specific refinement** — systemd instead resolves a
+   non-directory `ReadWritePaths=` entry via its closest existing ancestor
+   directory rather than binding the file itself.
 
 Acceptance (locally testable on `standard`):
 
