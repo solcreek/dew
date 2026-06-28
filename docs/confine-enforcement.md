@@ -138,15 +138,22 @@ Shim implementation as shipped (inside the new mount ns):
    view / other execs.
 2. Materialize any missing `ReadWritePaths` (while still writable); existing
    entries — including file exceptions like `/etc/resolv.conf` — are left as-is.
-3. `mount("", "/", "", MS_BIND|MS_REMOUNT|MS_RDONLY, "")` to flip the root mount
-   read-only **non-recursively** (no `MS_REC`). This is deliberate: submounts
-   like `/proc`, `/sys`, `/dev`, `/tmp`, `/run`, the cgroup mount and virtiofs
+3. `mount("/", "/", "", MS_BIND|MS_REC, "")` — recursively bind `/` onto itself.
+   This is required so the per-mount remount in step 4 has a bind mount to
+   operate on (and submounts are preserved); it also keeps the read-only change
+   **per-mount**. A plain `MS_REMOUNT|MS_RDONLY` (no `MS_BIND`) is wrong here —
+   superblock flags aren't namespaced, so it would flip the root filesystem
+   read-only for the host/agent too.
+4. `mount("", "/", "", MS_BIND|MS_REMOUNT|MS_RDONLY, "")` to flip the root mount
+   read-only **non-recursively** (no `MS_REC`). Deliberate: submounts like
+   `/proc`, `/sys`, `/dev`, `/tmp`, `/run`, the cgroup mount and virtiofs
    `--share` dirs are separate mounts and keep their own (writable) flags —
    exactly as systemd leaves API filesystems writable under
    `ProtectSystem=strict`. No re-binding of those is needed.
-4. For each `ReadWritePaths` entry on the root fs: bind-mount it onto itself
-   (`MS_BIND|MS_REC`) then `MS_BIND|MS_REMOUNT` without `MS_RDONLY` to restore
-   write access (works for both directory and file exceptions).
+5. For each `ReadWritePaths` entry on the root fs: bind-mount it onto itself
+   (`MS_BIND`, plus `MS_REC` only for directories — a recursive bind of a file
+   is invalid) then `MS_BIND|MS_REMOUNT` without `MS_RDONLY` to restore write
+   access (works for both directory and file exceptions).
 
 Acceptance (locally testable on `standard`):
 

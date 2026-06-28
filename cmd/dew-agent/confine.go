@@ -115,7 +115,16 @@ func applyReadOnlyFS(c *protocol.Confinement) error {
 			return fmt.Errorf("create read-write path %q: %w", p, err)
 		}
 	}
-	// Flip the root mount read-only. Non-recursive on purpose: submounts like
+	// Recursively bind / onto itself first. A per-mount read-only remount
+	// (MS_BIND|MS_REMOUNT) needs a bind mount to operate on, and this is the
+	// proven container-runtime idiom; it also keeps the change per-mount rather
+	// than touching the shared superblock (a plain MS_REMOUNT|MS_RDONLY would
+	// flip the root filesystem read-only for the host/agent too, since
+	// superblock flags aren't namespaced). MS_REC so submounts are preserved.
+	if err := unix.Mount("/", "/", "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
+		return fmt.Errorf("bind-mount / : %w", err)
+	}
+	// Flip only the root mount read-only — non-recursive, so submounts like
 	// /proc, /sys, /dev, /tmp, /run, the cgroup mount and virtiofs --share dirs
 	// keep their own (writable) flags, exactly as systemd leaves API
 	// filesystems writable under ProtectSystem=strict.
