@@ -48,9 +48,10 @@ func main() {
 	delete(raw, "@known") // depends on a generated syscall-list.h; not resolvable here
 
 	resolved := map[string][]string{}
+	missing := map[string]bool{}
 	for g := range raw {
 		set := map[string]bool{}
-		for _, n := range resolve(g, raw, map[string]bool{}) {
+		for _, n := range resolve(g, raw, map[string]bool{}, missing) {
 			set[n] = true
 		}
 		names := make([]string, 0, len(set))
@@ -59,6 +60,18 @@ func main() {
 		}
 		sort.Strings(names)
 		resolved[g] = names
+	}
+	// Fail loudly rather than emit a silently incomplete table: a referenced
+	// @-group absent from the source means the parser missed it or systemd added
+	// a new group. (@known is intentionally skipped, never recursed into.)
+	if len(missing) > 0 {
+		refs := make([]string, 0, len(missing))
+		for r := range missing {
+			refs = append(refs, r)
+		}
+		sort.Strings(refs)
+		fmt.Fprintf(os.Stderr, "unresolved @-group references: %s\n", strings.Join(refs, ", "))
+		os.Exit(1)
 	}
 
 	if err := emit(resolved); err != nil {
@@ -124,7 +137,7 @@ func parse(src string) map[string][]string {
 
 // resolve expands @group references transitively (cycle-safe), returning only
 // plain syscall names.
-func resolve(g string, raw map[string][]string, seen map[string]bool) []string {
+func resolve(g string, raw map[string][]string, seen, missing map[string]bool) []string {
 	if seen[g] {
 		return nil
 	}
@@ -132,9 +145,14 @@ func resolve(g string, raw map[string][]string, seen map[string]bool) []string {
 	var out []string
 	for _, tok := range raw[g] {
 		if strings.HasPrefix(tok, "@") {
-			if tok != "@known" {
-				out = append(out, resolve(tok, raw, seen)...)
+			if tok == "@known" {
+				continue
 			}
+			if _, ok := raw[tok]; !ok {
+				missing[tok] = true
+				continue
+			}
+			out = append(out, resolve(tok, raw, seen, missing)...)
 			continue
 		}
 		out = append(out, tok)
