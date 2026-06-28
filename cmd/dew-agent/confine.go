@@ -78,6 +78,8 @@ func runConfineShim(target []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve %q: %w", target[0], err)
 	}
+	// Don't leak the shim's internal control channel into the confined process.
+	os.Unsetenv("DEW_CONFINE_SPEC")
 	return syscall.Exec(path, target, os.Environ())
 }
 
@@ -85,6 +87,14 @@ func runConfineShim(target []string) error {
 // unshared) mount namespace, keeping API filesystems and the declared
 // ReadWritePaths writable. Mirrors systemd ProtectSystem=strict.
 func applyReadOnlyFS(c *protocol.Confinement) error {
+	// Reject relative paths: Stat/MkdirAll/mount on a relative entry would act
+	// relative to the cwd (req.Dir), mounting outside the intended location.
+	// systemd ReadWritePaths are always absolute.
+	for _, p := range c.ReadWritePaths {
+		if !filepath.IsAbs(p) {
+			return fmt.Errorf("read-write path %q is not absolute", p)
+		}
+	}
 	// Make every mount in this namespace private so our remounts don't
 	// propagate back to the agent's / host's view.
 	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
