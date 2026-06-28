@@ -65,9 +65,9 @@ func TestKeptCaps(t *testing.T) {
 }
 
 func TestResolveDropID(t *testing.T) {
-	// Numeric User= → uid/gid, drop set. (Numeric avoids an /etc/passwd lookup.)
+	// Numeric User= → uid+gid both set. (Numeric avoids an /etc/passwd lookup.)
 	id, err := resolveDropID(&protocol.Confinement{User: "1000"}, "")
-	if err != nil || !id.drop || id.uid != 1000 || id.gid != 1000 {
+	if err != nil || !id.setUID || !id.setGID || id.uid != 1000 || id.gid != 1000 {
 		t.Errorf("User=1000 → %+v,%v", id, err)
 	}
 
@@ -77,15 +77,22 @@ func TestResolveDropID(t *testing.T) {
 		t.Errorf("Group override → %+v", id)
 	}
 
+	// Group= alone → drop the gid only, leave the uid (root). Regression guard
+	// for a Group-only unit being silently ignored.
+	id, _ = resolveDropID(&protocol.Confinement{Group: "2000"}, "")
+	if id.setUID || !id.setGID || id.gid != 2000 {
+		t.Errorf("Group-only → %+v, want setGID gid=2000, setUID=false", id)
+	}
+
 	// DynamicUser → the nobody fallback.
 	id, _ = resolveDropID(&protocol.Confinement{DynamicUser: true}, "")
-	if !id.drop || id.uid != 65534 {
+	if !id.setUID || id.uid != 65534 {
 		t.Errorf("DynamicUser → %+v, want uid 65534", id)
 	}
 
 	// No unit identity but DEW_EXEC_USER set → drop to it.
 	id, _ = resolveDropID(&protocol.Confinement{}, "1001")
-	if !id.drop || id.uid != 1001 {
+	if !id.setUID || id.uid != 1001 {
 		t.Errorf("DEW_EXEC_USER fallback → %+v, want uid 1001", id)
 	}
 
@@ -97,7 +104,7 @@ func TestResolveDropID(t *testing.T) {
 
 	// Nothing → no drop (stay root).
 	id, _ = resolveDropID(&protocol.Confinement{}, "")
-	if id.drop {
+	if id.setUID || id.setGID {
 		t.Errorf("no identity → should not drop, got %+v", id)
 	}
 }

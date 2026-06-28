@@ -181,17 +181,22 @@ func keptCaps(c *protocol.Confinement) ([]int, error) {
 // this is defence-in-depth; it must match confine.DynamicUserUID (nobody).
 const dynamicUserUID = "65534"
 
-// idSpec is the resolved uid/gid the target should run as.
+// idSpec is the resolved identity to drop to. uid and gid are independent: a
+// Group=-only unit drops the gid (and clears supplementary groups) while leaving
+// the uid as root, mirroring the old setpriv `--regid --clear-groups` with no
+// `--reuid`.
 type idSpec struct {
-	uid, gid int
-	drop     bool // false → keep the current (root) identity
+	uid, gid       int
+	setUID, setGID bool
 }
 
-// resolveDropID decides the final identity: the unit's User=/Group= wins, then
-// DynamicUser (a fixed unprivileged uid), then DEW_EXEC_USER (unprivileged-exec
-// mode). When none apply, drop is false and the target keeps root. Pure except
-// for /etc/passwd lookups of names.
+// resolveDropID decides the final identity. A user (the unit's User=, else
+// DynamicUser's fixed uid, else DEW_EXEC_USER) drops both uid and gid (gid to
+// the user's primary group). Group= drops/overrides only the gid. When neither
+// applies, nothing is set and the target keeps the current (root) identity.
+// Pure except for /etc/passwd lookups of names.
 func resolveDropID(c *protocol.Confinement, execUser string) (idSpec, error) {
+	var id idSpec
 	name := c.User
 	if name == "" && c.DynamicUser {
 		name = dynamicUserUID
@@ -199,22 +204,22 @@ func resolveDropID(c *protocol.Confinement, execUser string) (idSpec, error) {
 	if name == "" {
 		name = execUser
 	}
-	if name == "" {
-		return idSpec{}, nil
+	if name != "" {
+		uid, primaryGID, err := lookupUser(name)
+		if err != nil {
+			return idSpec{}, err
+		}
+		id.uid, id.setUID = uid, true
+		id.gid, id.setGID = primaryGID, true
 	}
-	uid, primaryGID, err := lookupUser(name)
-	if err != nil {
-		return idSpec{}, err
-	}
-	gid := primaryGID
 	if c.Group != "" {
 		g, err := lookupGroup(c.Group)
 		if err != nil {
 			return idSpec{}, err
 		}
-		gid = g
+		id.gid, id.setGID = g, true
 	}
-	return idSpec{uid: uid, gid: gid, drop: true}, nil
+	return id, nil
 }
 
 // applyPrivilegeDrop performs the native uid/gid/capability/no_new_privs drop in
@@ -248,7 +253,7 @@ func applyPrivilegeDrop(c *protocol.Confinement, execUser string) error {
 		return err
 	}
 	// Nothing to enforce → leave the process (and its thread) untouched.
-	if !id.drop && len(drop) == 0 && !c.NoNewPrivs {
+	if !id.setUID && !id.setGID && len(drop) == 0 && !c.NoNewPrivs {
 		return nil
 	}
 
@@ -264,7 +269,7 @@ func applyPrivilegeDrop(c *protocol.Confinement, execUser string) error {
 
 	// Keep specific caps across a drop to a non-root uid: needs the ambient set.
 	// (For a root target, the bounding set already preserves them across execve.)
-	wantAmbient := id.drop && id.uid != 0 && len(keep) > 0
+	wantAmbient := id.setUID && id.uid != 0 && len(keep) > 0
 	if wantAmbient {
 		// Add the kept caps to the inheritable set while we still hold full
 		// permitted/effective (so CAP_SETUID survives for the drop below).
@@ -277,13 +282,20 @@ func applyPrivilegeDrop(c *protocol.Confinement, execUser string) error {
 		}
 	}
 
-	if id.drop {
+	// Clear supplementary groups whenever we touch the identity (matches the old
+	// setpriv --clear-groups), then gid before uid so each step is still
+	// permitted while we hold root.
+	if id.setGID || id.setUID {
 		if err := unix.Setgroups([]int{}); err != nil {
 			return fmt.Errorf("setgroups: %w", err)
 		}
+	}
+	if id.setGID {
 		if err := unix.Setresgid(id.gid, id.gid, id.gid); err != nil {
 			return fmt.Errorf("setresgid: %w", err)
 		}
+	}
+	if id.setUID {
 		if err := unix.Setresuid(id.uid, id.uid, id.uid); err != nil {
 			return fmt.Errorf("setresuid: %w", err)
 		}
