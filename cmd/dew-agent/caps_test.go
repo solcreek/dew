@@ -46,9 +46,29 @@ func TestCapsToDrop(t *testing.T) {
 		t.Errorf("DropCaps = %v, want [21 13]", got)
 	}
 
+	// DropCaps above the kernel's last cap are skipped (no PR_CAPBSET_DROP
+	// EINVAL): cap_checkpoint_restore (40) on a kernel whose lastCap is 39.
+	got, _ = capsToDrop(&protocol.Confinement{DropCaps: []string{"cap_sys_admin", "cap_checkpoint_restore"}}, 39)
+	if !reflect.DeepEqual(got, []int{21}) {
+		t.Errorf("DropCaps above lastCap = %v, want [21] (40 skipped)", got)
+	}
+
 	// Unknown cap name fails closed.
 	if _, err := capsToDrop(&protocol.Confinement{DropAllCaps: true, KeepCaps: []string{"cap_bogus"}}, 40); err == nil {
 		t.Error("unknown KeepCaps entry should error")
+	}
+}
+
+func TestLookupRejectsNegative(t *testing.T) {
+	if _, _, err := lookupUser("-1"); err == nil {
+		t.Error("negative uid should be rejected (setresuid(-1) is a no-op)")
+	}
+	if _, err := lookupGroup("-1"); err == nil {
+		t.Error("negative gid should be rejected")
+	}
+	// A valid numeric uid still resolves.
+	if uid, gid, err := lookupUser("0"); err != nil || uid != 0 || gid != 0 {
+		t.Errorf("uid 0 → %d,%d,%v", uid, gid, err)
 	}
 }
 

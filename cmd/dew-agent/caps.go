@@ -18,6 +18,11 @@ import (
 // primary gid. A numeric uid that isn't in /etc/passwd falls back to gid==uid.
 func lookupUser(spec string) (uid, gid int, err error) {
 	if n, e := strconv.Atoi(spec); e == nil {
+		if n < 0 {
+			// setresuid(-1) means "leave unchanged" — a negative uid would
+			// silently skip the drop, so reject it rather than under-confine.
+			return 0, 0, fmt.Errorf("negative uid %d", n)
+		}
 		uid = n
 		gid = n
 		if u, e := user.LookupId(spec); e == nil {
@@ -45,6 +50,9 @@ func lookupUser(spec string) (uid, gid int, err error) {
 // lookupGroup resolves a Group= spec (numeric gid or group name) to its gid.
 func lookupGroup(spec string) (int, error) {
 	if n, e := strconv.Atoi(spec); e == nil {
+		if n < 0 {
+			return 0, fmt.Errorf("negative gid %d", n)
+		}
 		return n, nil
 	}
 	g, e := user.LookupGroup(spec)
@@ -153,6 +161,11 @@ func capsToDrop(c *protocol.Confinement, lastCap int) ([]int, error) {
 		id, err := resolveCap(n)
 		if err != nil {
 			return nil, err
+		}
+		// A cap the running kernel doesn't have isn't in the bounding set, so
+		// dropping it is a no-op; skip it to avoid PR_CAPBSET_DROP EINVAL.
+		if id > lastCap {
+			continue
 		}
 		drop = append(drop, id)
 	}
