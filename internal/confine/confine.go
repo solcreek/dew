@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -232,6 +233,20 @@ func Parse(r io.Reader) (Plan, error) {
 	}
 	if p.DynamicUser && p.UID == "" {
 		note("DynamicUser=yes approximated as uid " + dynamicUserUID + " (nobody)")
+	}
+	// Drop non-absolute ReadWritePaths here: the agent shim requires absolute
+	// paths (a relative entry would mount relative to the cwd) and rejects them
+	// at runtime. Surface them as unenforced now for an earlier, clearer error.
+	if len(p.ReadWritePaths) > 0 {
+		kept := p.ReadWritePaths[:0]
+		for _, rw := range p.ReadWritePaths {
+			if filepath.IsAbs(rw) {
+				kept = append(kept, rw)
+			} else {
+				note("ReadWritePaths=" + rw + " (not absolute; ignored)")
+			}
+		}
+		p.ReadWritePaths = kept
 	}
 	// ReadWritePaths only mean something atop a read-only rootfs. Without
 	// ProtectSystem=strict the root stays writable, so they'd be a silent no-op

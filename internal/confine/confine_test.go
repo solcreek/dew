@@ -259,6 +259,22 @@ func TestParse_ReadWritePathsReset(t *testing.T) {
 	}
 }
 
+// Non-absolute ReadWritePaths are dropped at parse time (the agent shim needs
+// absolute paths) and surfaced as unenforced, for an earlier, clearer error.
+func TestParse_ReadWritePathsRejectsRelative(t *testing.T) {
+	p, err := Parse(strings.NewReader(
+		"[Service]\nProtectSystem=strict\nReadWritePaths=/var/lib/app rel/path\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(p.ReadWritePaths, []string{"/var/lib/app"}) {
+		t.Errorf("ReadWritePaths = %v, want [/var/lib/app] (relative dropped)", p.ReadWritePaths)
+	}
+	if !strings.Contains(strings.Join(p.Unsupported, "\n"), "rel/path") {
+		t.Error("a relative ReadWritePaths entry should be surfaced as unenforced")
+	}
+}
+
 // ProtectSystem=true/full protect only a subset; we don't approximate them with
 // strict, so they stay surfaced as unenforced and don't set ReadOnlyRoot.
 func TestParse_ProtectSystemNonStrict(t *testing.T) {
