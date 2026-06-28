@@ -136,9 +136,14 @@ Shim implementation as shipped (inside the new mount ns):
 
 1. `mount(MS_REC|MS_PRIVATE)` on `/` so changes don't propagate to the host
    view / other execs.
-2. Materialize any missing `ReadWritePaths` (while still writable); existing
-   entries are left as-is. A file exception like `/etc/resolv.conf` is bound
-   directly (a dew refinement — see step 5).
+2. Materialize any missing `ReadWritePaths` (while still writable). A **missing**
+   entry is always created as a *directory* (the state-directory case, e.g.
+   `/var/lib/app`): file-vs-directory intent can't be inferred from a
+   non-existent path. An **existing** entry is left as-is and bound by type in
+   step 5 — so a writable *file* exception (e.g. `/etc/hostname`) must already
+   exist on the rootfs to be bound as a file. Verified in-VM: existing file →
+   writable; missing dir → created + writable; a missing *file* path becomes a
+   writable directory (name an existing file, or its parent directory, instead).
 3. `mount("/", "/", "", MS_BIND|MS_REC, "")` — recursively bind `/` onto itself.
    This is required so the per-mount remount in step 4 has a bind mount to
    operate on (and submounts are preserved); it also keeps the read-only change
@@ -154,10 +159,10 @@ Shim implementation as shipped (inside the new mount ns):
 5. For each `ReadWritePaths` entry on the root fs: bind-mount it onto itself
    (`MS_BIND`, plus `MS_REC` only for directories — a recursive bind of a file
    is invalid) then `MS_BIND|MS_REMOUNT` without `MS_RDONLY` to restore write
-   access. This works for both directory and file paths: dew binds a file path
-   directly, which is a **dew-specific refinement** — systemd instead resolves a
-   non-directory `ReadWritePaths=` entry via its closest existing ancestor
-   directory rather than binding the file itself.
+   access. Binding an existing file path directly is a **dew-specific
+   refinement** — systemd instead resolves a non-directory `ReadWritePaths=`
+   entry via its closest existing ancestor directory. The file must exist (see
+   step 2); a missing entry was materialized as a directory above.
 
 Acceptance (locally testable on `standard`):
 

@@ -120,6 +120,8 @@ type Confinement struct {
 	KeepCaps    []string `json:"keep_caps,omitempty"`     // libcap names (lowercase) kept when DropAllCaps
 	DropCaps    []string `json:"drop_caps,omitempty"`     // libcap names dropped from the inherited set otherwise
 	// Filesystem (ProtectSystem=strict + ReadWritePaths=) — applied by the agent.
+	// A missing ReadWritePaths entry is created as a directory; a writable file
+	// exception must already exist on the rootfs to be bound as a file.
 	ReadOnlyRoot   bool     `json:"read_only_root,omitempty"`
 	ReadWritePaths []string `json:"read_write_paths,omitempty"`
 }

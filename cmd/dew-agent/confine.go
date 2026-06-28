@@ -101,12 +101,15 @@ func applyReadOnlyFS(c *protocol.Confinement) error {
 	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
 		return fmt.Errorf("make / rprivate: %w", err)
 	}
-	// Materialize missing writable-exception dirs while the tree is still
-	// writable (systemd likewise creates ReadWritePaths before protecting the
-	// fs). Existing entries are left as-is: MkdirAll on an existing file would
-	// fail, and bindReadWrite handles files and dirs alike. Note dew binds a
-	// file path (e.g. /etc/resolv.conf) directly — a dew refinement; systemd
-	// instead handles non-directory paths via their closest ancestor directory.
+	// Materialize missing writable-exception paths while the tree is still
+	// writable (the state-directory case, e.g. /var/lib/app). A MISSING entry is
+	// always created as a directory: file-vs-directory intent can't be inferred
+	// from a non-existent path (both /var/lib/app and /etc/resolv.conf are given
+	// without a trailing slash), and the directory default is what state dirs
+	// need. Consequence: a FILE exception must already exist to be bound as a
+	// file (dew binds an existing file path directly — a dew refinement over
+	// systemd, which routes a non-directory entry to its ancestor directory). An
+	// existing entry (file or dir) is left as-is; bindReadWrite binds it by type.
 	for _, p := range c.ReadWritePaths {
 		if _, err := os.Stat(p); err == nil {
 			continue
@@ -143,9 +146,10 @@ func applyReadOnlyFS(c *protocol.Confinement) error {
 
 // bindReadWrite restores write access to p over the read-only root by binding
 // it onto itself and clearing MS_RDONLY. MS_REC only for directories — a
-// recursive bind of a file exception (e.g. ReadWritePaths=/etc/resolv.conf) is
-// invalid. dew binds a file path directly; systemd instead handles
-// non-directory paths via their closest ancestor directory.
+// recursive bind of a file is invalid. Binding an existing file path directly
+// (e.g. ReadWritePaths=/etc/hostname) is a dew refinement; systemd instead
+// routes a non-directory entry to its ancestor directory. A missing entry was
+// created as a directory by applyReadOnlyFS, so it binds as a directory here.
 func bindReadWrite(p string) error {
 	flags := uintptr(unix.MS_BIND)
 	if fi, err := os.Stat(p); err == nil && fi.IsDir() {
