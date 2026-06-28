@@ -46,17 +46,22 @@ profile (even `minimal`, which has no util-linux).
 
 Extend `ExecRequest` (`internal/vsock/protocol.go`) with one optional field:
 
+The shipped wire type (`internal/vsock/protocol.go`) — uid/group are strings
+(uid-or-name, resolved guest-side) and seccomp is not represented yet:
+
 ```go
 type Confinement struct {
-    UID, GID       uint32   // 0 = unchanged (DynamicUser resolves host-side to 65534 today)
-    SetUser        bool     // distinguish "drop to uid 0" from "don't touch"
-    NoNewPrivs     bool     // PR_SET_NO_NEW_PRIVS
-    DropAllCaps    bool     // empty bounding set → drop everything except KeepCaps
-    KeepCaps       []string // caps to retain when DropAllCaps
-    DropCaps       []string // caps to remove from the inherited set otherwise
+    // Privilege drop — carried but enforced by the setpriv prefix for now.
+    User, Group string   // uid-or-name / gid-or-name; "" = unchanged
+    DynamicUser bool     // no User= but DynamicUser=yes → fixed unprivileged uid
+    NoNewPrivs  bool     // PR_SET_NO_NEW_PRIVS (planned native step)
+    DropAllCaps bool     // empty/positive bounding set → drop all but KeepCaps
+    KeepCaps    []string // caps retained when DropAllCaps
+    DropCaps    []string // caps removed from the inherited set otherwise
+    // Filesystem — applied by the agent today.
     ReadOnlyRoot   bool     // ProtectSystem=strict → remount / read-only
-    ReadWritePaths []string // bind-rw exceptions (ReadWritePaths=, state dir)
-    Seccomp        *SeccompPolicy // nil = no syscall filter (Phase 3)
+    ReadWritePaths []string // bind-rw exceptions (ReadWritePaths=)
+    // Seccomp: not a field yet — design-only (§5).
 }
 
 type ExecRequest struct {
@@ -65,13 +70,13 @@ type ExecRequest struct {
 }
 ```
 
-The host builds `*Confinement` straight from `confine.Plan` (the parser already
-produces every field except the seccomp policy). `confine.Plan` should expose a
-mapping method (`Plan.Confinement() vsock.Confinement`) so the host stops
-hand-wrapping `setpriv` argv and instead sends the spec — but note the
-import direction: `internal/vsock` must not import `internal/confine`. Put the
-wire type in `internal/vsock` and the `Plan → Confinement` mapping in the host
-(`cmd/dew`) or a small shared package, not in `confine`.
+The host builds `*Confinement` from `confine.Plan`. As shipped, only the
+read-only-fs fields are populated and applied by the agent; uid/caps still ride
+the host-built `setpriv` prefix, so `confinementFromPlan` (in `cmd/dew`) returns
+nil unless `ProtectSystem=strict`. The native uid/caps drop (which fills the
+priv fields and removes the setpriv prefix) is the follow-up in §4. Import
+direction: `internal/vsock` must not import `internal/confine` — the wire type
+lives in `internal/vsock` and the `Plan → Confinement` mapping in `cmd/dew`.
 
 Backward-compat: `Confine` is `omitempty`; an old agent ignores it (so a
 newer host must not *rely* on it silently — gate on the agent handshake/version
@@ -122,18 +127,21 @@ systemd semantics we approximate:
 - `ReadWritePaths=` → those paths stay writable.
 - (`ProtectHome=`, `PrivateTmp=` are follow-ups; start with strict + RW paths.)
 
-Shim implementation (inside the new mount ns):
+Shim implementation as shipped (inside the new mount ns):
 
 1. `mount(MS_REC|MS_PRIVATE)` on `/` so changes don't propagate to the host
    view / other execs.
-2. `mount("", "/", "", MS_BIND|MS_REC, "")` then
-   `mount("", "/", "", MS_BIND|MS_REMOUNT|MS_RDONLY|MS_REC, "")` to flip the
-   tree read-only.
-3. For each `ReadWritePaths` entry: bind-mount it onto itself rw
-   (`MS_BIND` then `MS_REMOUNT` without `MS_RDONLY`).
-4. Leave `/proc`, `/sys`, `/dev`, `/tmp`, `/run`, the cgroup mount, and the
-   shared `--share` dirs writable per their existing mount flags (re-bind rw
-   if the read-only remount caught them).
+2. Materialize any missing `ReadWritePaths` (while still writable); existing
+   entries — including file exceptions like `/etc/resolv.conf` — are left as-is.
+3. `mount("", "/", "", MS_BIND|MS_REMOUNT|MS_RDONLY, "")` to flip the root mount
+   read-only **non-recursively** (no `MS_REC`). This is deliberate: submounts
+   like `/proc`, `/sys`, `/dev`, `/tmp`, `/run`, the cgroup mount and virtiofs
+   `--share` dirs are separate mounts and keep their own (writable) flags —
+   exactly as systemd leaves API filesystems writable under
+   `ProtectSystem=strict`. No re-binding of those is needed.
+4. For each `ReadWritePaths` entry on the root fs: bind-mount it onto itself
+   (`MS_BIND|MS_REC`) then `MS_BIND|MS_REMOUNT` without `MS_RDONLY` to restore
+   write access (works for both directory and file exceptions).
 
 Acceptance (locally testable on `standard`):
 
