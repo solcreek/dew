@@ -45,6 +45,23 @@ func isAuthorized(givenToken string) bool {
 var execUser string
 
 func main() {
+	// Pin the agent's own PATH so exec.LookPath resolves guest binaries
+	// deterministically. Go resolves a command's argv[0] against THIS
+	// process's PATH when exec.Command is constructed — setting cmd.Env
+	// afterward does NOT re-resolve it — so the agent's PATH order, not
+	// ExecEnv's child PATH, decides which binary wins. `--confine` shells out
+	// to a bare `setpriv`, and the BusyBox applet at /bin/setpriv (which lacks
+	// --bounding-set) shadows the util-linux /usr/bin/setpriv baked into the
+	// standard profile whenever the inherited PATH lists /bin before /usr/bin
+	// — making the capability drop fail to launch. DefaultPath orders /usr/bin
+	// before /bin, so the util-linux setpriv is selected.
+	if err := os.Setenv("PATH", guestenv.DefaultPath); err != nil {
+		// Unreachable for a constant valid key (Setenv only errors on an
+		// empty key or one containing '='/NUL), but don't silently ignore it:
+		// a stale PATH would reintroduce the setpriv shadowing.
+		log.Printf("dew-agent: pin PATH failed: %v", err)
+	}
+
 	// Token is now injected via vsock handshake, not env/cmdline
 	execUser = os.Getenv("DEW_EXEC_USER")
 

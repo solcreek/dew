@@ -15,6 +15,32 @@ func pathOf(env []string) string {
 	return val
 }
 
+// The agent pins its own PATH to DefaultPath so exec.LookPath resolves the
+// util-linux setpriv (/usr/bin) baked into the standard profile rather than
+// the BusyBox applet (/bin), which lacks --bounding-set and breaks --confine's
+// capability drop. That selection holds only if /usr/bin precedes /bin (and
+// /usr/sbin precedes /sbin) in DefaultPath — guard the ordering.
+func TestDefaultPath_UtilLinuxBeforeBusyBox(t *testing.T) {
+	dirs := strings.Split(DefaultPath, ":")
+	idx := func(d string) int {
+		for i, x := range dirs {
+			if x == d {
+				return i
+			}
+		}
+		return -1
+	}
+	for _, pair := range [][2]string{{"/usr/bin", "/bin"}, {"/usr/sbin", "/sbin"}} {
+		usr, busybox := idx(pair[0]), idx(pair[1])
+		if usr < 0 || busybox < 0 {
+			t.Fatalf("DefaultPath %q missing %s or %s", DefaultPath, pair[0], pair[1])
+		}
+		if usr > busybox {
+			t.Errorf("DefaultPath orders %s (%d) after %s (%d); BusyBox setpriv would shadow util-linux", pair[0], usr, pair[1], busybox)
+		}
+	}
+}
+
 func TestExecEnv_InjectsDefaultWhenMissing(t *testing.T) {
 	env := ExecEnv([]string{"HOME=/root", "TERM=xterm"}, nil)
 	if got := pathOf(env); got != DefaultPath {
