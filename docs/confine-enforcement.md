@@ -242,10 +242,13 @@ returning `EPERM` (matching systemd's `SCMP_ACT_ERRNO(EPERM)`).
 `github.com/elastic/go-seccomp-bpf` (pure Go, CGO-free; the syscall name→number
 table is per-arch). Denylist (`~`) → default-allow, listed → `EPERM`; allowlist
 → default-`EPERM`, listed plus a minimal implicit set (`execve`/`execveat`/
-`exit`/`exit_group`/`rt_sigreturn`) → allow. Names not present on the agent's
-arch are dropped (unreachable, so safe). `@`-groups can't be faithfully
-approximated without 5c's table, so a unit using them enforces nothing for
-`SystemCallFilter=` and the directive is surfaced as unenforced.
+`exit`/`exit_group`/`rt_sigreturn`) → allow. Names not in the agent's arch table
+are dropped so a unit written for another arch still loads instead of failing
+closed — but the same drop also silently discards misspelled/unknown names, so a
+mistyped entry in a denylist won't be blocked (host-side name validation is a
+future improvement). `@`-groups can't be faithfully approximated without 5c's
+table, so a unit using them enforces nothing for `SystemCallFilter=` and the
+directive is surfaced as unenforced.
 
 Both filters are installed on the locked exec thread after the uid/caps drop,
 `no_new_privs` (a seccomp spec implies no_new_privs, mirroring systemd), and

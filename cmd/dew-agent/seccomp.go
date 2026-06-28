@@ -80,12 +80,13 @@ func needsSeccomp(c *protocol.Confinement) bool {
 var syscallImplicitAllow = []string{"execve", "execveat", "exit", "exit_group", "rt_sigreturn"}
 
 // buildSyscallPolicy turns the unit's SystemCallFilter= names into a
-// go-seccomp-bpf policy. Names not present on this arch are dropped (a syscall
-// that doesn't exist here can't be called, so dropping it is safe in both
-// directions and avoids failing closed on a cross-arch unit). Denylist →
-// default-allow with the listed names returning EPERM; allowlist → default-EPERM
-// with the listed names (plus the implicit exec/exit set) allowed. known is the
-// arch's syscall-name set (arch.Info.SyscallNames).
+// go-seccomp-bpf policy. Names not in this arch's table are dropped so a unit
+// written for another arch still loads instead of failing closed; the same
+// drop, however, also silently discards misspelled/unknown names, which for a
+// denylist can weaken the intended policy (a mistyped blocked syscall just isn't
+// blocked). Denylist → default-allow with the listed names returning EPERM;
+// allowlist → default-EPERM with the listed names (plus the implicit exec/exit
+// set) allowed. known is the arch's syscall-name set (arch.Info.SyscallNames).
 func buildSyscallPolicy(names []string, deny bool, known map[string]int) seccomp.Policy {
 	want := names
 	if !deny {
