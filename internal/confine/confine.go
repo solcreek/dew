@@ -32,6 +32,11 @@ type Plan struct {
 	DropCaps    []string // CapabilityBoundingSet=~… : capabilities to drop from the full set
 	NoNewPrivs  bool
 
+	// filesystem isolation (ProtectSystem=strict + ReadWritePaths=), applied
+	// by the agent in a mount namespace before exec.
+	ReadOnlyRoot   bool     // ProtectSystem=strict → remount the rootfs read-only
+	ReadWritePaths []string // paths bind-mounted writable back over the read-only tree
+
 	// Unsupported lists directives present in the unit that dew does NOT
 	// enforce (seccomp, filesystem protection, address-family limits, ...).
 	Unsupported []string
@@ -44,7 +49,8 @@ const dynamicUserUID = "65534"
 
 // Confined reports whether the plan actually constrains anything.
 func (p Plan) Confined() bool {
-	return p.MemoryBytes > 0 || p.PidsMax > 0 || p.CPUQuota > 0 || p.NeedsSetpriv()
+	return p.MemoryBytes > 0 || p.PidsMax > 0 || p.CPUQuota > 0 ||
+		p.NeedsSetpriv() || p.ReadOnlyRoot
 }
 
 // NeedsSetpriv reports whether the plan requires the setpriv binary in the
@@ -194,7 +200,18 @@ func Parse(r io.Reader) (Plan, error) {
 			note(key + "= (seccomp syscall filter not applied)")
 		case "RestrictAddressFamilies":
 			note("RestrictAddressFamilies= (socket-family seccomp filter not applied)")
-		case "ProtectSystem", "ProtectHome", "ReadOnlyPaths", "ReadWritePaths",
+		case "ProtectSystem":
+			// Only =strict (whole rootfs read-only) maps cleanly to a mount-ns
+			// remount. =true/=full protect a subset (/usr,/boot[,/etc]); applying
+			// strict for those would be stronger than declared, so just surface.
+			if strings.EqualFold(val, "strict") {
+				p.ReadOnlyRoot = true
+			} else {
+				note("ProtectSystem=" + val + " (only =strict is enforced, as a read-only rootfs)")
+			}
+		case "ReadWritePaths":
+			p.ReadWritePaths = append(p.ReadWritePaths, strings.Fields(val)...)
+		case "ProtectHome", "ReadOnlyPaths",
 			"InaccessiblePaths", "PrivateTmp", "PrivateDevices", "ProtectKernelTunables",
 			"ProtectKernelModules", "ProtectControlGroups", "ProtectClock",
 			"ProtectKernelLogs", "ProtectHostname", "ProtectProc":
