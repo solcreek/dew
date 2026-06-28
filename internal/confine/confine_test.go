@@ -262,6 +262,21 @@ func TestParse_ProtectSystemNonStrict(t *testing.T) {
 	}
 }
 
+// ReadWritePaths without ProtectSystem=strict would be a silent no-op (the root
+// stays writable), so they must be surfaced as unenforced and dropped.
+func TestParse_ReadWritePathsWithoutStrict(t *testing.T) {
+	p, err := Parse(strings.NewReader("[Service]\nReadWritePaths=/var/lib/app\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.ReadWritePaths) != 0 {
+		t.Errorf("ReadWritePaths should be dropped without ProtectSystem=strict, got %v", p.ReadWritePaths)
+	}
+	if !strings.Contains(strings.Join(p.Unsupported, "\n"), "ReadWritePaths=") {
+		t.Error("ReadWritePaths without strict should be surfaced as unenforced")
+	}
+}
+
 func TestParse_SizeUnits(t *testing.T) {
 	tests := map[string]int64{
 		"1G": 1 << 30, "512M": 512 << 20, "64K": 64 << 10, "1048576": 1 << 20,

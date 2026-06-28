@@ -227,6 +227,13 @@ func Parse(r io.Reader) (Plan, error) {
 	if p.DynamicUser && p.UID == "" {
 		note("DynamicUser=yes approximated as uid " + dynamicUserUID + " (nobody)")
 	}
+	// ReadWritePaths only mean something atop a read-only rootfs. Without
+	// ProtectSystem=strict the root stays writable, so they'd be a silent no-op
+	// — surface that and drop them rather than imply they were applied.
+	if len(p.ReadWritePaths) > 0 && !p.ReadOnlyRoot {
+		note("ReadWritePaths= (no effect without ProtectSystem=strict; not applied)")
+		p.ReadWritePaths = nil
+	}
 	return p, nil
 }
 
