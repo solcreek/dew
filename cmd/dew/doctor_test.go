@@ -120,6 +120,20 @@ func TestDoctorProfiles_AlwaysIncludesMinimal(t *testing.T) {
 	}
 }
 
+func TestCmdDoctor_ProfileRequiresValue(t *testing.T) {
+	// --profile with no value, or followed by another flag, must error
+	// during arg parse (before any checks run) rather than silently
+	// falling back to auto-detection.
+	for _, args := range [][]string{
+		{"--profile"},
+		{"--profile", "--verbose"},
+	} {
+		if err := cmdDoctor(args); err == nil {
+			t.Errorf("cmdDoctor(%v): expected error, got nil", args)
+		}
+	}
+}
+
 func TestRunDoctorChecksSmokeRuns(t *testing.T) {
 	// Smoke test: should produce a report without panicking on the host.
 	// We don't assert specific check counts because they depend on the

@@ -56,13 +56,16 @@ func cmdDoctor(args []string) error {
 		case "--verbose", "-v":
 			verbose = true
 		case "--profile":
-			// Only consume the next token as the value when it isn't
-			// itself a flag — `dew doctor --profile --verbose` must not
-			// treat "--verbose" as a (nonsensical) profile name.
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-				profile = args[i+1]
-				i++
+			// Require a real value: `dew doctor --profile --verbose` or a
+			// trailing `--profile` must fail loudly, not silently fall
+			// back to dew.toml/auto-detection — that would leave the user
+			// believing doctor checked the profile they named when it
+			// didn't.
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				return fmt.Errorf("doctor: --profile requires a value (minimal|node|python|standard)")
 			}
+			profile = args[i+1]
+			i++
 		}
 	}
 
