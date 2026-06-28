@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   baked into the `standard` profile — failing with `setpriv: unrecognized
   option: bounding-set`. The agent now pins its PATH so the util-linux binary is
   selected.
+- **Build:** bumped the pinned Alpine `linux-virt` kernel to `6.12.94-r0`; the
+  previously pinned `6.12.93-r0` was rotated off the Alpine CDN.
 
 ## [0.8.0] - 2026-06-27
 
