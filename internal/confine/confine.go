@@ -174,7 +174,7 @@ func Parse(r io.Reader) (Plan, error) {
 		case "SystemCallFilter":
 			applySystemCalls(&p, val, &scHasGroups)
 		case "SystemCallArchitectures":
-			note(key + "= (seccomp syscall filter not applied)")
+			note("SystemCallArchitectures= (architecture restriction not enforced)")
 		case "RestrictAddressFamilies":
 			applyAddressFamilies(&p, val, note)
 		case "ProtectSystem":
@@ -308,13 +308,19 @@ func applyAddressFamilies(p *Plan, val string, note func(string)) {
 // and keeps the last form if a later assignment flips it.
 func applySystemCalls(p *Plan, val string, hasGroups *bool) {
 	if val == "" {
+		// Reset discards prior entries, including any @-group seen so far, so a
+		// later explicit-only directive can still be enforced.
 		p.SystemCalls = nil
 		p.SystemCallsDeny = false
+		*hasGroups = false
 		return
 	}
 	deny := strings.HasPrefix(val, "~")
 	if len(p.SystemCalls) > 0 && p.SystemCallsDeny != deny {
+		// Polarity flip: dew keeps the last form, so drop prior entries and the
+		// prior @-group state with them.
 		p.SystemCalls = nil
+		*hasGroups = false
 	}
 	p.SystemCallsDeny = deny
 	for _, s := range strings.Fields(strings.TrimPrefix(val, "~")) {
@@ -323,9 +329,14 @@ func applySystemCalls(p *Plan, val string, hasGroups *bool) {
 			continue
 		}
 		// systemd allows "name:errno" to override the action per syscall; dew
-		// applies one action, so keep just the name.
+		// applies one action, so keep just the name. Skip empties (a stray ":"
+		// or ":errno" with no name).
 		name, _, _ := strings.Cut(s, ":")
-		p.SystemCalls = append(p.SystemCalls, strings.ToLower(name))
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" {
+			continue
+		}
+		p.SystemCalls = append(p.SystemCalls, name)
 	}
 }
 

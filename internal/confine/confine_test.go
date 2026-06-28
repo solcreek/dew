@@ -376,6 +376,19 @@ func TestParse_SystemCallFilter(t *testing.T) {
 	if !strings.Contains(strings.Join(p.Unsupported, "\n"), "@-groups") {
 		t.Error("@-group SystemCallFilter should be surfaced as unenforced")
 	}
+
+	// A reset after an @-group clears the group latch, so a later explicit-only
+	// directive is still enforced (not voided).
+	p, _ = Parse(strings.NewReader("[Service]\nSystemCallFilter=@system-service\nSystemCallFilter=\nSystemCallFilter=read\n"))
+	if !reflect.DeepEqual(p.SystemCalls, []string{"read"}) {
+		t.Errorf("reset after @-group should re-enable explicit enforcement, got %v", p.SystemCalls)
+	}
+
+	// "name:errno" with no name is skipped, not appended as empty.
+	p, _ = Parse(strings.NewReader("[Service]\nSystemCallFilter=~read :EPERM\n"))
+	if !reflect.DeepEqual(p.SystemCalls, []string{"read"}) {
+		t.Errorf("empty name should be skipped, got %v", p.SystemCalls)
+	}
 }
 
 func TestParse_SizeUnits(t *testing.T) {
