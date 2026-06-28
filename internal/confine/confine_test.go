@@ -245,6 +245,20 @@ func TestParse_ReadOnlyFilesystem(t *testing.T) {
 	}
 }
 
+// An empty ReadWritePaths= resets the accumulated list (systemd drop-in
+// semantics), so stale earlier entries don't linger as writable exceptions.
+func TestParse_ReadWritePathsReset(t *testing.T) {
+	p, err := Parse(strings.NewReader(
+		"[Service]\nProtectSystem=strict\nReadWritePaths=/var/lib/app /var/log/app\nReadWritePaths=\nReadWritePaths=/run/app\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/run/app"}
+	if !reflect.DeepEqual(p.ReadWritePaths, want) {
+		t.Errorf("ReadWritePaths = %v, want %v (empty assignment should reset)", p.ReadWritePaths, want)
+	}
+}
+
 // ProtectSystem=true/full protect only a subset; we don't approximate them with
 // strict, so they stay surfaced as unenforced and don't set ReadOnlyRoot.
 func TestParse_ProtectSystemNonStrict(t *testing.T) {

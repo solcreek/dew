@@ -210,7 +210,13 @@ func Parse(r io.Reader) (Plan, error) {
 				note("ProtectSystem=" + val + " (only =strict is enforced, as a read-only rootfs)")
 			}
 		case "ReadWritePaths":
-			p.ReadWritePaths = append(p.ReadWritePaths, strings.Fields(val)...)
+			// systemd list semantics: an empty assignment resets the list (drop-ins
+			// use this to clear earlier entries), otherwise paths accumulate.
+			if strings.TrimSpace(val) == "" {
+				p.ReadWritePaths = nil
+			} else {
+				p.ReadWritePaths = append(p.ReadWritePaths, strings.Fields(val)...)
+			}
 		case "ProtectHome", "ReadOnlyPaths",
 			"InaccessiblePaths", "PrivateTmp", "PrivateDevices", "ProtectKernelTunables",
 			"ProtectKernelModules", "ProtectControlGroups", "ProtectClock",
