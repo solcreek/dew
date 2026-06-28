@@ -1259,9 +1259,9 @@ func cmdStart(args []string) error {
 	if err != nil {
 		return err
 	}
-	// --confine is honored only by `dew run` (it wraps the foreground exec
-	// with setpriv). parseFlags accepts the flag for every command, so reject
-	// it here rather than letting `dew vm start --confine` silently ignore it.
+	// --confine is honored only by `dew run` (the agent shim applies the spec
+	// guest-side). parseFlags accepts the flag for every command, so reject it
+	// here rather than letting `dew vm start --confine` silently ignore it.
 	if flagConfine != "" {
 		return dewerr.New(dewerr.CodeUsage, "--confine is only supported on `dew run`")
 	}
@@ -1450,7 +1450,8 @@ func cmdRun(args []string) error {
 	}
 
 	// --confine: approximate a systemd unit's hardening with cgroup limits +
-	// setpriv. Resolves the plan, adjusts cfg/profile, and wraps cmdArgs below.
+	// the agent's native privilege drop. Resolves the plan and adjusts
+	// cfg/profile; the spec travels to the agent in the ExecRequest below.
 	var confinePlan confine.Plan
 	if flagConfine != "" {
 		if flagImage != "" {
@@ -1630,6 +1631,7 @@ func cmdRun(args []string) error {
 	fmt.Fprintf(os.Stderr, "dew: waiting for guest agent\n")
 	const vsockReadySec = 60
 	var tokenSent bool
+	var agentConfine bool // agent advertised native --confine support in its ack
 	if conn, err := connectVsockDeadline(d, cfg.VsockPort, budget.window(vsockReadySec*time.Second)); err == nil {
 		req := vsockProto.SetTokenRequest{Type: vsockProto.TypeSetToken, Token: token}
 		vsockProto.WriteJSON(conn, &req)
@@ -1637,6 +1639,7 @@ func cmdRun(args []string) error {
 		vsockProto.ReadJSONTimeout(conn, &resp, 5*time.Second)
 		conn.Close()
 		tokenSent = resp.OK
+		agentConfine = resp.Confine
 	}
 	if tokenSent {
 		_ = vmstate.Write(stateDir, vmstate.State{
@@ -1772,17 +1775,18 @@ func cmdRun(args []string) error {
 	// --confine is enforced entirely guest-side by the agent's re-exec shim
 	// (read-only fs in a mount namespace, plus the native capability/uid/
 	// no_new_privs drop). The spec travels in the ExecRequest, and only the
-	// vsock batch path drives the shim — fail loudly rather than silently skip
-	// the confinement on --stream or the serial fallback. (cgroup limits cross
+	// vsock batch path drives the shim — fail closed rather than silently skip
+	// the confinement on --stream, against an agent that doesn't advertise
+	// support, or on the serial fallback (handled below). (cgroup limits cross
 	// separately via cfg.Cgroup → appendGuestParams and are unaffected.)
 	confineSpec := confinementFromPlan(confinePlan)
-	if confineSpec != nil && flagStream {
+	if err := confineUnenforceableErr(confineSpec, flagStream, tokenSent, agentConfine, false); err != nil {
 		d.Stop(context.Background())
 		// Match the other exit paths: close the console pipe ends so the
 		// serialexec drain goroutine doesn't linger on this error path.
 		hostReader.Close()
 		hostWriter.Close()
-		return dewerr.New(dewerr.CodeUsage, "--confine is not supported with --stream yet (the confinement shim runs on the vsock batch path)")
+		return err
 	}
 
 	// argv-or-shell decision: 2+ args → exec argv directly (no
@@ -1823,11 +1827,13 @@ func cmdRun(args []string) error {
 			return timeoutErr("agent wait")
 		}
 		fmt.Fprintf(os.Stderr, "dew: vsock unavailable, using serial\n")
-		if confineSpec != nil {
+		if err := confineUnenforceableErr(confineSpec, false, tokenSent, agentConfine, true); err != nil {
 			// The serial path has no ExecRequest channel, so the agent never
-			// receives the spec — the confinement (read-only fs + privilege drop)
-			// would silently not apply.
-			fmt.Fprintf(os.Stderr, "dew: warning: --confine not enforced over the serial fallback\n")
+			// receives the spec — fail closed rather than run unconfined.
+			d.Stop(context.Background())
+			hostReader.Close()
+			hostWriter.Close()
+			return err
 		}
 		if err := sExec.WaitReady(budget.window(60 * time.Second)); err != nil {
 			d.Stop(context.Background())
@@ -3481,6 +3487,32 @@ func runExecStreaming(args []string, timeoutMs int, tty bool) error {
 // structured their input as argv knows they're not going through a
 // shell; the only time we should wrap is when there's a single string
 // that the user implicitly expects shell parsing on.
+
+// confineUnenforceableErr fails closed when --confine was requested (spec !=
+// nil) but the selected exec channel can't deliver and apply it. The shim only
+// runs on the vsock batch path, so: --stream is rejected; the serial fallback
+// (no ExecRequest channel) is rejected; and the vsock path is rejected when the
+// agent's handshake didn't advertise native confinement support (an older
+// guest, usually a mismatched --initrd/--kernel — the bundled agent always
+// acks). A nil spec, or a vsock path against an acking agent, returns nil.
+//
+// vsockHandshook reports that the SetToken handshake completed; when it didn't,
+// the old-agent check is skipped so the caller's serial path produces the more
+// accurate "vsock unavailable" error instead.
+func confineUnenforceableErr(spec *vsockProto.Confinement, stream, vsockHandshook, agentConfine, serial bool) error {
+	if spec == nil {
+		return nil
+	}
+	switch {
+	case stream:
+		return dewerr.New(dewerr.CodeUsage, "--confine is not supported with --stream yet (the confinement shim runs on the vsock batch path)")
+	case serial:
+		return dewerr.New(dewerr.CodeUnavailable, "--confine cannot be enforced over the serial fallback (vsock unavailable); refusing to run unconfined")
+	case vsockHandshook && !agentConfine:
+		return dewerr.New(dewerr.CodeUnavailable, "the guest agent does not support --confine (its handshake did not advertise confinement support); update the guest agent/initramfs or drop --confine — a mismatched --initrd/--kernel is the usual cause")
+	}
+	return nil
+}
 
 // confinementFromPlan builds the agent-applied confinement spec from a parsed
 // unit. The agent's re-exec shim enforces the whole spec natively — read-only
