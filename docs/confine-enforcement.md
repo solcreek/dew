@@ -228,10 +228,10 @@ job, and run in-VM against a real kernel).
 
 ---
 
-## 5. Seccomp (`SystemCallFilter=` / `RestrictAddressFamilies=`) — 5a+5b IMPLEMENTED
+## 5. Seccomp (`SystemCallFilter=` / `RestrictAddressFamilies=`) — 5a+5b+5c IMPLEMENTED
 
-**Status: 5a (`RestrictAddressFamilies=`) and 5b (explicit `SystemCallFilter=`
-names) are implemented; 5c (`@`-group expansion) remains design.**
+**Status: 5a (`RestrictAddressFamilies=`), 5b (explicit `SystemCallFilter=`
+names), and 5c (`@`-group expansion) are all implemented.**
 
 5a — the agent installs a hand-assembled classic-BPF filter on
 `socket(2)`/`socketpair(2)` restricting the `domain` argument to the allowed
@@ -246,48 +246,45 @@ table is per-arch). Denylist (`~`) → default-allow, listed → `EPERM`; allowl
 are dropped so a unit written for another arch still loads instead of failing
 closed — but the same drop also silently discards misspelled/unknown names, so a
 mistyped entry in a denylist won't be blocked (host-side name validation is a
-future improvement). `@`-groups can't be faithfully approximated without 5c's
-table, so a unit using them enforces nothing for `SystemCallFilter=` and the
-directive is surfaced as unenforced.
+future improvement).
+
+5c — `@`-group tokens (e.g. `@system-service`) are expanded host-side in
+`internal/confine` from a mirrored systemd table (`syscallgroups.go`, generated
+by `gen_syscallgroups.go` from a pinned systemd release's
+`src/shared/seccomp-util.c` — `go generate ./internal/confine/` to refresh). The
+table holds the cross-arch *union* of each group's members with inter-group
+references already resolved; the guest agent's per-arch name drop then recovers
+each architecture's exact subset, so no group table lives in the agent. A unit
+referencing an **unknown** `@`-group (not in the pinned table) can't be
+approximated — dropping it would flip the effective set the wrong way (a denylist
+would under-block) — so the whole `SystemCallFilter=` directive is voided and
+surfaced as unenforced.
 
 Both filters are installed on the locked exec thread after the uid/caps drop,
 `no_new_privs` (a seccomp spec implies no_new_privs, mirroring systemd), and
 `LookPath` (so an allowlist doesn't `EPERM` the PATH resolution); they stack and
 the kernel
 takes the most-restrictive action. Verified by in-VM unit tests (a cBPF
-interpreter for the socket filter; policy-shape for the syscall filter) plus boot
-tests (denylist blocks the syscall while the Go runtime still runs; composes with
-`RestrictAddressFamilies=` and the uid drop; `@system-service` is surfaced, not
-enforced). Known limitation: a non-native arch (x86_64 under Rosetta on an arm64
-agent) takes the filter's default action — allowed for a denylist, blocked for an
-allowlist — so seccomp is effectively native-arch only.
+interpreter for the socket filter; policy-shape for the syscall filter; the
+generated group table is fully resolved) plus boot tests: a denylist blocks the
+syscall while the Go runtime still runs; it composes with
+`RestrictAddressFamilies=` and the uid drop; **`@system-service` (a default-deny
+allowlist of ~390 expanded syscalls) runs the Go binary to completion** —
+answering the field notes' core question, the runtime survives the expanded
+allowlist; a denied known group (`~@chown`) and an **unknown** `@`-group (voided
++ surfaced) both behave as specified. Known limitation: a non-native arch
+(x86_64 under Rosetta on an arm64 agent) takes the filter's default action —
+allowed for a denylist, blocked for an allowlist — so seccomp is effectively
+native-arch only.
 
-The remaining `SystemCallFilter=` `@`-group work (5c) is still the headline gap
-(the field notes' core unanswered question: "does the Go runtime survive
-`@system-service` + W^X"). Hard parts:
-
-1. **Group expansion.** `SystemCallFilter=@system-service` expands to systemd's
-   curated set (hundreds of syscalls, arch-dependent, evolves across systemd
-   versions). We must vendor a snapshot of the `@`-group → syscall mapping
-   (generate it from systemd's `src/shared/seccomp-util.c` tables; pin the
-   systemd version we mirror and record it). Allow/deny + the `~` (denylist)
-   form both need handling, mirroring `confine`'s existing cap logic.
-2. **No cgo.** `libseccomp` is cgo. Use a pure-Go BPF builder
-   (`github.com/elastic/go-seccomp-bpf`, or hand-assemble with
-   `golang.org/x/net/bpf` + the raw `seccomp(2)` syscall). Evaluate
-   `go-seccomp-bpf`: it already does allow/deny policies and `SCMP_ACT_*`, and
-   is pure-Go — likely the fastest path. Confirm it builds with
-   `CGO_ENABLED=0` for linux/arm64 + linux/amd64.
-3. **`RestrictAddressFamilies=`** → a seccomp arg-filter on `socket(2)`'s
-   `domain` argument (allow only the listed `AF_*`). Cheap relative to (1) and
-   could ship first as a standalone win.
-4. **Default action & errno.** systemd uses `SCMP_ACT_ERRNO(EPERM)` (or `kill`
-   under `SystemCallErrorNumber=`). Match `EPERM` so behavior mirrors prod.
-
-Validation caveat: **cannot be verified offline** (needs a booted guest +
-representative workload). Acceptance must be a boot test: a blocked syscall
-returns `EPERM`; the Go runtime (threads, futex, mmap, epoll) still works under
-`@system-service`.
+Group expansion (5c) is generated from a **pinned** systemd release (currently
+`v257`): `gen_syscallgroups.go` parses `src/shared/seccomp-util.c`, resolves
+inter-group references, and emits `syscallgroups.go` as the cross-arch union of
+each group's members. Bumping the pinned version is a deliberate `go generate`
+step recorded in the commit + CHANGELOG. `@known` is excluded (it depends on a
+build-generated `syscall-list.h` and an allowlist of "all syscalls" is
+meaningless), so it is treated as an unknown group. The default action is
+`EPERM`, matching systemd's `SCMP_ACT_ERRNO(EPERM)`.
 
 Relationship to R1: `--confine`'s seccomp is an **approximation** built from
 our mirrored group table. **R1 (systemd-as-PID1) runs the real systemd filter**
@@ -296,8 +293,9 @@ ground-truth answer and `--confine` seccomp is the fast inner loop. Ship the
 RestrictAddressFamilies sub-feature first; gate full `@`-group seccomp behind
 this design's acceptance.
 
-Effort: high. Phase it: (5a) `RestrictAddressFamilies` arg-filter →
-(5b) explicit named-syscall allow/deny → (5c) `@`-group expansion table.
+Effort: high. Phased and shipped: (5a) `RestrictAddressFamilies` arg-filter →
+(5b) explicit named-syscall allow/deny → (5c) `@`-group expansion table — all
+implemented.
 
 ---
 
@@ -333,8 +331,11 @@ No R1 implementation in this round (design-first, and it's the largest track).
    In-VM tested.
 6. ✅ **Seccomp 5b** (explicit `SystemCallFilter=` names): go-seccomp-bpf filter,
    allow/deny, @-groups deferred. In-VM tested.
-7. **Seccomp 5c** (`@`-group expansion): the big one; boot-test gated. ← next
-8. **R1**: separate track, per `systemd-profile.md`.
+7. ✅ **Seccomp 5c** (`@`-group expansion): host-side expansion from a pinned
+   systemd table (`gen_syscallgroups.go` → `syscallgroups.go`); unknown groups
+   voided + surfaced. In-VM tested (`@system-service` allowlist runs the Go
+   runtime to completion).
+8. **R1**: separate track, per `systemd-profile.md`. ← next
 
 Each step is its own atomic commit (or PR) with its own boot-test note, since
 the host can't validate the guest-side mount/seccomp/prctl steps.
