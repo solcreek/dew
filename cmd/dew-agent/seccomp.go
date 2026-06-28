@@ -303,6 +303,11 @@ func applySeccomp(c *protocol.Confinement) error {
 // installSeccompFilter loads one classic-BPF program via seccomp(2) on the
 // calling thread (no TSYNC: the shim execs on this same locked thread).
 func installSeccompFilter(prog []unix.SockFilter) error {
+	if len(prog) == 0 {
+		// A caller asked to install a filter but produced no instructions; fail
+		// closed rather than dereference prog[0].
+		return fmt.Errorf("install seccomp filter: empty program")
+	}
 	fprog := &unix.SockFprog{Len: uint16(len(prog)), Filter: &prog[0]}
 	if _, _, errno := unix.Syscall(unix.SYS_SECCOMP, uintptr(unix.SECCOMP_SET_MODE_FILTER), 0, uintptr(unsafe.Pointer(fprog))); errno != 0 {
 		return fmt.Errorf("install seccomp filter: %w", errno)
