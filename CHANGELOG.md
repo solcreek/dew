@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-06-28
+
 ### Added
 
 - **`dew run --confine` enforces explicit `SystemCallFilter=`.** Named syscalls
@@ -61,6 +63,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vsock batch path (not `--stream`), since that spec is enforced by the shim; a
   cgroup-only unit still streams. (`setpriv` stays in the `standard` profile for
   manual use.)
+
+### Fixed
+
+- **Pinned dew versions no longer break when a newer release ships rebuilt
+  assets.** Release builds now fetch the kernel/initramfs from their own
+  immutable version tag (`/releases/download/v<version>/`) instead of
+  `/latest/download`. Previously every binary pulled the *latest* release's
+  assets but verified them against the SHA baked into its own (older) build, so
+  any release that rebuilt an initramfs failed the checksum forever on all
+  older pinned installs (a `dew@0.8.1` pin bricked once `0.8.2` shipped a new
+  `node` initramfs). Dev/local builds still fall back to `/latest`. Asset
+  download errors now name the running binary (version + path + install source)
+  and distinguish a genuinely missing asset (HTTP 404 → upgrade) from a
+  transient server/auth/rate-limit error (403/429/5xx → retry).
+
+- **`dew doctor` verifies the initramfs profile a project actually uses.** It
+  previously checked only the `minimal` variant and reported all-green while
+  the `node`/`python` initramfs a project boots (`dew up`, services-only) was
+  missing or unverifiable. doctor now checks the kernel plus `minimal` plus the
+  profile from `--profile`, the project's `dew.toml`, or cwd auto-detection;
+  `dew doctor --profile <p>` validates its value.
+
+### Changed
+
+- **The release pipeline refuses to overwrite a published tag's assets.** A
+  `guard-immutable-tag` job fails the release if the tag already carries its
+  uploaded assets, so re-running a release can't silently change the bytes that
+  older pinned binaries verify against their baked SHA. Changing assets now
+  requires cutting a new tag.
 
 ## [0.8.2] - 2026-06-27
 
