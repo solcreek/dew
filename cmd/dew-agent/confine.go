@@ -61,13 +61,15 @@ func runConfineShim(target []string) error {
 		}
 	}
 	// Preserve unprivileged-exec mode. The unconfined path drops to
-	// DEW_EXEC_USER (setExecUser); the shim must too, or a ProtectSystem=strict
-	// -only confinement (no setpriv prefix) would run the target as root — an
-	// escalation relative to the unconfined path. Done here, after the mounts
-	// (which need root), and skipped when the target is a setpriv invocation:
-	// there the unit's own User= drop takes over, and setpriv can't change uid
-	// once we've already dropped.
-	if u := os.Getenv("DEW_EXEC_USER"); u != "" && filepath.Base(target[0]) != "setpriv" {
+	// DEW_EXEC_USER (setExecUser); the shim must too, or a confinement that
+	// doesn't itself drop the uid would run the target as root — an escalation
+	// relative to the unconfined path. Done here, after the mounts (which need
+	// root). Skipped only when the setpriv prefix actually performs an ID drop
+	// (--reuid/--regid): there the unit's own User= takes over and setpriv
+	// needs root to do it, so we must not drop first. A caps/no_new_privs-only
+	// setpriv does NOT drop uid, so we still drop to DEW_EXEC_USER (setpriv can
+	// then drop caps/nnp as the unprivileged user).
+	if u := os.Getenv("DEW_EXEC_USER"); u != "" && !setprivDropsID(target) {
 		if err := dropToUser(u); err != nil {
 			return fmt.Errorf("drop to user %q: %w", u, err)
 		}
@@ -119,15 +121,41 @@ func applyReadOnlyFS(c *protocol.Confinement) error {
 }
 
 // bindReadWrite restores write access to p over the read-only root by binding
-// it onto itself and clearing MS_RDONLY.
+// it onto itself and clearing MS_RDONLY. MS_REC only for directories — a
+// recursive bind of a file exception (systemd allows e.g.
+// ReadWritePaths=/etc/resolv.conf) is invalid.
 func bindReadWrite(p string) error {
-	if err := unix.Mount(p, p, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
+	flags := uintptr(unix.MS_BIND)
+	if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+		flags |= unix.MS_REC
+	}
+	if err := unix.Mount(p, p, "", flags, ""); err != nil {
 		return fmt.Errorf("bind: %w", err)
 	}
 	if err := unix.Mount("", p, "", unix.MS_BIND|unix.MS_REMOUNT, ""); err != nil {
 		return fmt.Errorf("remount rw: %w", err)
 	}
 	return nil
+}
+
+// setprivDropsID reports whether target is a setpriv invocation that changes
+// the uid/gid (--reuid/--regid). The host emits these as separate argv tokens
+// (see confine.SetprivArgs), so an exact match is sufficient. Only such an
+// invocation makes the shim's own DEW_EXEC_USER drop redundant; a setpriv that
+// only drops caps/no_new_privs leaves the uid as root.
+func setprivDropsID(target []string) bool {
+	if len(target) == 0 || filepath.Base(target[0]) != "setpriv" {
+		return false
+	}
+	for _, a := range target[1:] {
+		if a == "--reuid" || a == "--regid" {
+			return true
+		}
+		if a == "--" {
+			break // end of setpriv options; the rest is the wrapped command
+		}
+	}
+	return false
 }
 
 // dropToUser drops gid/groups/uid to the named user (DEW_EXEC_USER) before
