@@ -1,6 +1,8 @@
 // Package confine parses a systemd service unit's hardening directives into
-// a Plan that dew approximates with kernel primitives (cgroup v2 limits +
-// setpriv). It is deliberately an APPROXIMATION, not a systemd reimplementation:
+// a Plan that dew approximates with kernel primitives (cgroup v2 limits, a
+// native prctl/capset uid/caps drop, a read-only mount namespace, and a
+// socket-family seccomp filter). It is deliberately an APPROXIMATION, not a
+// systemd reimplementation:
 // directives dew cannot enforce on a non-systemd guest are collected in
 // Plan.Unsupported so the caller can warn the user rather than imply a unit
 // that "passes under --confine" is guaranteed to pass under real systemd.
@@ -38,8 +40,14 @@ type Plan struct {
 	ReadOnlyRoot   bool     // ProtectSystem=strict → remount the rootfs read-only
 	ReadWritePaths []string // paths bind-mounted writable back over the read-only tree
 
+	// seccomp (RestrictAddressFamilies=), applied by the agent as a BPF filter
+	// on socket(2)/socketpair(2) before exec.
+	AddressFamilies     []string // AF_* names (allowlist, or denylist when AddressFamiliesDeny)
+	AddressFamiliesDeny bool     // RestrictAddressFamilies=~… : block the listed families instead
+
 	// Unsupported lists directives present in the unit that dew does NOT
-	// enforce (seccomp, filesystem protection, address-family limits, ...).
+	// enforce (SystemCallFilter= and other seccomp groups, partial filesystem
+	// protection, ...).
 	Unsupported []string
 }
 
@@ -51,7 +59,7 @@ const DynamicUserUID = "65534"
 // Confined reports whether the plan actually constrains anything.
 func (p Plan) Confined() bool {
 	return p.MemoryBytes > 0 || p.PidsMax > 0 || p.CPUQuota > 0 ||
-		p.NeedsPrivilegeDrop() || p.ReadOnlyRoot
+		p.NeedsPrivilegeDrop() || p.ReadOnlyRoot || len(p.AddressFamilies) > 0
 }
 
 // NeedsPrivilegeDrop reports whether the plan drops uid/gid, restricts the
@@ -155,7 +163,7 @@ func Parse(r io.Reader) (Plan, error) {
 		case "SystemCallFilter", "SystemCallArchitectures":
 			note(key + "= (seccomp syscall filter not applied)")
 		case "RestrictAddressFamilies":
-			note("RestrictAddressFamilies= (socket-family seccomp filter not applied)")
+			applyAddressFamilies(&p, val, note)
 		case "ProtectSystem":
 			// Only =strict (whole rootfs read-only) maps cleanly to a mount-ns
 			// remount. =true/=full protect a subset (/usr,/boot[,/etc]); applying
@@ -244,6 +252,29 @@ func applyBoundingSet(p *Plan, val string, note func(string)) {
 	p.DropAllCaps = true // start from empty, then add the listed caps back
 	for _, c := range strings.Fields(val) {
 		p.KeepCaps = append(p.KeepCaps, strings.ToLower(c))
+	}
+}
+
+// applyAddressFamilies parses RestrictAddressFamilies=. An empty assignment
+// resets the list (systemd drop-in semantics); a leading ~ is the denylist form;
+// otherwise it's an allowlist. Names are normalised to upper-case AF_* (the
+// agent resolves them). dew supports a single polarity — if a later assignment
+// flips allow↔deny, the combined semantics are non-trivial, so it keeps the new
+// form and surfaces the approximation.
+func applyAddressFamilies(p *Plan, val string, note func(string)) {
+	if val == "" {
+		p.AddressFamilies = nil
+		p.AddressFamiliesDeny = false
+		return
+	}
+	deny := strings.HasPrefix(val, "~")
+	if len(p.AddressFamilies) > 0 && p.AddressFamiliesDeny != deny {
+		note("RestrictAddressFamilies= mixes allow and deny forms (approximated by the last form)")
+		p.AddressFamilies = nil
+	}
+	p.AddressFamiliesDeny = deny
+	for _, f := range strings.Fields(strings.TrimPrefix(val, "~")) {
+		p.AddressFamilies = append(p.AddressFamilies, strings.ToUpper(f))
 	}
 }
 

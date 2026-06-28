@@ -3546,15 +3546,17 @@ func confineUnenforceableErr(spec *vsockProto.Confinement, stream, tokenAcked, a
 // Returns nil when the unit constrains nothing the shim applies.
 func confinementFromPlan(p confine.Plan) *vsockProto.Confinement {
 	c := &vsockProto.Confinement{
-		User:           p.UID,
-		Group:          p.GID,
-		DynamicUser:    p.DynamicUser,
-		NoNewPrivs:     p.NoNewPrivs,
-		DropAllCaps:    p.DropAllCaps,
-		KeepCaps:       p.KeepCaps,
-		DropCaps:       p.DropCaps,
-		ReadOnlyRoot:   p.ReadOnlyRoot,
-		ReadWritePaths: p.ReadWritePaths,
+		User:                p.UID,
+		Group:               p.GID,
+		DynamicUser:         p.DynamicUser,
+		NoNewPrivs:          p.NoNewPrivs,
+		DropAllCaps:         p.DropAllCaps,
+		KeepCaps:            p.KeepCaps,
+		DropCaps:            p.DropCaps,
+		ReadOnlyRoot:        p.ReadOnlyRoot,
+		ReadWritePaths:      p.ReadWritePaths,
+		AddressFamilies:     p.AddressFamilies,
+		AddressFamiliesDeny: p.AddressFamiliesDeny,
 	}
 	if c.User == "" && c.DynamicUser {
 		c.User = confine.DynamicUserUID
