@@ -228,25 +228,38 @@ job, and run in-VM against a real kernel).
 
 ---
 
-## 5. Seccomp (`SystemCallFilter=` / `RestrictAddressFamilies=`) — 5a IMPLEMENTED
+## 5. Seccomp (`SystemCallFilter=` / `RestrictAddressFamilies=`) — 5a+5b IMPLEMENTED
 
-**Status: 5a (`RestrictAddressFamilies=`) is implemented; 5b/5c remain design.**
-The agent installs a classic-BPF seccomp filter on `socket(2)`/`socketpair(2)`
-that restricts the `domain` argument to the unit's allowed `AF_*` families
-(allowlist) or blocks the listed families (the `~` denylist form), returning
-`EPERM` otherwise — matching systemd's `SCMP_ACT_ERRNO(EPERM)`. It is built with
-a hand-assembled program (`cmd/dew-agent/seccomp.go`); no cgo, no `libseccomp`.
-The filter is installed on the locked exec thread after the uid/caps drop and
-no_new_privs (a seccomp spec implies no_new_privs, mirroring systemd), so it is
-inherited across `execve` into the target. Verified by an in-VM cBPF unit test
-plus boot tests (allowlist/denylist/compose-with-uid-drop; a blocked family
-returns EPERM, the Go runtime is unaffected since it doesn't open the restricted
-families itself). Known limitation: a non-native arch (an x86_64 binary under
-Rosetta when the agent is arm64) is allowed through — the filter is installed for
-the agent's build arch only.
+**Status: 5a (`RestrictAddressFamilies=`) and 5b (explicit `SystemCallFilter=`
+names) are implemented; 5c (`@`-group expansion) remains design.**
 
-The remaining `SystemCallFilter=` work (5b/5c) is still the headline gap (the
-field notes' core unanswered question: "does the Go runtime survive
+5a — the agent installs a hand-assembled classic-BPF filter on
+`socket(2)`/`socketpair(2)` restricting the `domain` argument to the allowed
+`AF_*` families (allowlist) or blocking the listed ones (`~` denylist),
+returning `EPERM` (matching systemd's `SCMP_ACT_ERRNO(EPERM)`).
+
+5b — explicit `SystemCallFilter=` names are compiled to a BPF filter via
+`github.com/elastic/go-seccomp-bpf` (pure Go, CGO-free; the syscall name→number
+table is per-arch). Denylist (`~`) → default-allow, listed → `EPERM`; allowlist
+→ default-`EPERM`, listed plus a minimal implicit set (`execve`/`execveat`/
+`exit`/`exit_group`/`rt_sigreturn`) → allow. Names not present on the agent's
+arch are dropped (unreachable, so safe). `@`-groups can't be faithfully
+approximated without 5c's table, so a unit using them enforces nothing for
+`SystemCallFilter=` and the directive is surfaced as unenforced.
+
+Both filters are installed on the locked exec thread after the uid/caps drop, no_
+new_privs (a seccomp spec implies no_new_privs, mirroring systemd), and `LookPath`
+(so an allowlist doesn't `EPERM` the PATH resolution); they stack and the kernel
+takes the most-restrictive action. Verified by in-VM unit tests (a cBPF
+interpreter for the socket filter; policy-shape for the syscall filter) plus boot
+tests (denylist blocks the syscall while the Go runtime still runs; composes with
+`RestrictAddressFamilies=` and the uid drop; `@system-service` is surfaced, not
+enforced). Known limitation: a non-native arch (x86_64 under Rosetta on an arm64
+agent) takes the filter's default action — allowed for a denylist, blocked for an
+allowlist — so seccomp is effectively native-arch only.
+
+The remaining `SystemCallFilter=` `@`-group work (5c) is still the headline gap
+(the field notes' core unanswered question: "does the Go runtime survive
 `@system-service` + W^X"). Hard parts:
 
 1. **Group expansion.** `SystemCallFilter=@system-service` expands to systemd's
@@ -314,8 +327,10 @@ No R1 implementation in this round (design-first, and it's the largest track).
    it (old guest / `--stream` / serial). In-VM tested.
 5. ✅ **Seccomp 5a** (`RestrictAddressFamilies`): socket-family BPF arg-filter.
    In-VM tested.
-6. **Seccomp 5b/5c** (`@`-group expansion): the big one; boot-test gated. ← next
-7. **R1**: separate track, per `systemd-profile.md`.
+6. ✅ **Seccomp 5b** (explicit `SystemCallFilter=` names): go-seccomp-bpf filter,
+   allow/deny, @-groups deferred. In-VM tested.
+7. **Seccomp 5c** (`@`-group expansion): the big one; boot-test gated. ← next
+8. **R1**: separate track, per `systemd-profile.md`.
 
 Each step is its own atomic commit (or PR) with its own boot-test note, since
 the host can't validate the guest-side mount/seccomp/prctl steps.

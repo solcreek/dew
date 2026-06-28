@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`dew run --confine` enforces explicit `SystemCallFilter=`.** Named syscalls
+  in a unit's `SystemCallFilter=` are compiled to a seccomp BPF filter via
+  `github.com/elastic/go-seccomp-bpf` (pure Go, no cgo). Denylist (`~`) blocks
+  the listed syscalls with `EPERM`; allowlist permits the listed syscalls plus a
+  minimal implicit set (`execve`/`exit`/…) and `EPERM`s the rest, mirroring
+  systemd. Names absent on the guest's architecture are dropped (unreachable).
+  `@`-groups (e.g. `@system-service`) are not expanded yet, so a unit using them
+  is surfaced as unenforced rather than partially applied. Composes with
+  `RestrictAddressFamilies=` and the uid/caps drop. Verified by in-VM unit tests
+  and boot tests (a denied syscall returns EPERM while the Go runtime keeps
+  running). x86_64-under-Rosetta targets are not filtered (native-arch only).
+
 - **`dew run --confine` enforces `RestrictAddressFamilies=`.** The guest agent
   installs a classic-BPF seccomp filter on `socket(2)`/`socketpair(2)` that
   limits the address-family `domain` argument to the unit's allowlist (or blocks
