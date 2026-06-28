@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-06-27
+
+### Fixed
+
+- **`dew run --confine` capability drop now launches.** The guest agent shells
+  out to a bare `setpriv` to apply `CapabilityBoundingSet=`, but Go resolves the
+  binary via the agent's own PATH at `exec.Command` time, where the BusyBox
+  `setpriv` applet (no `--bounding-set`) could shadow the util-linux `setpriv`
+  baked into the `standard` profile — failing with `setpriv: unrecognized
+  option: bounding-set`. The agent now pins its PATH so the util-linux binary is
+  selected.
+
 ## [0.8.0] - 2026-06-27
 
 ### Added
