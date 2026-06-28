@@ -1,16 +1,19 @@
 # Design: agent-side `--confine` enforcement (R2 follow-up)
 
-Status: design. Tracks the remaining halves of `dew run --confine` that 0.8.x
-does **not** yet enforce — read-only filesystem, native capability/uid drop,
-and the seccomp syscall allowlist — and the shared substrate they need.
+Status: partly implemented. The **read-only filesystem** half
+(`ProtectSystem=strict` + `ReadWritePaths=`) is implemented in this PR via the
+agent-side shim described below; native capability/uid drop and the seccomp
+syscall allowlist remain to do. This doc tracks the shared substrate and the
+remaining work.
 
 Context: field notes (`hostd.sh/docs/dew-test-notes.md` §7b) confirm 0.8.x
 validates the **resource-limit** half of a hardened unit (cgroup `MemoryMax` /
 `TasksMax` / `CPUQuota`) and, after 0.8.1, the **capability/uid drop** via
-util-linux `setpriv`. Still unenforced: `ProtectSystem=`/`ReadWritePaths=`
-(read-only fs), `SystemCallFilter=`/`RestrictAddressFamilies=` (seccomp), and
-the W^X / namespace-restriction directives — all surfaced today as
-`--confine` warnings (`confine.Plan.Unsupported`).
+util-linux `setpriv`. Now also enforced: `ProtectSystem=strict` +
+`ReadWritePaths=` (read-only fs, agent mount namespace — §3). Still unenforced:
+`SystemCallFilter=`/`RestrictAddressFamilies=` (seccomp) and the W^X /
+namespace-restriction directives — surfaced as `--confine` warnings
+(`confine.Plan.Unsupported`).
 
 ---
 
@@ -97,12 +100,14 @@ this declaratively:
 (`PR_CAPBSET_DROP`), set `no_new_privs`, or install a seccomp filter — those are
 imperative steps that must run in the child post-clone, pre-exec.
 
-**Decision: a re-exec shim.** The agent re-execs *itself* as
-`dew-agent --confine-shim <fd-or-json>` with the namespace flags in
-`SysProcAttr`; the shim process (now inside the new mount ns) performs the
-imperative steps in order, then `exec`s the real target. This is the standard
-pattern (runc/crun do the same). The shim stays in the static no-cgo agent
-binary, so no extra asset. Order inside the shim:
+**Decision: a re-exec shim.** The agent re-execs *itself* with argv
+`[exe, --dew-confine-shim, targetCmd, args...]` (the `--dew-confine-shim`
+sentinel; see `cmd/dew-agent/confine.go`), the spec passed in the
+`DEW_CONFINE_SPEC` env var, and the namespace flags in `SysProcAttr`; the shim
+process (now inside the new mount ns) performs the imperative steps in order,
+then `exec`s the real target. This is the standard pattern (runc/crun do the
+same). The shim stays in the static no-cgo agent binary, so no extra asset.
+Order inside the shim:
 
 1. `unshare`-side already done by parent's `Cloneflags` (mount ns).
 2. make mounts private (`mount("", "/", "", MS_REC|MS_PRIVATE, "")`).
