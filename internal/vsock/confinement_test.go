@@ -19,6 +19,7 @@ func TestConfinement_Set(t *testing.T) {
 		"dynamic":  {DynamicUser: true},
 		"nnp":      {NoNewPrivs: true},
 		"dropall":  {DropAllCaps: true},
+		"keepcaps": {KeepCaps: []string{"cap_net_bind_service"}},
 		"dropcaps": {DropCaps: []string{"cap_sys_admin"}},
 		"rofs":     {ReadOnlyRoot: true},
 		"rwpaths":  {ReadWritePaths: []string{"/var/lib/app"}},

@@ -131,7 +131,8 @@ func (c *Confinement) Set() bool {
 		return false
 	}
 	return c.User != "" || c.Group != "" || c.DynamicUser || c.NoNewPrivs ||
-		c.DropAllCaps || len(c.DropCaps) > 0 || c.ReadOnlyRoot || len(c.ReadWritePaths) > 0
+		c.DropAllCaps || len(c.KeepCaps) > 0 || len(c.DropCaps) > 0 ||
+		c.ReadOnlyRoot || len(c.ReadWritePaths) > 0
 }
 
 // InputChunk carries stdin from host to guest during a streaming exec.
