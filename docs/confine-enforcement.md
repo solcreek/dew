@@ -247,9 +247,10 @@ arch are dropped (unreachable, so safe). `@`-groups can't be faithfully
 approximated without 5c's table, so a unit using them enforces nothing for
 `SystemCallFilter=` and the directive is surfaced as unenforced.
 
-Both filters are installed on the locked exec thread after the uid/caps drop, no_
-new_privs (a seccomp spec implies no_new_privs, mirroring systemd), and `LookPath`
-(so an allowlist doesn't `EPERM` the PATH resolution); they stack and the kernel
+Both filters are installed on the locked exec thread after the uid/caps drop,
+`no_new_privs` (a seccomp spec implies no_new_privs, mirroring systemd), and
+`LookPath` (so an allowlist doesn't `EPERM` the PATH resolution); they stack and
+the kernel
 takes the most-restrictive action. Verified by in-VM unit tests (a cBPF
 interpreter for the socket filter; policy-shape for the syscall filter) plus boot
 tests (denylist blocks the syscall while the Go runtime still runs; composes with
