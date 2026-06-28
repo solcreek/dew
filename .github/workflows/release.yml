@@ -273,7 +273,9 @@ jobs:
           go-version: '1.25'
 
       - name: install cosign
-        uses: sigstore/cosign-installer@v4
+        # cosign-installer publishes no moving v4 tag (only a moving v3 + specific
+        # v4.x), so @v4 fails to resolve; pin the latest specific release.
+        uses: sigstore/cosign-installer@v4.1.2
         with:
           cosign-release: "v2.4.1"
 
