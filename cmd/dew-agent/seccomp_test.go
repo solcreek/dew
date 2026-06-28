@@ -21,6 +21,22 @@ func TestResolveAddressFamily(t *testing.T) {
 	}
 }
 
+func TestResolveFamilies(t *testing.T) {
+	// AF_LOCAL aliases AF_UNIX and a literal repeat collapse to one, first-seen
+	// order preserved.
+	got, err := resolveFamilies([]string{"AF_INET", "AF_UNIX", "AF_LOCAL", "AF_INET"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []uint32{uint32(unix.AF_INET), uint32(unix.AF_UNIX)}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("resolveFamilies = %v, want %v (deduped, first-seen order)", got, want)
+	}
+	if _, err := resolveFamilies([]string{"AF_INET", "AF_BOGUS"}); err == nil {
+		t.Error("an unknown family should fail closed")
+	}
+}
+
 // runFilter is a minimal classic-BPF interpreter for the opcodes
 // socketFamilyFilter emits (LD abs word, JEQ k, RET k). It returns the matched
 // SECCOMP_RET_* value for a synthetic seccomp_data.

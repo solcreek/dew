@@ -36,6 +36,27 @@ var addressFamilyByName = map[string]int{
 	"af_rds":       unix.AF_RDS,
 }
 
+// resolveFamilies resolves the AF_* names to numbers, de-duplicating (drop-ins
+// and aliases like AF_UNIX+AF_LOCAL can repeat a number) while preserving
+// first-seen order, so the generated BPF stays minimal and the u8 jump offsets
+// don't overflow for a representable config.
+func resolveFamilies(names []string) ([]uint32, error) {
+	fams := make([]uint32, 0, len(names))
+	seen := make(map[uint32]bool, len(names))
+	for _, name := range names {
+		fam, err := resolveAddressFamily(name)
+		if err != nil {
+			return nil, err
+		}
+		if seen[fam] {
+			continue
+		}
+		seen[fam] = true
+		fams = append(fams, fam)
+	}
+	return fams, nil
+}
+
 func resolveAddressFamily(name string) (uint32, error) {
 	if v, ok := addressFamilyByName[strings.ToLower(strings.TrimSpace(name))]; ok {
 		return uint32(v), nil
@@ -169,13 +190,9 @@ func applySeccomp(c *protocol.Confinement) error {
 	if !needsSeccomp(c) {
 		return nil
 	}
-	fams := make([]uint32, 0, len(c.AddressFamilies))
-	for _, name := range c.AddressFamilies {
-		fam, err := resolveAddressFamily(name)
-		if err != nil {
-			return err
-		}
-		fams = append(fams, fam)
+	fams, err := resolveFamilies(c.AddressFamilies)
+	if err != nil {
+		return err
 	}
 
 	var nativeArch uint32
