@@ -107,7 +107,7 @@ the caller left the global defaults (1 CPU / 512MB / no disk); explicit
 
 ### Kernel strategy
 
-**Shipped default (both arches): Alpine `linux-virt` 6.12.93-0-virt.**
+**Shipped default (both arches): Alpine `linux-virt` 6.12.94-0-virt.**
 `initramfs/build.sh` downloads the `linux-virt` APK (version pinned per-arch at
 the top of the script), extracts the kernel, and releases it as the
 `vmlinuz-<arch>` asset (`kernelAssetName()` in `cmd/dew/assets_path.go`). This
