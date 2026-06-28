@@ -1465,14 +1465,17 @@ func cmdRun(args []string) error {
 		}
 		confinePlan = p
 		cfg.Cgroup = vm.CgroupLimits{MemoryBytes: p.MemoryBytes, PidsMax: p.PidsMax, CPUQuota: p.CPUQuota}
-		// setpriv ships only in the standard profile. --confine intent
-		// dominates: force standard unless the user already chose it.
-		if p.NeedsSetpriv() && flagProfile != "standard" {
+		// The privilege drop is now native (prctl/capset in the agent shim), so
+		// it no longer needs the standard profile's setpriv — uid/caps work on
+		// any profile, including minimal. Only the read-only filesystem still
+		// forces standard: it was validated there (the disk-backed rootfs), so
+		// keep that gate until ro-fs is boot-tested on a diskless profile.
+		if p.ReadOnlyRoot && flagProfile != "standard" {
 			// Always surface the override (even in --json): it changes which
 			// profile/disk/image the VM boots, which a scripted caller needs to
 			// know. It goes to stderr, so it doesn't pollute the stdout NDJSON.
 			if flagProfile != "" {
-				fmt.Fprintf(os.Stderr, "dew: --confine needs setpriv (privilege drop); using --profile standard instead of %s\n", flagProfile)
+				fmt.Fprintf(os.Stderr, "dew: --confine read-only filesystem needs a disk-backed rootfs; using --profile standard instead of %s\n", flagProfile)
 			}
 			flagProfile = "standard"
 		}
@@ -1766,19 +1769,12 @@ func cmdRun(args []string) error {
 		}
 	}
 
-	// --confine: prepend the setpriv privilege-drop prefix so the command
-	// runs as the unit's uid with its capability bounding set. The cgroup
-	// limits already crossed via cfg.Cgroup → appendGuestParams. A single
-	// shell arg is wrapped so setpriv execs a real argv, not a bare string.
-	if prefix := confinePlan.SetprivArgs(); len(prefix) > 0 {
-		cmdArgs = wrapWithSetpriv(prefix, cmdArgs)
-	}
-
-	// --confine read-only fs is applied guest-side by the agent (mount ns).
-	// Unlike the setpriv prefix above, it can't ride the argv, so it travels in
-	// the ExecRequest and only the vsock batch path carries it: fail loudly
-	// rather than silently skip the protection on --stream or the serial
-	// fallback.
+	// --confine is enforced entirely guest-side by the agent's re-exec shim
+	// (read-only fs in a mount namespace, plus the native capability/uid/
+	// no_new_privs drop). The spec travels in the ExecRequest, and only the
+	// vsock batch path drives the shim — fail loudly rather than silently skip
+	// the confinement on --stream or the serial fallback. (cgroup limits cross
+	// separately via cfg.Cgroup → appendGuestParams and are unaffected.)
 	confineSpec := confinementFromPlan(confinePlan)
 	if confineSpec != nil && flagStream {
 		d.Stop(context.Background())
@@ -1786,7 +1782,7 @@ func cmdRun(args []string) error {
 		// serialexec drain goroutine doesn't linger on this error path.
 		hostReader.Close()
 		hostWriter.Close()
-		return dewerr.New(dewerr.CodeUsage, "--confine read-only filesystem (ProtectSystem=strict) is not supported with --stream yet")
+		return dewerr.New(dewerr.CodeUsage, "--confine is not supported with --stream yet (the confinement shim runs on the vsock batch path)")
 	}
 
 	// argv-or-shell decision: 2+ args → exec argv directly (no
@@ -1829,8 +1825,9 @@ func cmdRun(args []string) error {
 		fmt.Fprintf(os.Stderr, "dew: vsock unavailable, using serial\n")
 		if confineSpec != nil {
 			// The serial path has no ExecRequest channel, so the agent never
-			// receives the spec — the read-only fs would silently not apply.
-			fmt.Fprintf(os.Stderr, "dew: warning: --confine read-only filesystem not enforced over the serial fallback\n")
+			// receives the spec — the confinement (read-only fs + privilege drop)
+			// would silently not apply.
+			fmt.Fprintf(os.Stderr, "dew: warning: --confine not enforced over the serial fallback\n")
 		}
 		if err := sExec.WaitReady(budget.window(60 * time.Second)); err != nil {
 			d.Stop(context.Background())
@@ -3484,31 +3481,32 @@ func runExecStreaming(args []string, timeoutMs int, tty bool) error {
 // structured their input as argv knows they're not going through a
 // shell; the only time we should wrap is when there's a single string
 // that the user implicitly expects shell parsing on.
-// wrapWithSetpriv prepends a setpriv privilege-drop prefix to the user's
-// command for `dew run --confine`. A single shell-string arg is wrapped in
-// `/bin/sh -c` so setpriv execs a real argv (it does not parse shell syntax),
-// matching argvOrShellWrap's single-arg behavior.
+
 // confinementFromPlan builds the agent-applied confinement spec from a parsed
-// unit. Only the read-only-filesystem half is agent-applied today; the uid/caps
-// drop still rides the host-built setpriv prefix (see wrapWithSetpriv), so this
-// returns nil unless the unit declares ProtectSystem=strict. ReadWritePaths are
-// only meaningful alongside a read-only root, so they're carried only then.
+// unit. The agent's re-exec shim enforces the whole spec natively — read-only
+// filesystem (mount namespace) plus the capability/uid/no_new_privs drop — so
+// all of it travels in the ExecRequest. DynamicUser= is pre-resolved to a
+// concrete uid here so the agent doesn't need confine's fallback constant.
+// Returns nil when the unit constrains nothing the shim applies.
 func confinementFromPlan(p confine.Plan) *vsockProto.Confinement {
-	if !p.ReadOnlyRoot {
-		return nil
-	}
-	return &vsockProto.Confinement{
-		ReadOnlyRoot:   true,
+	c := &vsockProto.Confinement{
+		User:           p.UID,
+		Group:          p.GID,
+		DynamicUser:    p.DynamicUser,
+		NoNewPrivs:     p.NoNewPrivs,
+		DropAllCaps:    p.DropAllCaps,
+		KeepCaps:       p.KeepCaps,
+		DropCaps:       p.DropCaps,
+		ReadOnlyRoot:   p.ReadOnlyRoot,
 		ReadWritePaths: p.ReadWritePaths,
 	}
-}
-
-func wrapWithSetpriv(prefix, cmdArgs []string) []string {
-	inner := cmdArgs
-	if len(cmdArgs) == 1 {
-		inner = []string{"/bin/sh", "-c", cmdArgs[0]}
+	if c.User == "" && c.DynamicUser {
+		c.User = confine.DynamicUserUID
 	}
-	return append(append(append([]string{}, prefix...), "--"), inner...)
+	if !c.Set() {
+		return nil
+	}
+	return c
 }
 
 func argvOrShellWrap(cliArgs []string) (command string, args []string) {

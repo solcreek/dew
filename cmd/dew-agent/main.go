@@ -232,9 +232,9 @@ func executeCommand(req protocol.ExecRequest) protocol.ExecResponse {
 
 	var cmd *exec.Cmd
 	if req.Confine.Set() {
-		// Confined exec re-execs through the shim (mount-ns read-only fs); the
-		// shim sets Dir/Env and applies the spec, then execs the target. uid/caps
-		// still ride the host-built setpriv prefix in req.Command/Args.
+		// Confined exec re-execs through the shim, which applies the spec
+		// (read-only fs in a mount namespace, then the native capability/uid/
+		// no_new_privs drop) and execs the target. No setpriv prefix.
 		cmd = confineExecCmd(ctx, req)
 	} else {
 		cmd = exec.CommandContext(ctx, req.Command, req.Args...)
