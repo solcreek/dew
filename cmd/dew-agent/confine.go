@@ -169,8 +169,15 @@ func setprivDropsID(target []string) bool {
 }
 
 // dropToUser drops gid/groups/uid to the named user (DEW_EXEC_USER) before
-// exec, mirroring setExecUser on the unconfined path. gid before uid so the
-// group change is still permitted while we hold root.
+// exec, mirroring setExecUser on the unconfined path. groups then gid then uid,
+// so each step is still permitted while we hold root.
+//
+// Supplementary groups are CLEARED, matching the unconfined path: Go runs the
+// DEW_EXEC_USER exec via SysProcAttr.Credential{Uid,Gid} with no Groups, which
+// calls setgroups to empty. Keeping confined == unconfined here is the point;
+// we deliberately do not initgroups the user's full group list (that would be
+// more permissive than the unconfined path — systemd User= supplementary-group
+// fidelity is the setpriv path's job, not this DEW_EXEC_USER mirror).
 func dropToUser(name string) error {
 	u, err := user.Lookup(name)
 	if err != nil {
@@ -184,7 +191,7 @@ func dropToUser(name string) error {
 	if err != nil {
 		return fmt.Errorf("gid %q: %w", u.Gid, err)
 	}
-	if err := unix.Setgroups([]int{gid}); err != nil {
+	if err := unix.Setgroups([]int{}); err != nil {
 		return fmt.Errorf("setgroups: %w", err)
 	}
 	if err := unix.Setresgid(gid, gid, gid); err != nil {
