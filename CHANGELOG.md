@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`dew run --confine` fails closed when the guest can't enforce it.** The
+  agent now advertises native confinement support in its vsock handshake ack
+  (`ConnectResponse.Confine`); if `--confine` is requested against an agent that
+  doesn't acknowledge it (an older guest, typically a mismatched
+  `--initrd`/`--kernel`), `dew run` errors before exec instead of silently
+  running the command unconfined. The serial fallback path now errors for the
+  same reason (previously a warning). On the normal path the bundled agent
+  always acks, so this only affects overridden guests. Verified by boot tests
+  (new host + new agent applies the drop; new host + old agent exits 105).
+
 - **`dew run --confine` drops privileges natively (no more `setpriv`).** The
   capability bounding set, `User=`/`Group=`/`DynamicUser=`, and
   `NoNewPrivileges=` are now applied by the agent's confinement shim via

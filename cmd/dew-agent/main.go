@@ -156,7 +156,10 @@ func handleConn(conn net.Conn) {
 			if !tokenSet {
 				authToken = req.Token
 				tokenSet = true
-				protocol.WriteJSON(conn, &protocol.ConnectResponse{OK: true})
+				// Advertise native confinement support so a newer host can
+				// fail closed against an older agent that would ignore the
+				// ExecRequest.Confine spec.
+				protocol.WriteJSON(conn, &protocol.ConnectResponse{OK: true, Confine: true})
 			} else {
 				protocol.WriteJSON(conn, &protocol.ConnectResponse{Error: "token already set"})
 			}

@@ -179,6 +179,12 @@ type ConnectRequest struct {
 type ConnectResponse struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+	// Confine is the SetToken handshake's positive acknowledgement that this
+	// agent applies the ExecRequest.Confine spec natively (read-only fs +
+	// uid/caps/no_new_privs drop). An older agent omits the field, so it
+	// decodes to false and the host fails closed rather than silently running
+	// a --confine command unconfined. omitempty: irrelevant on other replies.
+	Confine bool `json:"confine,omitempty"`
 }
 
 type PingResponse struct {

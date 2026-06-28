@@ -8,7 +8,52 @@ import (
 	"testing"
 
 	"github.com/solcreek/dew/internal/confine"
+	vsockProto "github.com/solcreek/dew/internal/vsock"
+	"github.com/solcreek/dew/pkg/dewerr"
 )
+
+// confineUnenforceableErr fails closed whenever a --confine spec can't reach
+// and be applied by the agent shim; nil spec or an acking vsock agent is fine.
+func TestConfineUnenforceableErr(t *testing.T) {
+	spec := &vsockProto.Confinement{User: "1000"}
+
+	// No spec → never an error, whatever the channel.
+	if err := confineUnenforceableErr(nil, true, false, false, true); err != nil {
+		t.Errorf("nil spec should be enforceable, got %v", err)
+	}
+
+	// Happy path: vsock handshake done, agent advertised support.
+	if err := confineUnenforceableErr(spec, false, true, true, false); err != nil {
+		t.Errorf("acking vsock agent should be enforceable, got %v", err)
+	}
+
+	// --stream → usage error (the shim runs on the batch path only).
+	if err := confineUnenforceableErr(spec, true, true, true, false); err == nil {
+		t.Error("--stream should be rejected")
+	} else if dewerr.CodeOf(err) != dewerr.CodeUsage {
+		t.Errorf("--stream code = %v, want CodeUsage", dewerr.CodeOf(err))
+	}
+
+	// Old agent: handshake completed but no confine ack → fail closed.
+	if err := confineUnenforceableErr(spec, false, true, false, false); err == nil {
+		t.Error("non-acking agent should be rejected")
+	} else if dewerr.CodeOf(err) != dewerr.CodeUnavailable {
+		t.Errorf("old-agent code = %v, want CodeUnavailable", dewerr.CodeOf(err))
+	}
+
+	// Serial fallback → fail closed (no ExecRequest channel).
+	if err := confineUnenforceableErr(spec, false, false, false, true); err == nil {
+		t.Error("serial fallback should be rejected")
+	} else if dewerr.CodeOf(err) != dewerr.CodeUnavailable {
+		t.Errorf("serial code = %v, want CodeUnavailable", dewerr.CodeOf(err))
+	}
+
+	// No handshake and not yet on the serial branch → defer (no error), so the
+	// caller's serial path emits the accurate "vsock unavailable" message.
+	if err := confineUnenforceableErr(spec, false, false, false, false); err != nil {
+		t.Errorf("pre-serial no-handshake should defer, got %v", err)
+	}
+}
 
 // confinementFromPlan now carries the whole spec to the agent (the shim applies
 // caps/uid/no_new_privs natively, not setpriv), so a privilege-drop-only unit
