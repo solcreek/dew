@@ -329,9 +329,10 @@ func applySystemCalls(p *Plan, val string, unknownGroups *[]string, note func(st
 		return
 	}
 	deny := strings.HasPrefix(val, "~")
-	if len(p.SystemCalls) > 0 && p.SystemCallsDeny != deny {
+	if (len(p.SystemCalls) > 0 || len(*unknownGroups) > 0) && p.SystemCallsDeny != deny {
 		// Polarity flip: dew keeps the last form, so drop prior entries and the
-		// prior unknown-group state with them.
+		// prior unknown-group state with them. Gate on either accumulator — a prior
+		// form of only unknown @-groups leaves SystemCalls empty but must still flip.
 		note("SystemCallFilter= mixes allow and deny forms (approximated by the last form)")
 		p.SystemCalls = nil
 		*unknownGroups = nil

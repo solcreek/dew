@@ -434,6 +434,17 @@ func TestParse_SystemCallFilter(t *testing.T) {
 	if !strings.Contains(strings.Join(p.Unsupported, "\n"), "mixes allow and deny") {
 		t.Error("SystemCallFilter polarity flip should be surfaced")
 	}
+
+	// A flip away from a prior form of ONLY unknown @-groups must clear the
+	// unknown-group state (SystemCalls was empty), so the last form is enforced
+	// rather than voided.
+	p, _ = Parse(strings.NewReader("[Service]\nSystemCallFilter=@no-such-group\nSystemCallFilter=~read\n"))
+	if !reflect.DeepEqual(p.SystemCalls, []string{"read"}) || !p.SystemCallsDeny {
+		t.Errorf("flip from unknown-group-only → %v deny=%v", p.SystemCalls, p.SystemCallsDeny)
+	}
+	if strings.Contains(strings.Join(p.Unsupported, "\n"), "@no-such-group") {
+		t.Error("flip should have cleared the prior unknown-group state")
+	}
 }
 
 // TestSystemdSyscallGroups checks the generated table is fully resolved (no
