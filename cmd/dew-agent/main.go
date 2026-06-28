@@ -55,7 +55,12 @@ func main() {
 	// standard profile whenever the inherited PATH lists /bin before /usr/bin
 	// — making the capability drop fail to launch. DefaultPath orders /usr/bin
 	// before /bin, so the util-linux setpriv is selected.
-	os.Setenv("PATH", guestenv.DefaultPath)
+	if err := os.Setenv("PATH", guestenv.DefaultPath); err != nil {
+		// Unreachable for a constant valid key (Setenv only errors on an
+		// empty key or one containing '='/NUL), but don't silently ignore it:
+		// a stale PATH would reintroduce the setpriv shadowing.
+		log.Printf("dew-agent: pin PATH failed: %v", err)
+	}
 
 	// Token is now injected via vsock handshake, not env/cmdline
 	execUser = os.Getenv("DEW_EXEC_USER")
