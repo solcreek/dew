@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
+	"path/filepath"
+	"strconv"
 	"syscall"
 
 	"github.com/solcreek/dew/internal/guestenv"
@@ -57,6 +60,18 @@ func runConfineShim(target []string) error {
 			return err
 		}
 	}
+	// Preserve unprivileged-exec mode. The unconfined path drops to
+	// DEW_EXEC_USER (setExecUser); the shim must too, or a ProtectSystem=strict
+	// -only confinement (no setpriv prefix) would run the target as root — an
+	// escalation relative to the unconfined path. Done here, after the mounts
+	// (which need root), and skipped when the target is a setpriv invocation:
+	// there the unit's own User= drop takes over, and setpriv can't change uid
+	// once we've already dropped.
+	if u := os.Getenv("DEW_EXEC_USER"); u != "" && filepath.Base(target[0]) != "setpriv" {
+		if err := dropToUser(u); err != nil {
+			return fmt.Errorf("drop to user %q: %w", u, err)
+		}
+	}
 	path, err := exec.LookPath(target[0])
 	if err != nil {
 		return fmt.Errorf("resolve %q: %w", target[0], err)
@@ -103,6 +118,34 @@ func bindReadWrite(p string) error {
 	}
 	if err := unix.Mount("", p, "", unix.MS_BIND|unix.MS_REMOUNT, ""); err != nil {
 		return fmt.Errorf("remount rw: %w", err)
+	}
+	return nil
+}
+
+// dropToUser drops gid/groups/uid to the named user (DEW_EXEC_USER) before
+// exec, mirroring setExecUser on the unconfined path. gid before uid so the
+// group change is still permitted while we hold root.
+func dropToUser(name string) error {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return err
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return fmt.Errorf("uid %q: %w", u.Uid, err)
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return fmt.Errorf("gid %q: %w", u.Gid, err)
+	}
+	if err := unix.Setgroups([]int{gid}); err != nil {
+		return fmt.Errorf("setgroups: %w", err)
+	}
+	if err := unix.Setresgid(gid, gid, gid); err != nil {
+		return fmt.Errorf("setresgid: %w", err)
+	}
+	if err := unix.Setresuid(uid, uid, uid); err != nil {
+		return fmt.Errorf("setresuid: %w", err)
 	}
 	return nil
 }
