@@ -58,7 +58,7 @@ jobs:
     needs: [build-linux]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
@@ -70,7 +70,7 @@ jobs:
         run: bash scripts/setup-signing-keychain.sh
 
       - name: Download asset SHA manifest
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: asset-shas
           path: ${{ runner.temp }}/shas
@@ -119,7 +119,7 @@ jobs:
           [ -f dew-darwin-amd64 ] && cp dew-darwin-amd64 prebuilt/dew-darwin-amd64/dew || true
 
       - name: Upload darwin artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: macos-binaries
           path: |
@@ -135,7 +135,7 @@ jobs:
     needs: [guard-immutable-tag]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
@@ -231,13 +231,13 @@ jobs:
         # Small standalone artifact so build-macos can embed the SHAs
         # into the darwin binaries without pulling the ~150 MB of
         # initramfs in linux-assets.
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: asset-shas
           path: assets-shas.txt
 
       - name: Upload linux artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: linux-assets
           path: |
@@ -264,7 +264,7 @@ jobs:
     outputs:
       hashes: ${{ steps.hashes.outputs.hashes }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # goreleaser needs full history for changelog
 
@@ -273,12 +273,12 @@ jobs:
           go-version: '1.25'
 
       - name: install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@v4
         with:
           cosign-release: "v2.4.1"
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           # Outside the repo tree so goreleaser's "git dirty" check
           # doesn't trip on the untracked download dir.
@@ -309,7 +309,7 @@ jobs:
         # the tap repo + expires in ~1h. No PAT, no user-bound binding.
         # Explicit permission-* inputs ensure the minted token includes
         # write access even if the install-token inheritance gets quirky.
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         id: tap-token
         with:
           app-id: ${{ secrets.HOMEBREW_TAP_APP_ID }}
@@ -482,7 +482,7 @@ jobs:
       contents: write
       id-token: write
       actions: read
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: ${{ needs.goreleaser.outputs.hashes }}
       upload-assets: true
@@ -501,7 +501,7 @@ jobs:
       contents: read
       id-token: write   # npm OIDC trusted publisher
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v6
         with:
