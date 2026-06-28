@@ -1634,9 +1634,16 @@ func cmdRun(args []string) error {
 	var agentConfine bool // agent advertised native --confine support in its ack
 	if conn, err := connectVsockDeadline(d, cfg.VsockPort, budget.window(vsockReadySec*time.Second)); err == nil {
 		req := vsockProto.SetTokenRequest{Type: vsockProto.TypeSetToken, Token: token}
-		vsockProto.WriteJSON(conn, &req)
 		var resp vsockProto.ConnectResponse
-		vsockProto.ReadJSONTimeout(conn, &resp, 5*time.Second)
+		// Surface the cause when vsock was reachable but the handshake itself
+		// failed (otherwise tokenSent stays false and we silently degrade to
+		// the serial fallback, masking the real reason). Still fall back rather
+		// than hard-fail so a non-confine run on a wedged agent can proceed.
+		if werr := vsockProto.WriteJSON(conn, &req); werr != nil {
+			fmt.Fprintf(os.Stderr, "dew: token handshake write failed: %v\n", werr)
+		} else if rerr := vsockProto.ReadJSONTimeout(conn, &resp, 5*time.Second); rerr != nil {
+			fmt.Fprintf(os.Stderr, "dew: token handshake read failed: %v\n", rerr)
+		}
 		conn.Close()
 		tokenSent = resp.OK
 		agentConfine = resp.Confine
@@ -3496,10 +3503,11 @@ func runExecStreaming(args []string, timeoutMs int, tty bool) error {
 // guest, usually a mismatched --initrd/--kernel — the bundled agent always
 // acks). A nil spec, or a vsock path against an acking agent, returns nil.
 //
-// vsockHandshook reports that the SetToken handshake completed; when it didn't,
-// the old-agent check is skipped so the caller's serial path produces the more
-// accurate "vsock unavailable" error instead.
-func confineUnenforceableErr(spec *vsockProto.Confinement, stream, vsockHandshook, agentConfine, serial bool) error {
+// tokenAcked reports that the agent acknowledged the SetToken handshake
+// (resp.OK) — only then is agentConfine a trustworthy reading. When it's false
+// (read failure or a rejected token) the old-agent check is skipped so the
+// caller's serial path produces the more accurate "vsock unavailable" error.
+func confineUnenforceableErr(spec *vsockProto.Confinement, stream, tokenAcked, agentConfine, serial bool) error {
 	if spec == nil {
 		return nil
 	}
@@ -3508,7 +3516,7 @@ func confineUnenforceableErr(spec *vsockProto.Confinement, stream, vsockHandshoo
 		return dewerr.New(dewerr.CodeUsage, "--confine is not supported with --stream yet (the confinement shim runs on the vsock batch path)")
 	case serial:
 		return dewerr.New(dewerr.CodeUnavailable, "--confine cannot be enforced over the serial fallback (vsock unavailable); refusing to run unconfined")
-	case vsockHandshook && !agentConfine:
+	case tokenAcked && !agentConfine:
 		return dewerr.New(dewerr.CodeUnavailable, "the guest agent does not support --confine (its handshake did not advertise confinement support); update the guest agent/initramfs or drop --confine — a mismatched --initrd/--kernel is the usual cause")
 	}
 	return nil
