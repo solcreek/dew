@@ -69,6 +69,12 @@ func runConfineShim(target []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve %q: %w", target[0], err)
 	}
+	// Seccomp filters last — after LookPath so an allowlist doesn't EPERM the
+	// PATH resolution, and on the same thread applyPrivilegeDrop locked (which
+	// already set no_new_privs for us). Only execve runs after this.
+	if err := applySeccomp(&c); err != nil {
+		return err
+	}
 	// Don't leak the shim's internal control channel into the confined process.
 	os.Unsetenv("DEW_CONFINE_SPEC")
 	return syscall.Exec(path, target, os.Environ())

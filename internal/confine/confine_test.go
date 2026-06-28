@@ -342,6 +342,42 @@ func TestParse_RestrictAddressFamilies(t *testing.T) {
 	}
 }
 
+func TestParse_SystemCallFilter(t *testing.T) {
+	// Allowlist: explicit names, lower-cased, deny=false.
+	p, err := Parse(strings.NewReader("[Service]\nSystemCallFilter=read WRITE\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(p.SystemCalls, []string{"read", "write"}) || p.SystemCallsDeny {
+		t.Errorf("allowlist → %v deny=%v", p.SystemCalls, p.SystemCallsDeny)
+	}
+	if !p.Confined() {
+		t.Error("SystemCallFilter should make the plan confined")
+	}
+
+	// Denylist (~), with a per-syscall errno suffix stripped to the name.
+	p, _ = Parse(strings.NewReader("[Service]\nSystemCallFilter=~mkdir chmod:EPERM\n"))
+	if !reflect.DeepEqual(p.SystemCalls, []string{"mkdir", "chmod"}) || !p.SystemCallsDeny {
+		t.Errorf("denylist → %v deny=%v", p.SystemCalls, p.SystemCallsDeny)
+	}
+
+	// Empty assignment resets.
+	p, _ = Parse(strings.NewReader("[Service]\nSystemCallFilter=read\nSystemCallFilter=\n"))
+	if len(p.SystemCalls) != 0 {
+		t.Errorf("reset → %v, want empty", p.SystemCalls)
+	}
+
+	// @-groups can't be expanded (5c): the whole directive is voided and surfaced
+	// as unenforced, even when mixed with explicit names.
+	p, _ = Parse(strings.NewReader("[Service]\nSystemCallFilter=@system-service read\n"))
+	if len(p.SystemCalls) != 0 || p.SystemCallsDeny {
+		t.Errorf("@-group directive should enforce nothing, got %v", p.SystemCalls)
+	}
+	if !strings.Contains(strings.Join(p.Unsupported, "\n"), "@-groups") {
+		t.Error("@-group SystemCallFilter should be surfaced as unenforced")
+	}
+}
+
 func TestParse_SizeUnits(t *testing.T) {
 	tests := map[string]int64{
 		"1G": 1 << 30, "512M": 512 << 20, "64K": 64 << 10, "1048576": 1 << 20,

@@ -110,15 +110,17 @@ Flags:
                          CapabilityBoundingSet=, NoNewPrivileges=, applied via
                          prctl/capset in the guest agent), a read-only rootfs
                          (ProtectSystem=strict + ReadWritePaths=, applied in a
-                         mount namespace), and a socket-family seccomp filter
-                         (RestrictAddressFamilies=), and run the command under
+                         mount namespace), and seccomp filters
+                         (RestrictAddressFamilies= and explicit
+                         SystemCallFilter= names), and run the command under
                          them. The privilege drop and seccomp work on any
                          profile; the read-only fs forces --profile standard. A
                          unit with a privilege drop, seccomp, or read-only fs
                          needs the vsock batch path (not --stream); cgroup-only
                          units can still stream. Still an APPROXIMATION —
-                         directives it can't enforce (SystemCallFilter=, ...) are
-                         printed as warnings, not applied.
+                         directives it can't enforce (SystemCallFilter= @-groups
+                         like @system-service, ...) are printed as warnings, not
+                         applied.
   --json                 Pass guest exit code in JSON; dew exits 0.
   --stream / --events    Stream stdout/stderr live.
   --timeout DUR          Overall wall-clock bound for the whole run

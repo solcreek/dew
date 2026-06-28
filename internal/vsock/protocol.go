@@ -106,9 +106,9 @@ type ExecRequest struct {
 //   - User/Group/DynamicUser/NoNewPrivs/DropAllCaps/KeepCaps/DropCaps — APPLIED
 //     natively by the shim (prctl/capset/setresuid), replacing the former
 //     host-built setpriv prefix.
-//   - RestrictAddressFamilies= — APPLIED by the shim as a socket(2)/socketpair(2)
-//     BPF seccomp filter. SystemCallFilter= is still design-only (see
-//     docs/confine-enforcement.md §5).
+//   - RestrictAddressFamilies= / explicit SystemCallFilter= — APPLIED by the
+//     shim as BPF seccomp filters. SystemCallFilter= @-groups (e.g.
+//     @system-service) are not yet expanded (see docs/confine-enforcement.md §5).
 type Confinement struct {
 	// Privilege drop — applied natively by the agent shim.
 	User        string   `json:"user,omitempty"`         // uid or username; "" = unchanged
@@ -128,6 +128,12 @@ type Confinement struct {
 	// AddressFamiliesDeny is the systemd `~` (denylist) form.
 	AddressFamilies     []string `json:"address_families,omitempty"`
 	AddressFamiliesDeny bool     `json:"address_families_deny,omitempty"`
+	// Seccomp (SystemCallFilter=) — explicit syscall names applied by the agent
+	// shim as a BPF filter. SystemCallsDeny is the systemd `~` (denylist) form.
+	// @-groups are not represented here (the host leaves these empty and surfaces
+	// the directive as unenforced).
+	SystemCalls     []string `json:"system_calls,omitempty"`
+	SystemCallsDeny bool     `json:"system_calls_deny,omitempty"`
 }
 
 // Set reports whether the spec constrains anything (so the agent can skip the
@@ -138,7 +144,8 @@ func (c *Confinement) Set() bool {
 	}
 	return c.User != "" || c.Group != "" || c.DynamicUser || c.NoNewPrivs ||
 		c.DropAllCaps || len(c.KeepCaps) > 0 || len(c.DropCaps) > 0 ||
-		c.ReadOnlyRoot || len(c.ReadWritePaths) > 0 || len(c.AddressFamilies) > 0
+		c.ReadOnlyRoot || len(c.ReadWritePaths) > 0 || len(c.AddressFamilies) > 0 ||
+		len(c.SystemCalls) > 0
 }
 
 // InputChunk carries stdin from host to guest during a streaming exec.

@@ -240,10 +240,12 @@ func resolveDropID(c *protocol.Confinement, execUser string) (idSpec, error) {
 	return id, nil
 }
 
-// applyPrivilegeDrop performs the native uid/gid/capability/no_new_privs drop
-// and installs the seccomp filter in the shim child, replacing the host-side
-// setpriv prefix. It runs after the mount-namespace work (which needs root) and
-// just before exec.
+// applyPrivilegeDrop performs the native uid/gid/capability/no_new_privs drop in
+// the shim child, replacing the host-side setpriv prefix. It runs after the
+// mount-namespace work (which needs root) and just before exec. It also sets
+// no_new_privs when a seccomp spec is present (seccomp(2) needs it); the seccomp
+// filter itself is installed later, by runConfineShim after LookPath, on the
+// thread this locks.
 //
 // Capabilities, no_new_privs and credentials are per-thread (per-task) in Linux,
 // and execve checks the calling thread's credentials and destroys the others.
@@ -334,19 +336,15 @@ func applyPrivilegeDrop(c *protocol.Confinement, execUser string) error {
 		}
 	}
 
-	// no_new_privs before seccomp: it never blocks raising already-held caps, and
-	// seccomp(2) requires it (or CAP_SYS_ADMIN) for an unprivileged caller. A
-	// seccomp spec implies no_new_privs, mirroring systemd.
+	// no_new_privs last: it never blocks raising already-held caps, and seccomp(2)
+	// requires it (or CAP_SYS_ADMIN) for an unprivileged caller. A seccomp spec
+	// implies no_new_privs, mirroring systemd. The filter itself is installed by
+	// runConfineShim after LookPath (so an allowlist doesn't EPERM the PATH
+	// resolution), on this same locked thread.
 	if c.NoNewPrivs || wantSeccomp {
 		if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 			return fmt.Errorf("set no_new_privs: %w", err)
 		}
-	}
-
-	// seccomp filter last, so the post-drop syscalls above (capset/setres*) ran
-	// unfiltered and the filter is what the target execs into.
-	if err := applySeccomp(c); err != nil {
-		return err
 	}
 	return nil
 }
