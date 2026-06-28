@@ -100,7 +100,11 @@ func buildSyscallPolicy(names []string, deny bool, known map[string]int) seccomp
 			continue
 		}
 		if _, ok := known[n]; !ok {
-			continue // not on this arch → unreachable, skip
+			// Not in this arch's table: either a syscall that doesn't exist here
+			// (cross-arch unit) or a misspelled/unknown name. Drop it so the unit
+			// still loads — at the cost of silently weakening a denylist if the
+			// name was a typo.
+			continue
 		}
 		seen[n] = true
 		filtered = append(filtered, n)
@@ -257,10 +261,11 @@ func socketFamilyFilter(nativeArch, sysSocket, sysSocketpair uint32, families []
 // for any seccomp spec) or CAP_SYS_ADMIN; filters are inherited across execve.
 //
 // When both directives are present the kernel stacks the filters and takes the
-// most restrictive action, so they compose. Install order matters: the
-// permissive address-family filter goes on first, the syscall filter (which may
-// be a default-deny allowlist) last — otherwise installing the second filter's
-// own seccomp(2) call could be blocked by the first.
+// most restrictive action, so they compose. Install order matters: a default-deny
+// syscall allowlist must go on last, because once it is active any further
+// seccomp(2) call (to install another filter) would itself be blocked unless
+// seccomp is on the allowlist. So the address-family filter is installed first
+// and the syscall filter last.
 func applySeccomp(c *protocol.Confinement) error {
 	if !needsSeccomp(c) {
 		return nil
