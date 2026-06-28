@@ -1782,6 +1782,10 @@ func cmdRun(args []string) error {
 	confineSpec := confinementFromPlan(confinePlan)
 	if confineSpec != nil && flagStream {
 		d.Stop(context.Background())
+		// Match the other exit paths: close the console pipe ends so the
+		// serialexec drain goroutine doesn't linger on this error path.
+		hostReader.Close()
+		hostWriter.Close()
 		return dewerr.New(dewerr.CodeUsage, "--confine read-only filesystem (ProtectSystem=strict) is not supported with --stream yet")
 	}
 
