@@ -1774,6 +1774,17 @@ func cmdRun(args []string) error {
 		cmdArgs = wrapWithSetpriv(prefix, cmdArgs)
 	}
 
+	// --confine read-only fs is applied guest-side by the agent (mount ns).
+	// Unlike the setpriv prefix above, it can't ride the argv, so it travels in
+	// the ExecRequest and only the vsock batch path carries it: fail loudly
+	// rather than silently skip the protection on --stream or the serial
+	// fallback.
+	confineSpec := confinementFromPlan(confinePlan)
+	if confineSpec != nil && flagStream {
+		d.Stop(context.Background())
+		return dewerr.New(dewerr.CodeUsage, "--confine read-only filesystem (ProtectSystem=strict) is not supported with --stream yet")
+	}
+
 	// argv-or-shell decision: 2+ args → exec argv directly (no
 	// outer sh -c wrap). Single arg → shell-wrap so users can still
 	// pass `dew run "echo a; echo b"`. See argvOrShellWrap.
@@ -1801,7 +1812,7 @@ func cmdRun(args []string) error {
 				}
 				return nil
 			}
-			result, err = execVsockConnArgv(conn, token, execCommand, execArgs, budget.guestTimeout())
+			result, err = execVsockExecConfine(conn, token, execCommand, execArgs, budget.guestTimeout(), confineSpec)
 			conn.Close()
 		}
 	}
@@ -1812,6 +1823,11 @@ func cmdRun(args []string) error {
 			return timeoutErr("agent wait")
 		}
 		fmt.Fprintf(os.Stderr, "dew: vsock unavailable, using serial\n")
+		if confineSpec != nil {
+			// The serial path has no ExecRequest channel, so the agent never
+			// receives the spec — the read-only fs would silently not apply.
+			fmt.Fprintf(os.Stderr, "dew: warning: --confine read-only filesystem not enforced over the serial fallback\n")
+		}
 		if err := sExec.WaitReady(budget.window(60 * time.Second)); err != nil {
 			d.Stop(context.Background())
 			if budget.expired() {
@@ -3468,6 +3484,21 @@ func runExecStreaming(args []string, timeoutMs int, tty bool) error {
 // command for `dew run --confine`. A single shell-string arg is wrapped in
 // `/bin/sh -c` so setpriv execs a real argv (it does not parse shell syntax),
 // matching argvOrShellWrap's single-arg behavior.
+// confinementFromPlan builds the agent-applied confinement spec from a parsed
+// unit. Only the read-only-filesystem half is agent-applied today; the uid/caps
+// drop still rides the host-built setpriv prefix (see wrapWithSetpriv), so this
+// returns nil unless the unit declares ProtectSystem=strict. ReadWritePaths are
+// only meaningful alongside a read-only root, so they're carried only then.
+func confinementFromPlan(p confine.Plan) *vsockProto.Confinement {
+	if !p.ReadOnlyRoot {
+		return nil
+	}
+	return &vsockProto.Confinement{
+		ReadOnlyRoot:   true,
+		ReadWritePaths: p.ReadWritePaths,
+	}
+}
+
 func wrapWithSetpriv(prefix, cmdArgs []string) []string {
 	inner := cmdArgs
 	if len(cmdArgs) == 1 {
@@ -3504,11 +3535,18 @@ func execVsockConnTimeout(conn net.Conn, token string, cmd string, timeout time.
 // by the user (dew run -- sh -c '...'). See argvOrShellWrap for the
 // argv-vs-shell decision.
 func execVsockConnArgv(conn net.Conn, token, command string, args []string, timeout time.Duration) (*RunResult, error) {
-	return execVsockExec(conn, token, command, args, timeout)
+	return execVsockExecConfine(conn, token, command, args, timeout, nil)
 }
 
 func execVsockExec(conn net.Conn, token, command string, args []string, timeout time.Duration) (*RunResult, error) {
-	req := vsockProto.ExecRequest{Token: token, Command: command, Args: args}
+	return execVsockExecConfine(conn, token, command, args, timeout, nil)
+}
+
+// execVsockExecConfine is execVsockExec plus an optional confinement spec the
+// agent applies before exec (--confine read-only fs). confine is nil for the
+// common unconfined path.
+func execVsockExecConfine(conn net.Conn, token, command string, args []string, timeout time.Duration, confine *vsockProto.Confinement) (*RunResult, error) {
+	req := vsockProto.ExecRequest{Token: token, Command: command, Args: args, Confine: confine}
 	if timeout > 0 {
 		req.TimeoutMs = int(timeout / time.Millisecond)
 	}

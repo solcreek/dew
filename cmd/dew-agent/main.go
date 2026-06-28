@@ -62,6 +62,11 @@ func main() {
 		log.Printf("dew-agent: pin PATH failed: %v", err)
 	}
 
+	// If re-exec'd as the --confine shim, set up the namespace/filesystem and
+	// exec the target; never returns in that case. Must run after the PATH pin
+	// so the shim resolves the target binary the same way.
+	maybeRunConfineShim()
+
 	// Token is now injected via vsock handshake, not env/cmdline
 	execUser = os.Getenv("DEW_EXEC_USER")
 
@@ -225,15 +230,23 @@ func executeCommand(req protocol.ExecRequest) protocol.ExecResponse {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, req.Command, req.Args...)
-	if req.Dir != "" {
-		cmd.Dir = req.Dir
+	var cmd *exec.Cmd
+	if req.Confine.Set() {
+		// Confined exec re-execs through the shim (mount-ns read-only fs); the
+		// shim sets Dir/Env and applies the spec, then execs the target. uid/caps
+		// still ride the host-built setpriv prefix in req.Command/Args.
+		cmd = confineExecCmd(ctx, req)
+	} else {
+		cmd = exec.CommandContext(ctx, req.Command, req.Args...)
+		if req.Dir != "" {
+			cmd.Dir = req.Dir
+		}
+		// Always build the env (even with no request overrides) so a PATH is
+		// guaranteed; otherwise bare names like `ss` resolve only by luck of
+		// the agent's boot environment.
+		cmd.Env = guestenv.ExecEnv(os.Environ(), req.Env)
+		setExecUser(cmd)
 	}
-	// Always build the env (even with no request overrides) so a PATH is
-	// guaranteed; otherwise bare names like `ss` resolve only by luck of
-	// the agent's boot environment.
-	cmd.Env = guestenv.ExecEnv(os.Environ(), req.Env)
-	setExecUser(cmd)
 
 	stdout, err := cmd.Output()
 	resp := protocol.ExecResponse{
