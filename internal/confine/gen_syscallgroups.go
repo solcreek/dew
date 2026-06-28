@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // systemdVersion is the pinned release we mirror. Bump it deliberately and
@@ -73,7 +74,8 @@ func load() (string, error) {
 		b, err := os.ReadFile(os.Args[1])
 		return string(b), err
 	}
-	resp, err := http.Get(sourceURL)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(sourceURL)
 	if err != nil {
 		return "", err
 	}
