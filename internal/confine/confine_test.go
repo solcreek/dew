@@ -301,6 +301,47 @@ func TestParse_ReadWritePathsWithoutStrict(t *testing.T) {
 	}
 }
 
+func TestParse_RestrictAddressFamilies(t *testing.T) {
+	// Allowlist: names normalised to upper-case AF_*, deny flag false.
+	p, err := Parse(strings.NewReader("[Service]\nRestrictAddressFamilies=AF_UNIX af_inet\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(p.AddressFamilies, []string{"AF_UNIX", "AF_INET"}) || p.AddressFamiliesDeny {
+		t.Errorf("allowlist → %v deny=%v", p.AddressFamilies, p.AddressFamiliesDeny)
+	}
+	if !p.Confined() {
+		t.Error("RestrictAddressFamilies should make the plan confined")
+	}
+
+	// Denylist (~) form.
+	p, _ = Parse(strings.NewReader("[Service]\nRestrictAddressFamilies=~AF_PACKET\n"))
+	if !reflect.DeepEqual(p.AddressFamilies, []string{"AF_PACKET"}) || !p.AddressFamiliesDeny {
+		t.Errorf("denylist → %v deny=%v", p.AddressFamilies, p.AddressFamiliesDeny)
+	}
+
+	// Empty assignment resets an earlier list (drop-in semantics).
+	p, _ = Parse(strings.NewReader("[Service]\nRestrictAddressFamilies=AF_INET\nRestrictAddressFamilies=\n"))
+	if len(p.AddressFamilies) != 0 || p.AddressFamiliesDeny {
+		t.Errorf("reset → %v deny=%v, want empty", p.AddressFamilies, p.AddressFamiliesDeny)
+	}
+
+	// Same-polarity repeats accumulate.
+	p, _ = Parse(strings.NewReader("[Service]\nRestrictAddressFamilies=AF_UNIX\nRestrictAddressFamilies=AF_INET6\n"))
+	if !reflect.DeepEqual(p.AddressFamilies, []string{"AF_UNIX", "AF_INET6"}) {
+		t.Errorf("accumulate → %v", p.AddressFamilies)
+	}
+
+	// Mixed polarity keeps the last form and is surfaced as an approximation.
+	p, _ = Parse(strings.NewReader("[Service]\nRestrictAddressFamilies=AF_UNIX\nRestrictAddressFamilies=~AF_INET\n"))
+	if !reflect.DeepEqual(p.AddressFamilies, []string{"AF_INET"}) || !p.AddressFamiliesDeny {
+		t.Errorf("mixed → %v deny=%v", p.AddressFamilies, p.AddressFamiliesDeny)
+	}
+	if !strings.Contains(strings.Join(p.Unsupported, "\n"), "mixes allow and deny") {
+		t.Error("mixed polarity should be surfaced")
+	}
+}
+
 func TestParse_SizeUnits(t *testing.T) {
 	tests := map[string]int64{
 		"1G": 1 << 30, "512M": 512 << 20, "64K": 64 << 10, "1048576": 1 << 20,

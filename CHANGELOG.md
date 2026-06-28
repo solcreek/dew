@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dew run --confine` enforces `RestrictAddressFamilies=`.** The guest agent
+  installs a classic-BPF seccomp filter on `socket(2)`/`socketpair(2)` that
+  limits the address-family `domain` argument to the unit's allowlist (or blocks
+  the listed families with the `~` denylist form), returning `EPERM` like
+  systemd. Pure Go, no cgo/libseccomp; installed after the uid/caps drop with
+  no_new_privs (which a seccomp spec now implies), so it carries across `execve`.
+  Works on any profile. A non-native arch under Rosetta is not filtered.
+  `SystemCallFilter=` is still surfaced as unenforced. Verified by an in-VM cBPF
+  unit test and boot tests (allowlist/denylist, composed with the uid drop).
+
 ### Changed
 
 - **`dew run --confine` fails closed when the guest can't enforce it.** The

@@ -228,10 +228,26 @@ job, and run in-VM against a real kernel).
 
 ---
 
-## 5. Seccomp (`SystemCallFilter=` / `RestrictAddressFamilies=`) — DESIGN ONLY
+## 5. Seccomp (`SystemCallFilter=` / `RestrictAddressFamilies=`) — 5a IMPLEMENTED
 
-This is the headline gap (the field notes' core unanswered question: "does the
-Go runtime survive `@system-service` + W^X"). Hard parts:
+**Status: 5a (`RestrictAddressFamilies=`) is implemented; 5b/5c remain design.**
+The agent installs a classic-BPF seccomp filter on `socket(2)`/`socketpair(2)`
+that restricts the `domain` argument to the unit's allowed `AF_*` families
+(allowlist) or blocks the listed families (the `~` denylist form), returning
+`EPERM` otherwise — matching systemd's `SCMP_ACT_ERRNO(EPERM)`. It is built with
+a hand-assembled program (`cmd/dew-agent/seccomp.go`); no cgo, no `libseccomp`.
+The filter is installed on the locked exec thread after the uid/caps drop and
+no_new_privs (a seccomp spec implies no_new_privs, mirroring systemd), so it is
+inherited across `execve` into the target. Verified by an in-VM cBPF unit test
+plus boot tests (allowlist/denylist/compose-with-uid-drop; a blocked family
+returns EPERM, the Go runtime is unaffected since it doesn't open the restricted
+families itself). Known limitation: a non-native arch (an x86_64 binary under
+Rosetta when the agent is arm64) is allowed through — the filter is installed for
+the agent's build arch only.
+
+The remaining `SystemCallFilter=` work (5b/5c) is still the headline gap (the
+field notes' core unanswered question: "does the Go runtime survive
+`@system-service` + W^X"). Hard parts:
 
 1. **Group expansion.** `SystemCallFilter=@system-service` expands to systemd's
    curated set (hundreds of syscalls, arch-dependent, evolves across systemd
@@ -293,9 +309,13 @@ No R1 implementation in this round (design-first, and it's the largest track).
 2. ✅ **Read-only fs** (§3): first behavior on the shim. In-VM tested.
 3. ✅ **Native caps/uid drop** (§4): cut over from `setpriv`; removed the host
    `wrapWithSetpriv`/`SetprivArgs` path. In-VM tested.
-4. **Seccomp 5a** (`RestrictAddressFamilies`): standalone, smaller. ← next
-5. **Seccomp 5b/5c** (`@`-group expansion): the big one; boot-test gated.
-6. **R1**: separate track, per `systemd-profile.md`.
+4. ✅ **Fail-closed handshake**: the agent advertises confinement support in its
+   SetToken ack; the host refuses `--confine` against an agent that can't apply
+   it (old guest / `--stream` / serial). In-VM tested.
+5. ✅ **Seccomp 5a** (`RestrictAddressFamilies`): socket-family BPF arg-filter.
+   In-VM tested.
+6. **Seccomp 5b/5c** (`@`-group expansion): the big one; boot-test gated. ← next
+7. **R1**: separate track, per `systemd-profile.md`.
 
 Each step is its own atomic commit (or PR) with its own boot-test note, since
 the host can't validate the guest-side mount/seccomp/prctl steps.
