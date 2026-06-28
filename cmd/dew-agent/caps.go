@@ -173,8 +173,10 @@ func capsToDrop(c *protocol.Confinement, lastCap int) ([]int, error) {
 }
 
 // keptCaps resolves the KeepCaps names to numbers (only meaningful with
-// DropAllCaps). Pure/testable.
-func keptCaps(c *protocol.Confinement) ([]int, error) {
+// DropAllCaps), skipping any the running kernel lacks (id > lastCap) — those
+// can't be inherited or ambient-raised (capset / PR_CAP_AMBIENT_RAISE would
+// EINVAL) and aren't in the bounding set anyway. Pure/testable.
+func keptCaps(c *protocol.Confinement, lastCap int) ([]int, error) {
 	if !c.DropAllCaps {
 		return nil, nil
 	}
@@ -183,6 +185,9 @@ func keptCaps(c *protocol.Confinement) ([]int, error) {
 		id, err := resolveCap(n)
 		if err != nil {
 			return nil, err
+		}
+		if id > lastCap {
+			continue
 		}
 		keep = append(keep, id)
 	}
@@ -261,7 +266,7 @@ func applyPrivilegeDrop(c *protocol.Confinement, execUser string) error {
 	if err != nil {
 		return err
 	}
-	keep, err := keptCaps(c)
+	keep, err := keptCaps(c, lastCap)
 	if err != nil {
 		return err
 	}

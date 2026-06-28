@@ -73,14 +73,20 @@ func TestLookupRejectsNegative(t *testing.T) {
 }
 
 func TestKeptCaps(t *testing.T) {
-	got, err := keptCaps(&protocol.Confinement{DropAllCaps: true, KeepCaps: []string{"cap_net_bind_service"}})
+	got, err := keptCaps(&protocol.Confinement{DropAllCaps: true, KeepCaps: []string{"cap_net_bind_service"}}, 40)
 	if err != nil || !reflect.DeepEqual(got, []int{10}) {
 		t.Errorf("keptCaps = %v,%v; want [10],nil", got, err)
 	}
 	// KeepCaps only matters with DropAllCaps (a negated set keeps the rest, so
 	// there is no explicit keep list to make ambient).
-	if got, _ := keptCaps(&protocol.Confinement{KeepCaps: []string{"cap_chown"}}); got != nil {
+	if got, _ := keptCaps(&protocol.Confinement{KeepCaps: []string{"cap_chown"}}, 40); got != nil {
 		t.Errorf("keptCaps without DropAllCaps = %v, want nil", got)
+	}
+	// A kept cap the running kernel lacks (id > lastCap) is skipped so the later
+	// ambient raise can't EINVAL.
+	got, _ = keptCaps(&protocol.Confinement{DropAllCaps: true, KeepCaps: []string{"cap_chown", "cap_checkpoint_restore"}}, 39)
+	if !reflect.DeepEqual(got, []int{0}) {
+		t.Errorf("keptCaps above lastCap = %v, want [0] (40 skipped)", got)
 	}
 }
 
