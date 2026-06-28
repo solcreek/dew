@@ -56,8 +56,8 @@ func TestDownloadAssets_Parallel(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Swap releaseBaseURL via the env-driven helper: we can't reassign the
-	// const, so we use the path-mapping httptest server which serves any
+	// Swap the download base via releaseBaseURLOverride: we use the
+	// path-mapping httptest server which serves any
 	// URL path with the same body. downloadAssets only checks status==200.
 	prev := releaseBaseURLOverride
 	releaseBaseURLOverride = srv.URL
