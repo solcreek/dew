@@ -172,7 +172,7 @@ func Parse(r io.Reader) (Plan, error) {
 			note("AmbientCapabilities= (caps are dropped, not granted, by --confine)")
 		// Directives dew does not enforce — surface them, don't silently drop.
 		case "SystemCallFilter":
-			applySystemCalls(&p, val, &scHasGroups)
+			applySystemCalls(&p, val, &scHasGroups, note)
 		case "SystemCallArchitectures":
 			note("SystemCallArchitectures= (architecture restriction not enforced)")
 		case "RestrictAddressFamilies":
@@ -306,7 +306,7 @@ func applyAddressFamilies(p *Plan, val string, note func(string)) {
 // *hasGroups so the caller can void the directive after the scan (dew doesn't
 // expand groups until 5c). Like address families, dew supports a single polarity
 // and keeps the last form if a later assignment flips it.
-func applySystemCalls(p *Plan, val string, hasGroups *bool) {
+func applySystemCalls(p *Plan, val string, hasGroups *bool, note func(string)) {
 	if val == "" {
 		// Reset discards prior entries, including any @-group seen so far, so a
 		// later explicit-only directive can still be enforced.
@@ -319,6 +319,7 @@ func applySystemCalls(p *Plan, val string, hasGroups *bool) {
 	if len(p.SystemCalls) > 0 && p.SystemCallsDeny != deny {
 		// Polarity flip: dew keeps the last form, so drop prior entries and the
 		// prior @-group state with them.
+		note("SystemCallFilter= mixes allow and deny forms (approximated by the last form)")
 		p.SystemCalls = nil
 		*hasGroups = false
 	}

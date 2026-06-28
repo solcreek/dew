@@ -389,6 +389,15 @@ func TestParse_SystemCallFilter(t *testing.T) {
 	if !reflect.DeepEqual(p.SystemCalls, []string{"read"}) {
 		t.Errorf("empty name should be skipped, got %v", p.SystemCalls)
 	}
+
+	// A polarity flip keeps the last form and surfaces the approximation.
+	p, _ = Parse(strings.NewReader("[Service]\nSystemCallFilter=read\nSystemCallFilter=~write\n"))
+	if !reflect.DeepEqual(p.SystemCalls, []string{"write"}) || !p.SystemCallsDeny {
+		t.Errorf("flip → %v deny=%v", p.SystemCalls, p.SystemCallsDeny)
+	}
+	if !strings.Contains(strings.Join(p.Unsupported, "\n"), "mixes allow and deny") {
+		t.Error("SystemCallFilter polarity flip should be surfaced")
+	}
 }
 
 func TestParse_SizeUnits(t *testing.T) {
