@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 
@@ -53,27 +51,19 @@ func runConfineShim(target []string) error {
 			return fmt.Errorf("bad confine spec: %w", err)
 		}
 	}
-	// Phase: only the read-only filesystem is applied here; the capability/uid
-	// drop still rides the host-built setpriv prefix in `target`. Native caps
-	// drop (PR_CAPBSET_DROP/setresuid) lands in a follow-up.
+	// Read-only filesystem first — it needs the mount namespace and root.
 	if c.ReadOnlyRoot {
 		if err := applyReadOnlyFS(&c); err != nil {
 			return err
 		}
 	}
-	// Preserve unprivileged-exec mode. The unconfined path drops to
-	// DEW_EXEC_USER (setExecUser); the shim must too, or a confinement that
-	// doesn't itself drop the uid would run the target as root — an escalation
-	// relative to the unconfined path. Done here, after the mounts (which need
-	// root). Skipped only when the setpriv prefix actually performs an ID drop
-	// (--reuid/--regid): there the unit's own User= takes over and setpriv
-	// needs root to do it, so we must not drop first. A caps/no_new_privs-only
-	// setpriv does NOT drop uid, so we still drop to DEW_EXEC_USER (setpriv can
-	// then drop caps/nnp as the unprivileged user).
-	if u := os.Getenv("DEW_EXEC_USER"); u != "" && !setprivDropsID(target) {
-		if err := dropToUser(u); err != nil {
-			return fmt.Errorf("drop to user %q: %w", u, err)
-		}
+	// Native privilege drop (capability bounding set, ambient caps, no_new_privs,
+	// uid/gid) — replaces the host-built setpriv prefix. Also honours
+	// DEW_EXEC_USER (unprivileged-exec mode) when the unit names no User=, so a
+	// confinement never runs the target as root when the unconfined path would
+	// have dropped it.
+	if err := applyPrivilegeDrop(&c, os.Getenv("DEW_EXEC_USER")); err != nil {
+		return err
 	}
 	path, err := exec.LookPath(target[0])
 	if err != nil {
@@ -160,61 +150,6 @@ func bindReadWrite(p string) error {
 	}
 	if err := unix.Mount("", p, "", unix.MS_BIND|unix.MS_REMOUNT, ""); err != nil {
 		return fmt.Errorf("remount rw: %w", err)
-	}
-	return nil
-}
-
-// setprivDropsID reports whether target is a setpriv invocation that changes
-// the uid/gid (--reuid/--regid). The host emits these as separate argv tokens
-// (see confine.SetprivArgs), so an exact match is sufficient. Only such an
-// invocation makes the shim's own DEW_EXEC_USER drop redundant; a setpriv that
-// only drops caps/no_new_privs leaves the uid as root.
-func setprivDropsID(target []string) bool {
-	if len(target) == 0 || filepath.Base(target[0]) != "setpriv" {
-		return false
-	}
-	for _, a := range target[1:] {
-		if a == "--reuid" || a == "--regid" {
-			return true
-		}
-		if a == "--" {
-			break // end of setpriv options; the rest is the wrapped command
-		}
-	}
-	return false
-}
-
-// dropToUser drops gid/groups/uid to the named user (DEW_EXEC_USER) before
-// exec, mirroring setExecUser on the unconfined path. groups then gid then uid,
-// so each step is still permitted while we hold root.
-//
-// Supplementary groups are CLEARED, matching the unconfined path: Go runs the
-// DEW_EXEC_USER exec via SysProcAttr.Credential{Uid,Gid} with no Groups, which
-// calls setgroups to empty. Keeping confined == unconfined here is the point;
-// we deliberately do not initgroups the user's full group list (that would be
-// more permissive than the unconfined path — systemd User= supplementary-group
-// fidelity is the setpriv path's job, not this DEW_EXEC_USER mirror).
-func dropToUser(name string) error {
-	u, err := user.Lookup(name)
-	if err != nil {
-		return err
-	}
-	uid, err := strconv.Atoi(u.Uid)
-	if err != nil {
-		return fmt.Errorf("uid %q: %w", u.Uid, err)
-	}
-	gid, err := strconv.Atoi(u.Gid)
-	if err != nil {
-		return fmt.Errorf("gid %q: %w", u.Gid, err)
-	}
-	if err := unix.Setgroups([]int{}); err != nil {
-		return fmt.Errorf("setgroups: %w", err)
-	}
-	if err := unix.Setresgid(gid, gid, gid); err != nil {
-		return fmt.Errorf("setresgid: %w", err)
-	}
-	if err := unix.Setresuid(uid, uid, uid); err != nil {
-		return fmt.Errorf("setresuid: %w", err)
 	}
 	return nil
 }

@@ -44,8 +44,8 @@ WantedBy=multi-user.target
 	if !p.DynamicUser || !p.NoNewPrivs || !p.DropAllCaps {
 		t.Errorf("expected DynamicUser+NoNewPrivs+DropAllCaps, got %+v", p)
 	}
-	if !p.Confined() || !p.NeedsSetpriv() {
-		t.Error("hardened unit should be Confined and NeedsSetpriv")
+	if !p.Confined() || !p.NeedsPrivilegeDrop() {
+		t.Error("hardened unit should be Confined and NeedsPrivilegeDrop")
 	}
 	// ProtectSystem=strict + ReadWritePaths are now enforced (read-only rootfs).
 	if !p.ReadOnlyRoot {
@@ -65,7 +65,9 @@ WantedBy=multi-user.target
 	}
 }
 
-func TestParse_SetprivArgs(t *testing.T) {
+// A positive CapabilityBoundingSet= parses to DropAllCaps + the kept caps (plus
+// User=/Group=/NoNewPrivileges=), which the agent applies natively.
+func TestParse_PrivilegeDrop(t *testing.T) {
 	unit := `
 [Service]
 User=appuser
@@ -77,24 +79,24 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_CHOWN
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := p.SetprivArgs()
-	want := []string{
-		"setpriv", "--no-new-privs",
-		"--bounding-set", "-all,+cap_net_bind_service,+cap_chown",
-		"--reuid", "appuser",
-		"--regid", "appgroup", "--clear-groups",
+	if p.UID != "appuser" || p.GID != "appgroup" || !p.NoNewPrivs || !p.DropAllCaps {
+		t.Errorf("priv-drop fields = %+v", p)
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("SetprivArgs() = %v\nwant %v", got, want)
+	if !reflect.DeepEqual(p.KeepCaps, []string{"cap_net_bind_service", "cap_chown"}) {
+		t.Errorf("KeepCaps = %v, want [cap_net_bind_service cap_chown]", p.KeepCaps)
+	}
+	if len(p.DropCaps) != 0 {
+		t.Errorf("positive set must not populate DropCaps, got %v", p.DropCaps)
 	}
 }
 
-func TestParse_DynamicUserSetpriv(t *testing.T) {
+func TestParse_DynamicUserDrop(t *testing.T) {
 	p, _ := Parse(strings.NewReader("[Service]\nDynamicUser=yes\nCapabilityBoundingSet=\n"))
-	got := p.SetprivArgs()
-	want := []string{"setpriv", "--bounding-set", "-all", "--reuid", "65534", "--regid", "65534", "--clear-groups"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("SetprivArgs() = %v\nwant %v", got, want)
+	if !p.DynamicUser || !p.DropAllCaps || p.UID != "" {
+		t.Errorf("DynamicUser drop = %+v (UID stays empty; host resolves it)", p)
+	}
+	if len(p.KeepCaps) != 0 || len(p.DropCaps) != 0 {
+		t.Errorf("empty bounding set should keep/drop nothing, got keep=%v drop=%v", p.KeepCaps, p.DropCaps)
 	}
 }
 
@@ -108,11 +110,6 @@ func TestParse_BoundingSetEmptyReset(t *testing.T) {
 	if !p.DropAllCaps || len(p.DropCaps) != 0 || len(p.KeepCaps) != 0 {
 		t.Errorf("empty reset should drop-all with no residual caps, got %+v", p)
 	}
-	got := p.SetprivArgs()
-	want := []string{"setpriv", "--bounding-set", "-all"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("SetprivArgs() = %v, want %v", got, want)
-	}
 }
 
 // A ~negation after a positive set must revoke the cap from the kept set, not
@@ -123,10 +120,11 @@ func TestParse_NegationAfterPositiveSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := p.SetprivArgs()
-	want := []string{"setpriv", "--bounding-set", "-all,+cap_net_bind_service"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("SetprivArgs() = %v, want %v (CAP_SYS_ADMIN must be revoked)", got, want)
+	if !p.DropAllCaps || len(p.DropCaps) != 0 {
+		t.Errorf("expected drop-all with no residual DropCaps, got %+v", p)
+	}
+	if !reflect.DeepEqual(p.KeepCaps, []string{"cap_net_bind_service"}) {
+		t.Errorf("KeepCaps = %v, want [cap_net_bind_service] (CAP_SYS_ADMIN revoked)", p.KeepCaps)
 	}
 }
 
@@ -152,19 +150,17 @@ func TestParse_InvalidNumericDirectives(t *testing.T) {
 	}
 }
 
-// A unit setting only Group= must still drop the group (NeedsSetpriv true).
+// A unit setting only Group= must still drop the group (NeedsPrivilegeDrop true).
 func TestParse_GroupOnly(t *testing.T) {
 	p, err := Parse(strings.NewReader("[Service]\nGroup=appgroup\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !p.NeedsSetpriv() || !p.Confined() {
-		t.Fatalf("Group=-only should need setpriv, got %+v", p)
+	if !p.NeedsPrivilegeDrop() || !p.Confined() {
+		t.Fatalf("Group=-only should need a privilege drop, got %+v", p)
 	}
-	got := p.SetprivArgs()
-	want := []string{"setpriv", "--regid", "appgroup", "--clear-groups"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("SetprivArgs() = %v, want %v", got, want)
+	if p.GID != "appgroup" || p.UID != "" {
+		t.Errorf("Group-only should set GID and leave UID empty, got %+v", p)
 	}
 }
 
@@ -206,7 +202,7 @@ func TestParse_MemoryHighNotHardCap(t *testing.T) {
 }
 
 // A negated CapabilityBoundingSet keeps the full set minus the named caps, so
-// setpriv must drop only those (no -all), not wipe every capability.
+// the plan records DropCaps (only those) and not DropAllCaps.
 func TestParse_NegatedBoundingSet(t *testing.T) {
 	p, err := Parse(strings.NewReader("[Service]\nCapabilityBoundingSet=~CAP_SYS_ADMIN CAP_NET_RAW\n"))
 	if err != nil {
@@ -215,10 +211,8 @@ func TestParse_NegatedBoundingSet(t *testing.T) {
 	if p.DropAllCaps {
 		t.Error("negated set must not drop all caps")
 	}
-	got := p.SetprivArgs()
-	want := []string{"setpriv", "--bounding-set", "-cap_sys_admin,-cap_net_raw"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("SetprivArgs() = %v, want %v", got, want)
+	if !reflect.DeepEqual(p.DropCaps, []string{"cap_sys_admin", "cap_net_raw"}) {
+		t.Errorf("DropCaps = %v, want [cap_sys_admin cap_net_raw]", p.DropCaps)
 	}
 }
 
@@ -240,8 +234,8 @@ func TestParse_ReadOnlyFilesystem(t *testing.T) {
 	if !p.Confined() {
 		t.Error("a unit with ProtectSystem=strict should be Confined")
 	}
-	if p.NeedsSetpriv() {
-		t.Error("ProtectSystem=strict alone must not require setpriv (it's a mount-ns op)")
+	if p.NeedsPrivilegeDrop() {
+		t.Error("ProtectSystem=strict alone must not require a privilege drop (it's a mount-ns op)")
 	}
 }
 

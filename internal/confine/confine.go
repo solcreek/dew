@@ -24,8 +24,8 @@ type Plan struct {
 	PidsMax     int64
 	CPUQuota    int64 // cpu.max numerator for a 100000us period (200% == 200000)
 
-	// privilege drop, rendered into a setpriv prefix by SetprivArgs.
-	UID         string // numeric uid or username for setpriv --reuid
+	// privilege drop, applied natively by the agent shim (prctl/capset/setresuid).
+	UID         string // numeric uid or username to drop to
 	GID         string
 	DynamicUser bool     // User= absent but DynamicUser=yes → run as a fixed unprivileged uid
 	DropAllCaps bool     // CapabilityBoundingSet reset to empty / positive list → start from empty
@@ -43,68 +43,23 @@ type Plan struct {
 	Unsupported []string
 }
 
-// dynamicUserUID is the uid/gid dew runs a DynamicUser= service as when the
+// DynamicUserUID is the uid/gid dew runs a DynamicUser= service as when the
 // unit names no concrete User=. systemd allocates a transient uid; dew can't,
 // so it falls back to nobody — recorded as an approximation by the parser.
-const dynamicUserUID = "65534"
+const DynamicUserUID = "65534"
 
 // Confined reports whether the plan actually constrains anything.
 func (p Plan) Confined() bool {
 	return p.MemoryBytes > 0 || p.PidsMax > 0 || p.CPUQuota > 0 ||
-		p.NeedsSetpriv() || p.ReadOnlyRoot
+		p.NeedsPrivilegeDrop() || p.ReadOnlyRoot
 }
 
-// NeedsSetpriv reports whether the plan requires the setpriv binary in the
-// guest (privilege drop) — which only the standard profile ships.
-func (p Plan) NeedsSetpriv() bool {
+// NeedsPrivilegeDrop reports whether the plan drops uid/gid, restricts the
+// capability bounding set, or sets no_new_privs. The agent applies these
+// natively (prctl/capset/setresuid) in the confinement shim, so unlike the
+// former setpriv path this needs no extra guest binary and works on any profile.
+func (p Plan) NeedsPrivilegeDrop() bool {
 	return p.UID != "" || p.GID != "" || p.DynamicUser || p.DropAllCaps || len(p.DropCaps) > 0 || p.NoNewPrivs
-}
-
-// SetprivArgs renders the privilege-drop prefix, e.g.
-// ["setpriv","--no-new-privs","--bounding-set","-all","--reuid","65534",
-// "--regid","65534","--clear-groups"]. Empty when no privilege drop applies.
-func (p Plan) SetprivArgs() []string {
-	if !p.NeedsSetpriv() {
-		return nil
-	}
-	args := []string{"setpriv"}
-	if p.NoNewPrivs {
-		args = append(args, "--no-new-privs")
-	}
-	if p.DropAllCaps {
-		// Positive list / empty reset: drop everything, then add back the kept
-		// caps. `-all` with no `+` is a full drop.
-		set := "-all"
-		for _, c := range p.KeepCaps {
-			set += ",+" + c
-		}
-		args = append(args, "--bounding-set", set)
-	} else if len(p.DropCaps) > 0 {
-		// Negated set (`~CAP_X`): keep the inherited full set minus these, so
-		// drop only the named caps (no `-all`).
-		set := ""
-		for i, c := range p.DropCaps {
-			if i > 0 {
-				set += ","
-			}
-			set += "-" + c
-		}
-		args = append(args, "--bounding-set", set)
-	}
-	uid, gid := p.UID, p.GID
-	if uid == "" && p.DynamicUser {
-		uid = dynamicUserUID
-	}
-	if uid != "" {
-		args = append(args, "--reuid", uid)
-		if gid == "" {
-			gid = uid
-		}
-	}
-	if gid != "" {
-		args = append(args, "--regid", gid, "--clear-groups")
-	}
-	return args
 }
 
 // ParseFile reads and parses a unit file.
@@ -232,7 +187,7 @@ func Parse(r io.Reader) (Plan, error) {
 		return p, err
 	}
 	if p.DynamicUser && p.UID == "" {
-		note("DynamicUser=yes approximated as uid " + dynamicUserUID + " (nobody)")
+		note("DynamicUser=yes approximated as uid " + DynamicUserUID + " (nobody)")
 	}
 	// Drop non-absolute ReadWritePaths here: the agent shim requires absolute
 	// paths (a relative entry would mount relative to the cwd) and rejects them
