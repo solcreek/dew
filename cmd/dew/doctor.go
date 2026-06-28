@@ -56,7 +56,10 @@ func cmdDoctor(args []string) error {
 		case "--verbose", "-v":
 			verbose = true
 		case "--profile":
-			if i+1 < len(args) {
+			// Only consume the next token as the value when it isn't
+			// itself a flag — `dew doctor --profile --verbose` must not
+			// treat "--verbose" as a (nonsensical) profile name.
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				profile = args[i+1]
 				i++
 			}

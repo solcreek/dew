@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -57,7 +58,8 @@ func TestInstallSource(t *testing.T) {
 		want string
 	}{
 		{"/opt/homebrew/Cellar/dew/0.8.2/bin/dew", "Homebrew"},
-		{"/usr/local/homebrew/bin/dew", "Homebrew"},
+		{"/usr/local/Homebrew/bin/dew", "Homebrew"}, // Intel, capital H
+		{"/usr/local/Cellar/dew/0.8.2/bin/dew", "Homebrew"},
 		{"/Users/x/.npm/_npx/abc123/node_modules/.bin/dew", "npx/npm"},
 		{"/Users/x/.cache/npm/dew", "npx/npm"},
 		{"/usr/local/bin/dew", ""},
@@ -103,9 +105,14 @@ func TestFetchAsset_SHAMismatchErrorIsActionable(t *testing.T) {
 // regression guard for the brick bug — it asserts the request URL the
 // download layer actually produces.
 func TestDownloadAssets_RequestsVersionedTagPath(t *testing.T) {
+	// downloadAssets fetches kernel + initramfs concurrently, so the
+	// handler runs on multiple goroutines — guard the shared slice.
+	var mu sync.Mutex
 	var gotPaths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		gotPaths = append(gotPaths, r.URL.Path)
+		mu.Unlock()
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte("x"))
 	}))

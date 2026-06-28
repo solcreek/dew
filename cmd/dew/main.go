@@ -415,10 +415,14 @@ func downloadAssets(dataDir, profile, kernelPath, initrdPath string, force bool)
 // npx-pinned binary — so the upgrade had no effect and the error
 // didn't say which dew was even talking. Returns "" when undecidable.
 func installSource(exePath string) string {
+	// Lower-case match: Intel Homebrew lives under /usr/local/Homebrew
+	// (capital H), Apple Silicon under /opt/homebrew (lower), and the
+	// formula keg under /Cellar.
+	p := strings.ToLower(exePath)
 	switch {
-	case strings.Contains(exePath, "/Cellar/"), strings.Contains(exePath, "/homebrew/"):
+	case strings.Contains(p, "/cellar/"), strings.Contains(p, "/homebrew/"):
 		return "Homebrew"
-	case strings.Contains(exePath, "_npx"), strings.Contains(exePath, "/npm/"), strings.Contains(exePath, "/.npm/"):
+	case strings.Contains(p, "_npx"), strings.Contains(p, "/npm/"), strings.Contains(p, "/.npm/"):
 		return "npx/npm"
 	default:
 		return ""
