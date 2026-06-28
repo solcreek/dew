@@ -71,7 +71,8 @@ func runConfineShim(target []string) error {
 	}
 	// Seccomp filters last — after LookPath so an allowlist doesn't EPERM the
 	// PATH resolution, and on the same thread applyPrivilegeDrop locked (which
-	// already set no_new_privs for us). Only execve runs after this.
+	// already set no_new_privs for us). The only syscall after this is the execve
+	// below; the env cleanup in between is in-memory.
 	if err := applySeccomp(&c); err != nil {
 		return err
 	}
