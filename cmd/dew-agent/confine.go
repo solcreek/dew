@@ -11,6 +11,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/solcreek/dew/internal/guestenv"
@@ -231,7 +232,19 @@ func confineExecCmd(ctx context.Context, req protocol.ExecRequest) *exec.Cmd {
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
 	}
-	cmd.Env = append(guestenv.ExecEnv(os.Environ(), req.Env), "DEW_CONFINE_SPEC="+string(spec))
+	// Strip any caller-supplied DEW_CONFINE_SPEC before appending the
+	// authoritative one. req.Env entries sort before our append, and the shim's
+	// os.Getenv returns the first match — so without this a workload could
+	// inject its own spec via req.Env and weaken or break the confinement.
+	env := guestenv.ExecEnv(os.Environ(), req.Env)
+	cleaned := env[:0:0]
+	for _, e := range env {
+		if strings.HasPrefix(e, "DEW_CONFINE_SPEC=") {
+			continue
+		}
+		cleaned = append(cleaned, e)
+	}
+	cmd.Env = append(cleaned, "DEW_CONFINE_SPEC="+string(spec))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: confineCloneFlags(req.Confine)}
 	return cmd
 }
