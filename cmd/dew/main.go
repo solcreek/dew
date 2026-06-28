@@ -3557,6 +3557,8 @@ func confinementFromPlan(p confine.Plan) *vsockProto.Confinement {
 		ReadWritePaths:      p.ReadWritePaths,
 		AddressFamilies:     p.AddressFamilies,
 		AddressFamiliesDeny: p.AddressFamiliesDeny,
+		SystemCalls:         p.SystemCalls,
+		SystemCallsDeny:     p.SystemCallsDeny,
 	}
 	if c.User == "" && c.DynamicUser {
 		c.User = confine.DynamicUserUID

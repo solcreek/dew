@@ -8,7 +8,10 @@ import (
 	"strings"
 	"unsafe"
 
+	seccomp "github.com/elastic/go-seccomp-bpf"
+	"github.com/elastic/go-seccomp-bpf/arch"
 	protocol "github.com/solcreek/dew/internal/vsock"
+	"golang.org/x/net/bpf"
 	"golang.org/x/sys/unix"
 )
 
@@ -65,10 +68,81 @@ func resolveAddressFamily(name string) (uint32, error) {
 }
 
 // needsSeccomp reports whether the spec carries a seccomp directive the shim
-// applies. Today that is only RestrictAddressFamilies= (named/grouped
-// SystemCallFilter= is a later phase).
+// applies: RestrictAddressFamilies= and/or explicit SystemCallFilter= names.
 func needsSeccomp(c *protocol.Confinement) bool {
-	return len(c.AddressFamilies) > 0
+	return len(c.AddressFamilies) > 0 || len(c.SystemCalls) > 0
+}
+
+// syscallImplicitAllow is the minimal set always permitted in an allowlist so
+// the shim can exec and the target can terminate, mirroring systemd's implicit
+// additions. An explicit allowlist is rarely runtime-complete without @-groups
+// (5c); this just keeps exec/exit working.
+var syscallImplicitAllow = []string{"execve", "execveat", "exit", "exit_group", "rt_sigreturn"}
+
+// buildSyscallPolicy turns the unit's SystemCallFilter= names into a
+// go-seccomp-bpf policy. Names not in this arch's table are dropped so a unit
+// written for another arch still loads instead of failing closed; the same
+// drop, however, also silently discards misspelled/unknown names, which for a
+// denylist can weaken the intended policy (a mistyped blocked syscall just isn't
+// blocked). Denylist → default-allow with the listed names returning EPERM;
+// allowlist → default-EPERM with the listed names (plus the implicit exec/exit
+// set) allowed. known is the arch's syscall-name set (arch.Info.SyscallNames).
+func buildSyscallPolicy(names []string, deny bool, known map[string]int) seccomp.Policy {
+	want := names
+	if !deny {
+		want = append(append([]string{}, names...), syscallImplicitAllow...)
+	}
+	seen := map[string]bool{}
+	var filtered []string
+	for _, n := range want {
+		n = strings.ToLower(strings.TrimSpace(n))
+		if n == "" || seen[n] {
+			continue
+		}
+		if _, ok := known[n]; !ok {
+			// Not in this arch's table: either a syscall that doesn't exist here
+			// (cross-arch unit) or a misspelled/unknown name. Drop it so the unit
+			// still loads — at the cost of silently weakening a denylist if the
+			// name was a typo.
+			continue
+		}
+		seen[n] = true
+		filtered = append(filtered, n)
+	}
+	pol := seccomp.Policy{}
+	if deny {
+		pol.DefaultAction = seccomp.ActionAllow
+		pol.Syscalls = []seccomp.SyscallGroup{{Action: seccomp.ActionErrno, Names: filtered}}
+	} else {
+		pol.DefaultAction = seccomp.ActionErrno
+		pol.Syscalls = []seccomp.SyscallGroup{{Action: seccomp.ActionAllow, Names: filtered}}
+	}
+	return pol
+}
+
+// syscallFilter assembles the SystemCallFilter= policy into a classic-BPF
+// program. The policy's arch is the agent's build arch; foreign-arch syscalls
+// (e.g. x86_64 under Rosetta) take the default action — allowed for a denylist,
+// blocked for an allowlist.
+func syscallFilter(names []string, deny bool) ([]unix.SockFilter, error) {
+	info, err := arch.GetInfo("")
+	if err != nil {
+		return nil, fmt.Errorf("seccomp arch: %w", err)
+	}
+	pol := buildSyscallPolicy(names, deny, info.SyscallNames)
+	insts, err := pol.Assemble()
+	if err != nil {
+		return nil, fmt.Errorf("assemble syscall policy: %w", err)
+	}
+	raw, err := bpf.Assemble(insts)
+	if err != nil {
+		return nil, fmt.Errorf("assemble bpf: %w", err)
+	}
+	prog := make([]unix.SockFilter, len(raw))
+	for i, r := range raw {
+		prog[i] = unix.SockFilter{Code: r.Op, Jt: r.Jt, Jf: r.Jf, K: r.K}
+	}
+	return prog, nil
 }
 
 // Classic-BPF opcodes used by the seccomp program (linux/filter.h).
@@ -182,32 +256,63 @@ func socketFamilyFilter(nativeArch, sysSocket, sysSocketpair uint32, families []
 	return prog, nil
 }
 
-// applySeccomp installs the RestrictAddressFamilies= filter on the current
-// (locked) thread, just before exec. seccomp(2) requires no_new_privs (set by
-// the caller for any seccomp spec) or CAP_SYS_ADMIN. The filter is inherited
-// across execve and applies to the target.
+// applySeccomp installs the spec's seccomp filters on the current (locked)
+// thread, just before exec. seccomp(2) requires no_new_privs (set by the caller
+// for any seccomp spec) or CAP_SYS_ADMIN; filters are inherited across execve.
+//
+// When both directives are present the kernel stacks the filters and takes the
+// most restrictive action, so they compose. Install order matters: a default-deny
+// syscall allowlist must go on last, because once it is active any further
+// seccomp(2) call (to install another filter) would itself be blocked unless
+// seccomp is on the allowlist. So the address-family filter is installed first
+// and the syscall filter last.
 func applySeccomp(c *protocol.Confinement) error {
 	if !needsSeccomp(c) {
 		return nil
 	}
-	fams, err := resolveFamilies(c.AddressFamilies)
-	if err != nil {
-		return err
+
+	if len(c.AddressFamilies) > 0 {
+		fams, err := resolveFamilies(c.AddressFamilies)
+		if err != nil {
+			return err
+		}
+		var nativeArch uint32
+		switch runtime.GOARCH {
+		case "arm64":
+			nativeArch = unix.AUDIT_ARCH_AARCH64
+		case "amd64":
+			nativeArch = unix.AUDIT_ARCH_X86_64
+		default:
+			return fmt.Errorf("seccomp: unsupported arch %q", runtime.GOARCH)
+		}
+		prog, err := socketFamilyFilter(nativeArch, uint32(unix.SYS_SOCKET), uint32(unix.SYS_SOCKETPAIR), fams, c.AddressFamiliesDeny)
+		if err != nil {
+			return err
+		}
+		if err := installSeccompFilter(prog); err != nil {
+			return err
+		}
 	}
 
-	var nativeArch uint32
-	switch runtime.GOARCH {
-	case "arm64":
-		nativeArch = unix.AUDIT_ARCH_AARCH64
-	case "amd64":
-		nativeArch = unix.AUDIT_ARCH_X86_64
-	default:
-		return fmt.Errorf("seccomp: unsupported arch %q", runtime.GOARCH)
+	if len(c.SystemCalls) > 0 {
+		prog, err := syscallFilter(c.SystemCalls, c.SystemCallsDeny)
+		if err != nil {
+			return err
+		}
+		if err := installSeccompFilter(prog); err != nil {
+			return err
+		}
 	}
+	return nil
+}
 
-	prog, err := socketFamilyFilter(nativeArch, uint32(unix.SYS_SOCKET), uint32(unix.SYS_SOCKETPAIR), fams, c.AddressFamiliesDeny)
-	if err != nil {
-		return err
+// installSeccompFilter loads one classic-BPF program via seccomp(2) on the
+// calling thread (no TSYNC: the shim execs on this same locked thread).
+func installSeccompFilter(prog []unix.SockFilter) error {
+	if len(prog) == 0 {
+		// A caller asked to install a filter but produced no instructions; fail
+		// closed rather than dereference prog[0].
+		return fmt.Errorf("install seccomp filter: empty program")
 	}
 	fprog := &unix.SockFprog{Len: uint16(len(prog)), Filter: &prog[0]}
 	if _, _, errno := unix.Syscall(unix.SYS_SECCOMP, uintptr(unix.SECCOMP_SET_MODE_FILTER), 0, uintptr(unsafe.Pointer(fprog))); errno != 0 {

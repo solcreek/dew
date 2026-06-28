@@ -45,9 +45,15 @@ type Plan struct {
 	AddressFamilies     []string // AF_* names (allowlist, or denylist when AddressFamiliesDeny)
 	AddressFamiliesDeny bool     // RestrictAddressFamilies=~… : block the listed families instead
 
+	// seccomp (SystemCallFilter=), explicit syscall names applied by the agent
+	// as a BPF filter before exec. @-groups are not expanded here (5c) — a unit
+	// using them leaves these empty and the directive is surfaced as unenforced.
+	SystemCalls     []string // syscall names (allowlist, or denylist when SystemCallsDeny)
+	SystemCallsDeny bool     // SystemCallFilter=~… : block the listed syscalls instead
+
 	// Unsupported lists directives present in the unit that dew does NOT
-	// enforce (SystemCallFilter= and other seccomp groups, partial filesystem
-	// protection, ...).
+	// enforce (SystemCallFilter= @-groups, SystemCallArchitectures=, partial
+	// filesystem protection, ...).
 	Unsupported []string
 }
 
@@ -59,7 +65,8 @@ const DynamicUserUID = "65534"
 // Confined reports whether the plan actually constrains anything.
 func (p Plan) Confined() bool {
 	return p.MemoryBytes > 0 || p.PidsMax > 0 || p.CPUQuota > 0 ||
-		p.NeedsPrivilegeDrop() || p.ReadOnlyRoot || len(p.AddressFamilies) > 0
+		p.NeedsPrivilegeDrop() || p.ReadOnlyRoot ||
+		len(p.AddressFamilies) > 0 || len(p.SystemCalls) > 0
 }
 
 // NeedsPrivilegeDrop reports whether the plan drops uid/gid, restricts the
@@ -91,6 +98,10 @@ func Parse(r io.Reader) (Plan, error) {
 			p.Unsupported = append(p.Unsupported, d)
 		}
 	}
+	// SystemCallFilter= @-group tokens (e.g. @system-service) can't be faithfully
+	// approximated without 5c's group table, so a unit using them gets the whole
+	// directive surfaced as unenforced (set below, after the scan).
+	scHasGroups := false
 
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -160,8 +171,10 @@ func Parse(r io.Reader) (Plan, error) {
 		case "AmbientCapabilities":
 			note("AmbientCapabilities= (caps are dropped, not granted, by --confine)")
 		// Directives dew does not enforce — surface them, don't silently drop.
-		case "SystemCallFilter", "SystemCallArchitectures":
-			note(key + "= (seccomp syscall filter not applied)")
+		case "SystemCallFilter":
+			applySystemCalls(&p, val, &scHasGroups, note)
+		case "SystemCallArchitectures":
+			note("SystemCallArchitectures= (architecture restriction not enforced)")
 		case "RestrictAddressFamilies":
 			applyAddressFamilies(&p, val, note)
 		case "ProtectSystem":
@@ -193,6 +206,15 @@ func Parse(r io.Reader) (Plan, error) {
 	}
 	if err := sc.Err(); err != nil {
 		return p, err
+	}
+	// A SystemCallFilter= that referenced any @-group can't be faithfully
+	// approximated from the explicit names alone (dropping the group would flip
+	// the effective set in the wrong direction), so enforce nothing and surface
+	// the whole directive as unenforced.
+	if scHasGroups {
+		p.SystemCalls = nil
+		p.SystemCallsDeny = false
+		note("SystemCallFilter= uses @-groups (e.g. @system-service) which dew does not expand yet; not applied")
 	}
 	if p.DynamicUser && p.UID == "" {
 		note("DynamicUser=yes approximated as uid " + DynamicUserUID + " (nobody)")
@@ -275,6 +297,47 @@ func applyAddressFamilies(p *Plan, val string, note func(string)) {
 	p.AddressFamiliesDeny = deny
 	for _, f := range strings.Fields(strings.TrimPrefix(val, "~")) {
 		p.AddressFamilies = append(p.AddressFamilies, strings.ToUpper(f))
+	}
+}
+
+// applySystemCalls parses SystemCallFilter=. An empty assignment resets the
+// list; a leading ~ is the denylist form; otherwise it's an allowlist. Explicit
+// syscall names accumulate (normalised to lower-case); @-group tokens set
+// *hasGroups so the caller can void the directive after the scan (dew doesn't
+// expand groups until 5c). Like address families, dew supports a single polarity
+// and keeps the last form if a later assignment flips it.
+func applySystemCalls(p *Plan, val string, hasGroups *bool, note func(string)) {
+	if val == "" {
+		// Reset discards prior entries, including any @-group seen so far, so a
+		// later explicit-only directive can still be enforced.
+		p.SystemCalls = nil
+		p.SystemCallsDeny = false
+		*hasGroups = false
+		return
+	}
+	deny := strings.HasPrefix(val, "~")
+	if len(p.SystemCalls) > 0 && p.SystemCallsDeny != deny {
+		// Polarity flip: dew keeps the last form, so drop prior entries and the
+		// prior @-group state with them.
+		note("SystemCallFilter= mixes allow and deny forms (approximated by the last form)")
+		p.SystemCalls = nil
+		*hasGroups = false
+	}
+	p.SystemCallsDeny = deny
+	for _, s := range strings.Fields(strings.TrimPrefix(val, "~")) {
+		if strings.HasPrefix(s, "@") {
+			*hasGroups = true
+			continue
+		}
+		// systemd allows "name:errno" to override the action per syscall; dew
+		// applies one action, so keep just the name. Skip empties (a stray ":"
+		// or ":errno" with no name).
+		name, _, _ := strings.Cut(s, ":")
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" {
+			continue
+		}
+		p.SystemCalls = append(p.SystemCalls, name)
 	}
 }
 

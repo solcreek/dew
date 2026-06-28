@@ -3,10 +3,40 @@
 package main
 
 import (
+	"slices"
 	"testing"
 
+	seccomp "github.com/elastic/go-seccomp-bpf"
 	"golang.org/x/sys/unix"
 )
+
+func TestBuildSyscallPolicy(t *testing.T) {
+	known := map[string]int{
+		"read": 0, "write": 1, "mkdir": 2,
+		"execve": 3, "execveat": 4, "exit": 5, "exit_group": 6, "rt_sigreturn": 7,
+	}
+
+	// Denylist: default-allow, listed → errno; an unknown-on-arch name (open) is
+	// dropped, names lower-cased.
+	p := buildSyscallPolicy([]string{"MKDIR", "open"}, true, known)
+	if p.DefaultAction != seccomp.ActionAllow {
+		t.Errorf("denylist default = %v, want allow", p.DefaultAction)
+	}
+	if p.Syscalls[0].Action != seccomp.ActionErrno || !slices.Equal(p.Syscalls[0].Names, []string{"mkdir"}) {
+		t.Errorf("denylist group = %+v, want errno [mkdir]", p.Syscalls[0])
+	}
+
+	// Allowlist: default-errno, listed + implicit exec/exit set allowed.
+	p = buildSyscallPolicy([]string{"read"}, false, known)
+	if p.DefaultAction != seccomp.ActionErrno || p.Syscalls[0].Action != seccomp.ActionAllow {
+		t.Errorf("allowlist actions = default %v / group %v", p.DefaultAction, p.Syscalls[0].Action)
+	}
+	for _, must := range []string{"read", "execve", "exit_group", "rt_sigreturn"} {
+		if !slices.Contains(p.Syscalls[0].Names, must) {
+			t.Errorf("allowlist missing %q (got %v)", must, p.Syscalls[0].Names)
+		}
+	}
+}
 
 func TestResolveAddressFamily(t *testing.T) {
 	if v, err := resolveAddressFamily("AF_INET"); err != nil || v != uint32(unix.AF_INET) {
