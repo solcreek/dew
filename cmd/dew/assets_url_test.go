@@ -100,6 +100,48 @@ func TestFetchAsset_SHAMismatchErrorIsActionable(t *testing.T) {
 	}
 }
 
+// A non-404 HTTP status (rate-limit, server error, auth) must not be
+// reported as "Asset not found" / "may have been removed" — that
+// misdirects the user to upgrade when the real fix is to retry.
+func TestFetchAsset_Non404StatusIsNotReportedAsMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "slow down", 429)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	res := fetchAsset(srv.URL+"/x", filepath.Join(dataDir, "k"), "kernel", "minimal", "")
+	if res.err == nil {
+		t.Fatal("expected error on HTTP 429")
+	}
+	msg := res.err.Error()
+	if !strings.Contains(msg, "429") {
+		t.Errorf("error should name the status 429:\n%s", msg)
+	}
+	if strings.Contains(msg, "not found") || strings.Contains(msg, "removed") {
+		t.Errorf("429 must not be described as missing/removed:\n%s", msg)
+	}
+}
+
+// 404 keeps the "may have been removed" + upgrade hint — that IS the
+// pinned-asset-gone case.
+func TestFetchAsset_404ReportsMissingWithUpgradeHint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", 404)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	res := fetchAsset(srv.URL+"/x", filepath.Join(dataDir, "k"), "kernel", "minimal", "")
+	if res.err == nil {
+		t.Fatal("expected error on HTTP 404")
+	}
+	msg := res.err.Error()
+	if !strings.Contains(msg, "404") || !strings.Contains(msg, "removed") {
+		t.Errorf("404 should mention removal:\n%s", msg)
+	}
+}
+
 // End-to-end: a release-build binary (version set) must hit the
 // versioned tag path on the server, NOT /latest/download. This is the
 // regression guard for the brick bug — it asserts the request URL the

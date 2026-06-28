@@ -69,6 +69,18 @@ func cmdDoctor(args []string) error {
 		}
 	}
 
+	// Validate against the built profiles — mirrors the main CLI's
+	// --profile check so `dew doctor --profile typo` fails with a clear
+	// error instead of later reporting a confusing missing-asset for a
+	// nonexistent initramfs-typo variant.
+	if profile != "" {
+		switch profile {
+		case "minimal", "node", "python", "standard":
+		default:
+			return fmt.Errorf("doctor: unknown profile %q; valid: minimal, node, python, standard", profile)
+		}
+	}
+
 	report := runDoctorChecks(verbose, profile)
 
 	if jsonMode {

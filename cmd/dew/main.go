@@ -472,8 +472,17 @@ func fetchAsset(url, dest, name, profile, expectedSHA string) (r struct {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		r.err = fmt.Errorf("download %s: HTTP %d\n\n  Asset not found at %s\n  this dew version's published assets may have been removed.\n%s  or build locally: bash initramfs/build.sh %s",
-			name, resp.StatusCode, url, runningBinaryHint(), profile)
+		if resp.StatusCode == 404 {
+			// 404 = this version's pinned asset is genuinely gone;
+			// upgrading to a release that pins its own assets is the fix.
+			r.err = fmt.Errorf("download %s: HTTP 404\n\n  Asset not found at %s\n  this dew version's published assets may have been removed.\n%s  or build locally: bash initramfs/build.sh %s",
+				name, url, runningBinaryHint(), profile)
+		} else {
+			// 403/429/5xx etc = transient server / auth / rate-limit;
+			// not a missing asset, so retry rather than upgrade.
+			r.err = fmt.Errorf("download %s: unexpected HTTP %d from %s\n  (likely a transient server, auth, or rate-limit error — retry shortly)\n  or build locally: bash initramfs/build.sh %s",
+				name, resp.StatusCode, url, profile)
+		}
 		return
 	}
 	tmp := dest + ".partial"

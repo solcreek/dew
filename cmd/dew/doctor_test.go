@@ -134,6 +134,14 @@ func TestCmdDoctor_ProfileRequiresValue(t *testing.T) {
 	}
 }
 
+func TestCmdDoctor_RejectsUnknownProfile(t *testing.T) {
+	// An unsupported profile must fail at parse with a clear error,
+	// not proceed to report a confusing missing initramfs-typo asset.
+	if err := cmdDoctor([]string{"--profile", "typo"}); err == nil {
+		t.Fatal("cmdDoctor --profile typo: expected error, got nil")
+	}
+}
+
 func TestRunDoctorChecksSmokeRuns(t *testing.T) {
 	// Smoke test: should produce a report without panicking on the host.
 	// We don't assert specific check counts because they depend on the
