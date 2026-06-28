@@ -93,11 +93,60 @@ func TestPrintIndented(t *testing.T) {
 	printIndented("line1\nline2\n\nline4")
 }
 
+func TestDoctorProfiles_OverrideWins(t *testing.T) {
+	got := doctorProfiles("node")
+	want := []string{"minimal", "node"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+func TestDoctorProfiles_OverrideMinimalNotDuplicated(t *testing.T) {
+	got := doctorProfiles("minimal")
+	if len(got) != 1 || got[0] != "minimal" {
+		t.Fatalf("got %v, want [minimal]", got)
+	}
+}
+
+func TestDoctorProfiles_AlwaysIncludesMinimal(t *testing.T) {
+	got := doctorProfiles("python")
+	if got[0] != "minimal" {
+		t.Fatalf("minimal must be checked first, got %v", got)
+	}
+}
+
+func TestCmdDoctor_ProfileRequiresValue(t *testing.T) {
+	// --profile with no value, or followed by another flag, must error
+	// during arg parse (before any checks run) rather than silently
+	// falling back to auto-detection.
+	for _, args := range [][]string{
+		{"--profile"},
+		{"--profile", "--verbose"},
+	} {
+		if err := cmdDoctor(args); err == nil {
+			t.Errorf("cmdDoctor(%v): expected error, got nil", args)
+		}
+	}
+}
+
+func TestCmdDoctor_RejectsUnknownProfile(t *testing.T) {
+	// An unsupported profile must fail at parse with a clear error,
+	// not proceed to report a confusing missing initramfs-typo asset.
+	if err := cmdDoctor([]string{"--profile", "typo"}); err == nil {
+		t.Fatal("cmdDoctor --profile typo: expected error, got nil")
+	}
+}
+
 func TestRunDoctorChecksSmokeRuns(t *testing.T) {
 	// Smoke test: should produce a report without panicking on the host.
 	// We don't assert specific check counts because they depend on the
 	// environment (codesign, assets, etc.).
-	r := runDoctorChecks(false)
+	r := runDoctorChecks(false, "")
 	if len(r.Checks) == 0 {
 		t.Error("expected at least one check")
 	}

@@ -282,7 +282,37 @@ func resolveAssets(cfg *vm.Config) error {
 	return nil
 }
 
-const releaseBaseURL = "https://github.com/solcreek/dew/releases/latest/download"
+const releaseRepoURL = "https://github.com/solcreek/dew/releases"
+
+// releaseAssetBaseURL returns the base URL the running binary fetches
+// kernel/initramfs assets from.
+//
+// Release builds pin to their OWN version tag
+// (releases/download/v<version>) instead of /latest/download. This is
+// the contract that makes "pin a dew version → get reproducible
+// assets" actually hold: GitHub release assets are immutable per tag,
+// so a binary built for v0.8.1 always pulls the exact bytes its
+// embedded ExpectedAssetSHA was computed from — even after v0.8.2
+// ships with a rebuilt initramfs.
+//
+// Pre-fix dew fetched /latest/download unconditionally, so every new
+// release that changed an initramfs silently bricked all older pinned
+// installs: the binary requested /latest's (new) bytes but compared
+// them to its own (old) baked SHA, and the verify failed forever. The
+// on-disk cache was already content-addressed (assetCachePath), but
+// that only made stale files structurally impossible on disk — the
+// fetch still aimed at a moving target. Pinning the URL aligns the
+// network source with the disk layout.
+//
+// Dev / local builds (version == "dev") have no tagged release to pull
+// from and no embedded SHAs, so they fall back to /latest/download.
+func releaseAssetBaseURL() string {
+	v := version
+	if v == "" || v == "dev" {
+		return releaseRepoURL + "/latest/download"
+	}
+	return releaseRepoURL + "/download/v" + strings.TrimPrefix(v, "v")
+}
 
 // releaseBaseURLOverride is set by tests to redirect downloads to a
 // local httptest server. Empty in production.
@@ -307,7 +337,7 @@ var releaseBaseURLOverride string
 func downloadAssets(dataDir, profile, kernelPath, initrdPath string, force bool) error {
 	os.MkdirAll(dataDir, 0755)
 
-	base := releaseBaseURL
+	base := releaseAssetBaseURL()
 	if releaseBaseURLOverride != "" {
 		base = releaseBaseURLOverride
 	}
@@ -378,6 +408,57 @@ func downloadAssets(dataDir, profile, kernelPath, initrdPath string, force bool)
 	return nil
 }
 
+// installSource makes a best-effort guess at how the running dew was
+// installed, from its executable path. The two install paths in the
+// wild (Homebrew formula vs `npx dew@<pin>`) confused a reporter who
+// `brew upgrade`d dew while their project launcher kept running the
+// npx-pinned binary — so the upgrade had no effect and the error
+// didn't say which dew was even talking. Returns "" when undecidable.
+func installSource(exePath string) string {
+	// Lower-case match: Intel Homebrew lives under /usr/local/Homebrew
+	// (capital H), Apple Silicon under /opt/homebrew (lower), and the
+	// formula keg under /Cellar.
+	p := strings.ToLower(exePath)
+	switch {
+	case strings.Contains(p, "/cellar/"), strings.Contains(p, "/homebrew/"):
+		return "Homebrew"
+	case strings.Contains(p, "_npx"), strings.Contains(p, "/npm/"), strings.Contains(p, "/.npm/"):
+		return "npx/npm"
+	default:
+		return ""
+	}
+}
+
+// runningBinaryHint identifies the dew binary that hit an asset error
+// and gives an actionable next step. With version-pinned asset URLs a
+// SHA mismatch / missing asset means THIS pinned version's published
+// bytes are gone or were altered — the fix is almost always to move to
+// a newer dew (newer releases pin their own immutable assets), so we
+// name the running binary (version + path + install source) and the
+// upgrade command for that source.
+func runningBinaryHint() string {
+	exe, _ := os.Executable()
+	src := installSource(exe)
+	var b strings.Builder
+	fmt.Fprintf(&b, "  running dew: %s", version)
+	if exe != "" {
+		fmt.Fprintf(&b, " (%s)", exe)
+	}
+	if src != "" {
+		fmt.Fprintf(&b, " — installed via %s", src)
+	}
+	b.WriteString("\n  fix: a newer dew likely pins working assets — upgrade and retry:\n")
+	switch src {
+	case "Homebrew":
+		b.WriteString("    brew upgrade dew\n")
+	case "npx/npm":
+		b.WriteString("    bump your dew pin (e.g. npx -y dew@latest) — note: `brew upgrade` won't affect an npx-pinned launcher\n")
+	default:
+		b.WriteString("    upgrade dew to the latest version (brew upgrade dew, or bump your dew@<version> pin)\n")
+	}
+	return b.String()
+}
+
 func fetchAsset(url, dest, name, profile, expectedSHA string) (r struct {
 	name    string
 	written int64
@@ -391,8 +472,17 @@ func fetchAsset(url, dest, name, profile, expectedSHA string) (r struct {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		r.err = fmt.Errorf("download %s: HTTP %d\n\n  Assets not available at %s\n  Build locally: bash initramfs/build.sh %s",
-			name, resp.StatusCode, url, profile)
+		if resp.StatusCode == 404 {
+			// 404 = this version's pinned asset is genuinely gone;
+			// upgrading to a release that pins its own assets is the fix.
+			r.err = fmt.Errorf("download %s: HTTP 404\n\n  Asset not found at %s\n  this dew version's published assets may have been removed.\n%s  or build locally: bash initramfs/build.sh %s",
+				name, url, runningBinaryHint(), profile)
+		} else {
+			// 403/429/5xx etc = transient server / auth / rate-limit;
+			// not a missing asset, so retry rather than upgrade.
+			r.err = fmt.Errorf("download %s: unexpected HTTP %d from %s\n  (likely a transient server, auth, or rate-limit error — retry shortly)\n  or build locally: bash initramfs/build.sh %s",
+				name, resp.StatusCode, url, profile)
+		}
 		return
 	}
 	tmp := dest + ".partial"
@@ -424,8 +514,8 @@ func fetchAsset(url, dest, name, profile, expectedSHA string) (r struct {
 		got := hex.EncodeToString(hasher.Sum(nil))
 		if got != expectedSHA {
 			os.Remove(tmp)
-			r.err = fmt.Errorf("verify %s: SHA mismatch\n  expected: %s\n  got:      %s\n  the asset on the release CDN doesn't match the bytes this dew binary was built against",
-				name, expectedSHA, got)
+			r.err = fmt.Errorf("verify %s: SHA mismatch\n  expected: %s\n  got:      %s\n  the published asset for this dew version was changed after this binary was built.\n%s",
+				name, expectedSHA, got, runningBinaryHint())
 			return
 		}
 	}
@@ -735,7 +825,7 @@ Advanced:
   dew run [--] <cmd>             Execute in ephemeral VM
   dew exec <cmd>                 Execute in running VM
   dew assets ...                 Manage VM images
-  dew doctor [--verbose]         Diagnose environment issues
+  dew doctor [--verbose] [--profile P]  Diagnose environment issues
                                  (--verbose dumps the VM config
                                   during the boot test)
   dew update                     Update to latest version

@@ -9,6 +9,42 @@ permissions:
   id-token: write   # cosign keyless + npm OIDC trusted publisher + SLSA
 
 jobs:
+  # ─── Guard: published release assets are IMMUTABLE.
+  #     dew binaries fetch kernel/initramfs from
+  #     /releases/download/v<tag>/ and verify the bytes against a SHA
+  #     baked into the binary at build time. Overwriting a tag's assets
+  #     after publish therefore bricks every older pinned install: it
+  #     requests the new bytes, compares them to its old baked SHA, and
+  #     fails the verify forever. So if a tag already has its assets,
+  #     refuse to re-publish — cut a NEW tag instead. A failed first run
+  #     (release shell created but no assets uploaded yet) still retries
+  #     cleanly because the sentinel asset won't be present.
+  guard-immutable-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse to overwrite already-published release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Asset whose bytes are SHA-pinned into shipped binaries; its
+          # presence means this tag was already fully published.
+          SENTINEL="initramfs-node-aarch64.cpio.gz"
+          if ! gh release view "$TAG" --repo "$REPO" --json assets >/tmp/rel.json 2>/dev/null; then
+            echo "No existing release for $TAG — clean to publish."
+            exit 0
+          fi
+          if jq -e --arg n "$SENTINEL" '.assets[] | select(.name == $n)' /tmp/rel.json >/dev/null; then
+            echo "::error::Release $TAG already has published assets ($SENTINEL)."
+            echo "Published release assets are immutable: older pinned dew binaries"
+            echo "fetch /releases/download/$TAG/ and verify against a baked SHA, so"
+            echo "overwriting them bricks every older pin. Cut a NEW tag instead."
+            exit 1
+          fi
+          echo "Release $TAG exists but has no published assets yet — retry OK."
+
   # ─── Build darwin binaries: signed, notarized, ready for goreleaser
   #     archive. aarch64 initramfs is cross-built on the Linux runner
   #     (where the apk-tools-static bake works) — see build-linux below.
@@ -96,6 +132,7 @@ jobs:
   #     `dew` CLI binary is built by goreleaser in the release job,
   #     not here.
   build-linux:
+    needs: [guard-immutable-tag]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
