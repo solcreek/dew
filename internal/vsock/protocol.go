@@ -89,6 +89,50 @@ type ExecRequest struct {
 	TTY  bool   `json:"tty,omitempty"`
 	Rows uint16 `json:"rows,omitempty"`
 	Cols uint16 `json:"cols,omitempty"`
+	// Confine, when set, is a privilege/isolation spec the host derives from a
+	// systemd unit (--confine). Today the agent enforces only the read-only
+	// filesystem (ReadOnlyRoot/ReadWritePaths) natively via a mount-namespace
+	// shim; the uid/caps/no_new_privs fields are reserved for a follow-up and
+	// are still enforced by the host-built setpriv prefix on Command/Args.
+	// omitempty so the common unconfined path is unchanged and an older agent
+	// simply ignores it.
+	Confine *Confinement `json:"confine,omitempty"`
+}
+
+// Confinement is the privilege/isolation spec the host derives from a systemd
+// unit for `dew run --confine`.
+//
+// Enforcement status (this is a phased feature):
+//   - ReadOnlyRoot/ReadWritePaths — APPLIED by the agent's re-exec shim, in a
+//     mount namespace before exec.
+//   - User/Group/DynamicUser/NoNewPrivs/DropAllCaps/KeepCaps/DropCaps — carried
+//     for the planned native drop, but NOT yet applied by the agent; the uid
+//     and capability drop is currently done by the host-built setpriv prefix.
+//   - Seccomp (SystemCallFilter=/RestrictAddressFamilies=) — not represented
+//     here yet; design-only (see docs/confine-enforcement.md §5).
+type Confinement struct {
+	// Privilege drop — carried but enforced by the setpriv prefix for now.
+	User        string   `json:"user,omitempty"`         // uid or username; "" = unchanged
+	Group       string   `json:"group,omitempty"`        // gid or group name
+	DynamicUser bool     `json:"dynamic_user,omitempty"` // no User= but DynamicUser=yes → fixed unprivileged uid
+	NoNewPrivs  bool     `json:"no_new_privs,omitempty"`
+	DropAllCaps bool     `json:"drop_all_caps,omitempty"` // empty/positive bounding set → drop all but KeepCaps
+	KeepCaps    []string `json:"keep_caps,omitempty"`     // libcap names (lowercase) kept when DropAllCaps
+	DropCaps    []string `json:"drop_caps,omitempty"`     // libcap names dropped from the inherited set otherwise
+	// Filesystem (ProtectSystem=strict + ReadWritePaths=) — applied by the agent.
+	ReadOnlyRoot   bool     `json:"read_only_root,omitempty"`
+	ReadWritePaths []string `json:"read_write_paths,omitempty"`
+}
+
+// Set reports whether the spec constrains anything (so the agent can skip the
+// re-exec shim entirely when it doesn't).
+func (c *Confinement) Set() bool {
+	if c == nil {
+		return false
+	}
+	return c.User != "" || c.Group != "" || c.DynamicUser || c.NoNewPrivs ||
+		c.DropAllCaps || len(c.KeepCaps) > 0 || len(c.DropCaps) > 0 ||
+		c.ReadOnlyRoot || len(c.ReadWritePaths) > 0
 }
 
 // InputChunk carries stdin from host to guest during a streaming exec.

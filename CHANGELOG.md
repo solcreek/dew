@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dew run --confine` now enforces a read-only rootfs.** `ProtectSystem=strict`
+  remounts the guest root read-only and `ReadWritePaths=` are bind-mounted back
+  writable, applied by the agent in a mount namespace before exec (`/proc`,
+  `/sys`, `/dev`, `/tmp`, `/run`, the cgroup mount and virtiofs `--share` dirs
+  stay writable, mirroring systemd). Carried over the vsock batch path only:
+  `--stream` errors and the serial fallback warns rather than silently skipping
+  the protection. The seccomp half (`SystemCallFilter=`) remains unenforced (see
+  `docs/confine-enforcement.md`).
+
 ## [0.8.1] - 2026-06-27
 
 ### Fixed

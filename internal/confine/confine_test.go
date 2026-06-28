@@ -47,10 +47,18 @@ WantedBy=multi-user.target
 	if !p.Confined() || !p.NeedsSetpriv() {
 		t.Error("hardened unit should be Confined and NeedsSetpriv")
 	}
+	// ProtectSystem=strict + ReadWritePaths are now enforced (read-only rootfs).
+	if !p.ReadOnlyRoot {
+		t.Error("ProtectSystem=strict should set ReadOnlyRoot")
+	}
+	if len(p.ReadWritePaths) != 1 || p.ReadWritePaths[0] != "/var/lib/app" {
+		t.Errorf("ReadWritePaths = %v, want [/var/lib/app]", p.ReadWritePaths)
+	}
 
-	// Unenforced directives must be surfaced, not silently dropped.
+	// Unenforced directives must be surfaced, not silently dropped. (ProtectSystem
+	// is no longer here — =strict is enforced above.)
 	joined := strings.Join(p.Unsupported, "\n")
-	for _, want := range []string{"ProtectSystem", "SystemCallFilter", "MemoryDenyWriteExecute", "DynamicUser=yes approximated"} {
+	for _, want := range []string{"SystemCallFilter", "MemoryDenyWriteExecute", "DynamicUser=yes approximated"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("Unsupported missing %q; got:\n%s", want, joined)
 		}
@@ -211,6 +219,91 @@ func TestParse_NegatedBoundingSet(t *testing.T) {
 	want := []string{"setpriv", "--bounding-set", "-cap_sys_admin,-cap_net_raw"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("SetprivArgs() = %v, want %v", got, want)
+	}
+}
+
+// ProtectSystem=strict maps to a read-only rootfs; ReadWritePaths accumulate
+// (across multiple keys and space-separated values) as the writable exceptions.
+func TestParse_ReadOnlyFilesystem(t *testing.T) {
+	p, err := Parse(strings.NewReader(
+		"[Service]\nProtectSystem=strict\nReadWritePaths=/var/lib/app /var/log/app\nReadWritePaths=/run/app\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.ReadOnlyRoot {
+		t.Error("ProtectSystem=strict should set ReadOnlyRoot")
+	}
+	want := []string{"/var/lib/app", "/var/log/app", "/run/app"}
+	if !reflect.DeepEqual(p.ReadWritePaths, want) {
+		t.Errorf("ReadWritePaths = %v, want %v", p.ReadWritePaths, want)
+	}
+	if !p.Confined() {
+		t.Error("a unit with ProtectSystem=strict should be Confined")
+	}
+	if p.NeedsSetpriv() {
+		t.Error("ProtectSystem=strict alone must not require setpriv (it's a mount-ns op)")
+	}
+}
+
+// An empty ReadWritePaths= resets the accumulated list (systemd drop-in
+// semantics), so stale earlier entries don't linger as writable exceptions.
+func TestParse_ReadWritePathsReset(t *testing.T) {
+	p, err := Parse(strings.NewReader(
+		"[Service]\nProtectSystem=strict\nReadWritePaths=/var/lib/app /var/log/app\nReadWritePaths=\nReadWritePaths=/run/app\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/run/app"}
+	if !reflect.DeepEqual(p.ReadWritePaths, want) {
+		t.Errorf("ReadWritePaths = %v, want %v (empty assignment should reset)", p.ReadWritePaths, want)
+	}
+}
+
+// Non-absolute ReadWritePaths are dropped at parse time (the agent shim needs
+// absolute paths) and surfaced as unenforced, for an earlier, clearer error.
+func TestParse_ReadWritePathsRejectsRelative(t *testing.T) {
+	p, err := Parse(strings.NewReader(
+		"[Service]\nProtectSystem=strict\nReadWritePaths=/var/lib/app rel/path\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(p.ReadWritePaths, []string{"/var/lib/app"}) {
+		t.Errorf("ReadWritePaths = %v, want [/var/lib/app] (relative dropped)", p.ReadWritePaths)
+	}
+	if !strings.Contains(strings.Join(p.Unsupported, "\n"), "rel/path") {
+		t.Error("a relative ReadWritePaths entry should be surfaced as unenforced")
+	}
+}
+
+// ProtectSystem=true/full protect only a subset; we don't approximate them with
+// strict, so they stay surfaced as unenforced and don't set ReadOnlyRoot.
+func TestParse_ProtectSystemNonStrict(t *testing.T) {
+	for _, v := range []string{"true", "full", "yes"} {
+		p, err := Parse(strings.NewReader("[Service]\nProtectSystem=" + v + "\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.ReadOnlyRoot {
+			t.Errorf("ProtectSystem=%s must not set ReadOnlyRoot", v)
+		}
+		if !strings.Contains(strings.Join(p.Unsupported, "\n"), "ProtectSystem="+v) {
+			t.Errorf("ProtectSystem=%s should be surfaced as unenforced", v)
+		}
+	}
+}
+
+// ReadWritePaths without ProtectSystem=strict would be a silent no-op (the root
+// stays writable), so they must be surfaced as unenforced and dropped.
+func TestParse_ReadWritePathsWithoutStrict(t *testing.T) {
+	p, err := Parse(strings.NewReader("[Service]\nReadWritePaths=/var/lib/app\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.ReadWritePaths) != 0 {
+		t.Errorf("ReadWritePaths should be dropped without ProtectSystem=strict, got %v", p.ReadWritePaths)
+	}
+	if !strings.Contains(strings.Join(p.Unsupported, "\n"), "ReadWritePaths=") {
+		t.Error("ReadWritePaths without strict should be surfaced as unenforced")
 	}
 }
 
