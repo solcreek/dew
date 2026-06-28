@@ -583,6 +583,67 @@ else
     test_result "stack: multi-service dew.toml + host.lo.internal" "skip"
 fi
 
+# --- Test 6f: `dew run --confine` native privilege drop (prctl/capset) ---
+# The capability/uid/no_new_privs drop is applied natively by the agent's
+# re-exec shim (not setpriv), so it works without the standard profile. Asserts,
+# via /proc/self/status:
+#   1. minimal: empty CapabilityBoundingSet= + NoNewPrivileges drops every cap
+#      and sets NoNewPrivs=1 while staying root (no User=).
+#   2. minimal: User= + a single kept cap lands as a non-root uid that retains
+#      exactly that cap via the ambient set (the keep-caps-across-uid path).
+#   3. standard: read-only fs + a capped bounding set compose (root write to
+#      /etc is EROFS, the bounding set is reduced).
+CONF_DIR=$(mktemp -d -t dew-smoke-confine)
+INITRD_MIN="$INITRD_DIR/initramfs-minimal.cpio.gz"
+INITRD_STD="$INITRD_DIR/initramfs-standard.cpio.gz"
+if [ -f "$INITRD_MIN" ] && [ -f "$KERNEL" ]; then
+    printf '[Service]\nCapabilityBoundingSet=\nNoNewPrivileges=yes\n' > "$CONF_DIR/caps.service"
+    OUT=$("$DEW" run --profile minimal --kernel "$KERNEL" --initrd "$INITRD_MIN" \
+        --confine "$CONF_DIR/caps.service" --timeout 120s \
+        -- sh -c 'id -u; grep -E "^(CapBnd|NoNewPrivs):" /proc/self/status' 2>/dev/null)
+    if echo "$OUT" | grep -qx '0' \
+        && echo "$OUT" | grep -qE 'CapBnd:[[:space:]]+0000000000000000' \
+        && echo "$OUT" | grep -qE 'NoNewPrivs:[[:space:]]+1'; then
+        test_result "confine: caps drop + no_new_privs on minimal (native, no setpriv)" "pass"
+    else
+        test_result "confine: caps drop on minimal failed ($(echo "$OUT" | tr '\n' ' '))" "fail"
+    fi
+
+    # CAP_NET_BIND_SERVICE is bit 10 → mask 0x400.
+    printf '[Service]\nUser=65534\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nNoNewPrivileges=yes\n' > "$CONF_DIR/ambient.service"
+    OUT=$("$DEW" run --profile minimal --kernel "$KERNEL" --initrd "$INITRD_MIN" \
+        --confine "$CONF_DIR/ambient.service" --timeout 120s \
+        -- sh -c 'id -u; grep -E "^(CapAmb|CapEff):" /proc/self/status' 2>/dev/null)
+    if echo "$OUT" | grep -qx '65534' \
+        && echo "$OUT" | grep -qE 'CapAmb:[[:space:]]+0000000000000400' \
+        && echo "$OUT" | grep -qE 'CapEff:[[:space:]]+0000000000000400'; then
+        test_result "confine: keep-cap-as-non-root via ambient set (uid 65534)" "pass"
+    else
+        test_result "confine: ambient keep-cap failed ($(echo "$OUT" | tr '\n' ' '))" "fail"
+    fi
+else
+    test_result "confine: caps drop on minimal" "skip"
+    test_result "confine: ambient keep-cap" "skip"
+fi
+if [ -f "$INITRD_STD" ] && [ -f "$KERNEL" ]; then
+    rm -f ~/.local/share/dew/standard.img
+    printf '[Service]\nCapabilityBoundingSet=CAP_CHOWN\nProtectSystem=strict\nReadWritePaths=/var/lib/app\n' > "$CONF_DIR/combined.service"
+    OUT=$("$DEW" run --profile standard --kernel "$KERNEL" --initrd "$INITRD_STD" \
+        --confine "$CONF_DIR/combined.service" --timeout 180s \
+        -- sh -c 'grep -E "^CapBnd:" /proc/self/status; (echo x>/etc/p) 2>&1; echo "etc_rc=$?"; (echo y>/var/lib/app/p) 2>&1; echo "app_rc=$?"' 2>/dev/null)
+    # CAP_CHOWN is bit 0 → mask 0x1.
+    if echo "$OUT" | grep -qE 'CapBnd:[[:space:]]+0000000000000001' \
+        && echo "$OUT" | grep -q 'etc_rc=1' \
+        && echo "$OUT" | grep -q 'app_rc=0'; then
+        test_result "confine: read-only fs + capped bounding set compose (standard)" "pass"
+    else
+        test_result "confine: ro-fs + caps compose failed ($(echo "$OUT" | tr '\n' ' '))" "fail"
+    fi
+else
+    test_result "confine: ro-fs + caps compose" "skip"
+fi
+rm -rf "$CONF_DIR"
+
 # --- Test 7: Detect (unit-level) ---
 GO_TEST=$(cd "$(dirname "$0")" && go test ./internal/detect/ -count=1 2>&1 | tail -1)
 if echo "$GO_TEST" | grep -q "ok"; then

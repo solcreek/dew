@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`dew run --confine` drops privileges natively (no more `setpriv`).** The
+  capability bounding set, `User=`/`Group=`/`DynamicUser=`, and
+  `NoNewPrivileges=` are now applied by the agent's confinement shim via
+  `prctl`/`capset`/`setresuid` instead of a host-built `setpriv` prefix. Kept
+  capabilities (`CapabilityBoundingSet=CAP_…` with `User=`) survive the uid drop
+  through the ambient capability set, mirroring systemd. Because the drop no
+  longer needs the util-linux `setpriv` binary, a privilege-drop-only unit no
+  longer forces `--profile standard` — it runs on `minimal` too; only the
+  read-only filesystem (`ProtectSystem=strict`) still requires standard. This
+  removes the 0.8.1 PATH-shadowing bug class entirely and is the prerequisite
+  for native seccomp. Validated end to end by in-VM boot tests (caps drop,
+  ambient keep-cap as non-root, `DynamicUser`, and ro-fs composed). `--confine`
+  now requires the vsock batch path (not `--stream`), since the whole spec is
+  enforced by the shim. (`setpriv` stays in the `standard` profile for manual
+  use.)
+
 ## [0.8.2] - 2026-06-27
 
 ### Added

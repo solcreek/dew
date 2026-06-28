@@ -1,16 +1,18 @@
 # Design: agent-side `--confine` enforcement (R2 follow-up)
 
-Status: partly implemented. The **read-only filesystem** half
-(`ProtectSystem=strict` + `ReadWritePaths=`) is implemented in this PR via the
-agent-side shim described below; native capability/uid drop and the seccomp
-syscall allowlist remain to do. This doc tracks the shared substrate and the
-remaining work.
+Status: partly implemented. The **read-only filesystem** (`ProtectSystem=strict`
++ `ReadWritePaths=`, §3) and the **native capability/uid/no_new_privs drop**
+(§4) are both implemented via the agent-side shim described below. The seccomp
+syscall allowlist (§5) remains to do. This doc tracks the shared substrate and
+the remaining work.
 
 Context: field notes (`hostd.sh/docs/dew-test-notes.md` §7b) confirm 0.8.x
 validates the **resource-limit** half of a hardened unit (cgroup `MemoryMax` /
-`TasksMax` / `CPUQuota`) and, after 0.8.1, the **capability/uid drop** via
-util-linux `setpriv`. Now also enforced: `ProtectSystem=strict` +
-`ReadWritePaths=` (read-only fs, agent mount namespace — §3). Still unenforced:
+`TasksMax` / `CPUQuota`). Now also enforced, all in the agent shim:
+`ProtectSystem=strict` + `ReadWritePaths=` (read-only fs, mount namespace — §3)
+and `User=`/`Group=`/`DynamicUser=`, `CapabilityBoundingSet=`,
+`NoNewPrivileges=` (native `prctl`/`capset`/`setresuid`, replacing the former
+`setpriv` shell-out — §4). Still unenforced:
 `SystemCallFilter=`/`RestrictAddressFamilies=` (seccomp) and the W^X /
 namespace-restriction directives — surfaced as `--confine` warnings
 (`confine.Plan.Unsupported`).
@@ -24,10 +26,13 @@ Today `--confine` enforces a unit in two disjoint ways (`cmd/dew/main.go`):
 | Half | Channel | Where applied |
 |---|---|---|
 | cgroup limits | kernel cmdline `dew.*` (`appendGuestParams`) | init-stage2, before agent start |
-| uid + caps drop | `setpriv` prefix wrapped onto argv (`wrapWithSetpriv`) | host-built argv, run by agent |
+| uid + caps drop | `Confinement` spec over vsock (§4) | agent shim, natively, before exec |
+| read-only fs | `Confinement` spec over vsock (§3) | agent shim, mount namespace, before exec |
 
-This works for anything `setpriv` can express, but the remaining directives
-**cannot** be wrapped onto an argv from the host:
+The uid/caps drop used to be a host-built `setpriv` prefix wrapped onto the argv;
+it is now applied natively by the shim (§4), the same place the read-only fs and
+(future) seccomp are set up. These per-exec, child-side operations **cannot** be
+wrapped onto an argv from the host:
 
 - **read-only fs** needs a mount namespace set up *in the child* before exec.
 - **seccomp** needs a BPF program installed *in the child* before exec
@@ -175,29 +180,47 @@ Effort: medium. Self-contained, pure Go, **fully verifiable in-VM**.
 
 ---
 
-## 4. Native capability/uid drop (replace `setpriv` shell-out) — implementable now
+## 4. Native capability/uid drop (replace `setpriv` shell-out) — IMPLEMENTED
 
-Replaces the host-side `wrapWithSetpriv` + util-linux dependency with shim
-steps 4/5/7. Mapping:
+The host-side `wrapWithSetpriv` + util-linux dependency is gone; the shim applies
+the drop natively (`cmd/dew-agent/caps.go`, `applyPrivilegeDrop`). Mapping:
 
-- `CapabilityBoundingSet=` (empty) → `DropAllCaps`; drop every cap via
-  `PR_CAPBSET_DROP` except `KeepCaps`.
+- `CapabilityBoundingSet=` (empty / positive list) → `DropAllCaps`; drop every
+  cap via `PR_CAPBSET_DROP` except `KeepCaps`.
 - `CapabilityBoundingSet=~CAP_X` → `DropCaps`; drop only those.
 - `NoNewPrivileges=yes` → `PR_SET_NO_NEW_PRIVS`.
-- `User=`/`Group=`/`DynamicUser=` → `setresgid`/`setresuid` (+ `setgroups([])`).
+- `User=`/`Group=`/`DynamicUser=` → `setgroups([])` + `setresgid`/`setresuid`
+  (DynamicUser is pre-resolved host-side to the nobody uid).
 
-Benefits over 0.8.1's setpriv path: works on `minimal` (no util-linux needed),
-removes the PATH-shadowing fragility entirely (the 0.8.1 bug class), and is the
-prerequisite for seccomp (must set `no_new_privs` + drop caps in the same child
-that installs the filter).
+Ordering (per-thread state, so `runtime.LockOSThread` then exec on that thread;
+execve checks the calling thread's creds and destroys the others):
 
-Migration: keep `setpriv` as a fallback for one release if the agent reports it
-can't apply the spec, or cut over directly (the agent and host ship together).
-The host-side `confine.SetprivArgs` / `wrapWithSetpriv` become dead once the
-agent path lands — remove them in the same change.
+1. `PR_CAPBSET_DROP` the unwanted caps (needs `CAP_SETPCAP`, held as root).
+2. **Keep-cap-as-non-root** (`KeepCaps` + non-root `User=`): add the kept caps to
+   the **inheritable** set (`capset`, while still holding `CAP_SETUID`), then
+   `PR_SET_KEEPCAPS` so the permitted set survives the uid change.
+3. `setgroups([])`, `setresgid`, `setresuid`.
+4. Raise each kept cap into the **ambient** set (`PR_CAP_AMBIENT_RAISE`) so it
+   becomes effective in the exec'd non-root image.
+5. `PR_SET_NO_NEW_PRIVS`.
 
-Effort: medium. **Verifiable in-VM** (`id`, `capsh --print`, attempt a
-privileged op → EPERM).
+Benefits over 0.8.1's setpriv path: works on `minimal` (no util-linux needed, so
+a privilege-drop-only unit no longer forces `--profile standard`), removes the
+PATH-shadowing fragility entirely (the 0.8.1 bug class), and is the prerequisite
+for seccomp (must set `no_new_privs` + drop caps in the same child that installs
+the filter).
+
+Migration: cut over directly (agent and host ship together). `confine.SetprivArgs`
+/ `wrapWithSetpriv` were removed; `confinementFromPlan` now carries the full spec
+over vsock. `setpriv` stays baked in the `standard` profile for manual use.
+
+Verified in-VM (`smoke-test.sh` Test 6f + ad-hoc): empty bounding set →
+`CapBnd=0` + `NoNewPrivs=1` as root on `minimal`; `User=65534` +
+`CapabilityBoundingSet=CAP_NET_BIND_SERVICE` → uid 65534 with `CapAmb`/`CapEff`
+== that one cap; `DynamicUser` → uid 65534; ro-fs + capped bounding set composed
+on `standard`. The linux-only pure logic (`capsToDrop`, `resolveDropID`, cap-name
+resolution) is unit-tested in `cmd/dew-agent/caps_test.go` (CI `test-linux-agent`
+job, and run in-VM against a real kernel).
 
 ---
 
@@ -261,12 +284,12 @@ No R1 implementation in this round (design-first, and it's the largest track).
 
 ## 7. Phasing & order
 
-1. **Substrate** (§2): `Confinement` wire type + agent shim scaffold (no
-   behavior yet) + `Plan → Confinement` mapping. Foundation for everything.
-2. **Read-only fs** (§3): first behavior on the shim. Fully in-VM testable.
-3. **Native caps/uid drop** (§4): cut over from `setpriv`; remove the host
-   `wrapWithSetpriv`/`SetprivArgs` path. In-VM testable.
-4. **Seccomp 5a** (`RestrictAddressFamilies`): standalone, smaller.
+1. ✅ **Substrate** (§2): `Confinement` wire type + agent shim + `Plan →
+   Confinement` mapping. Foundation for everything.
+2. ✅ **Read-only fs** (§3): first behavior on the shim. In-VM tested.
+3. ✅ **Native caps/uid drop** (§4): cut over from `setpriv`; removed the host
+   `wrapWithSetpriv`/`SetprivArgs` path. In-VM tested.
+4. **Seccomp 5a** (`RestrictAddressFamilies`): standalone, smaller. ← next
 5. **Seccomp 5b/5c** (`@`-group expansion): the big one; boot-test gated.
 6. **R1**: separate track, per `systemd-profile.md`.
 
