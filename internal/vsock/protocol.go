@@ -90,12 +90,10 @@ type ExecRequest struct {
 	Rows uint16 `json:"rows,omitempty"`
 	Cols uint16 `json:"cols,omitempty"`
 	// Confine, when set, is a privilege/isolation spec the host derives from a
-	// systemd unit (--confine). Today the agent enforces only the read-only
-	// filesystem (ReadOnlyRoot/ReadWritePaths) natively via a mount-namespace
-	// shim; the uid/caps/no_new_privs fields are reserved for a follow-up and
-	// are still enforced by the host-built setpriv prefix on Command/Args.
-	// omitempty so the common unconfined path is unchanged and an older agent
-	// simply ignores it.
+	// systemd unit (--confine). The agent's re-exec shim enforces all of it
+	// natively before exec: the read-only filesystem (mount namespace) and the
+	// uid/caps/no_new_privs drop (prctl/capset/setresuid). omitempty so the
+	// common unconfined path is unchanged and an older agent simply ignores it.
 	Confine *Confinement `json:"confine,omitempty"`
 }
 
@@ -105,13 +103,13 @@ type ExecRequest struct {
 // Enforcement status (this is a phased feature):
 //   - ReadOnlyRoot/ReadWritePaths — APPLIED by the agent's re-exec shim, in a
 //     mount namespace before exec.
-//   - User/Group/DynamicUser/NoNewPrivs/DropAllCaps/KeepCaps/DropCaps — carried
-//     for the planned native drop, but NOT yet applied by the agent; the uid
-//     and capability drop is currently done by the host-built setpriv prefix.
+//   - User/Group/DynamicUser/NoNewPrivs/DropAllCaps/KeepCaps/DropCaps — APPLIED
+//     natively by the shim (prctl/capset/setresuid), replacing the former
+//     host-built setpriv prefix.
 //   - Seccomp (SystemCallFilter=/RestrictAddressFamilies=) — not represented
 //     here yet; design-only (see docs/confine-enforcement.md §5).
 type Confinement struct {
-	// Privilege drop — carried but enforced by the setpriv prefix for now.
+	// Privilege drop — applied natively by the agent shim.
 	User        string   `json:"user,omitempty"`         // uid or username; "" = unchanged
 	Group       string   `json:"group,omitempty"`        // gid or group name
 	DynamicUser bool     `json:"dynamic_user,omitempty"` // no User= but DynamicUser=yes → fixed unprivileged uid

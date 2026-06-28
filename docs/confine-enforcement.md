@@ -59,14 +59,14 @@ The shipped wire type (`internal/vsock/protocol.go`) — uid/group are strings
 
 ```go
 type Confinement struct {
-    // Privilege drop — carried but enforced by the setpriv prefix for now.
+    // Privilege drop — applied natively by the agent shim (§4).
     User, Group string   // uid-or-name / gid-or-name; "" = unchanged
     DynamicUser bool     // no User= but DynamicUser=yes → fixed unprivileged uid
-    NoNewPrivs  bool     // PR_SET_NO_NEW_PRIVS (planned native step)
+    NoNewPrivs  bool     // PR_SET_NO_NEW_PRIVS
     DropAllCaps bool     // empty/positive bounding set → drop all but KeepCaps
-    KeepCaps    []string // caps retained when DropAllCaps
+    KeepCaps    []string // caps retained when DropAllCaps (kept via ambient set)
     DropCaps    []string // caps removed from the inherited set otherwise
-    // Filesystem — applied by the agent today.
+    // Filesystem — applied by the agent (§3).
     ReadOnlyRoot   bool     // ProtectSystem=strict → remount / read-only
     ReadWritePaths []string // bind-rw exceptions (ReadWritePaths=)
     // Seccomp: not a field yet — design-only (§5).
@@ -78,13 +78,13 @@ type ExecRequest struct {
 }
 ```
 
-The host builds `*Confinement` from `confine.Plan`. As shipped, only the
-read-only-fs fields are populated and applied by the agent; uid/caps still ride
-the host-built `setpriv` prefix, so `confinementFromPlan` (in `cmd/dew`) returns
-nil unless `ProtectSystem=strict`. The native uid/caps drop (which fills the
-priv fields and removes the setpriv prefix) is the follow-up in §4. Import
-direction: `internal/vsock` must not import `internal/confine` — the wire type
-lives in `internal/vsock` and the `Plan → Confinement` mapping in `cmd/dew`.
+The host builds `*Confinement` from `confine.Plan`. As shipped, the agent
+applies the whole spec natively — both the read-only-fs fields (§3) and the
+uid/caps/no_new_privs drop (§4) — so `confinementFromPlan` (in `cmd/dew`)
+populates every field and returns nil only when the unit constrains nothing the
+shim applies. Import direction: `internal/vsock` must not import
+`internal/confine` — the wire type lives in `internal/vsock` and the `Plan →
+Confinement` mapping in `cmd/dew`.
 
 Backward-compat: `Confine` is `omitempty`; an old agent ignores it (so a
 newer host must not *rely* on it silently — gate on the agent handshake/version
