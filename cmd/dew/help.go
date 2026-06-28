@@ -112,10 +112,12 @@ Flags:
                          rootfs (ProtectSystem=strict + ReadWritePaths=, applied
                          in a mount namespace), and run the command under them.
                          The privilege drop works on any profile; the read-only
-                         fs forces --profile standard. Needs the vsock batch
-                         path (not --stream). Still an APPROXIMATION — directives
-                         it can't enforce (seccomp/SystemCallFilter, ...) are
-                         printed as warnings, not applied.
+                         fs forces --profile standard. A unit with a privilege
+                         drop or read-only fs needs the vsock batch path (not
+                         --stream); cgroup-only units can still stream. Still an
+                         APPROXIMATION — directives it can't enforce
+                         (seccomp/SystemCallFilter, ...) are printed as
+                         warnings, not applied.
   --json                 Pass guest exit code in JSON; dew exits 0.
   --stream / --events    Stream stdout/stderr live.
   --timeout DUR          Overall wall-clock bound for the whole run

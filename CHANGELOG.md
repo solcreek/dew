@@ -20,10 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read-only filesystem (`ProtectSystem=strict`) still requires standard. This
   removes the 0.8.1 PATH-shadowing bug class entirely and is the prerequisite
   for native seccomp. Validated end to end by in-VM boot tests (caps drop,
-  ambient keep-cap as non-root, `DynamicUser`, and ro-fs composed). `--confine`
-  now requires the vsock batch path (not `--stream`), since the whole spec is
-  enforced by the shim. (`setpriv` stays in the `standard` profile for manual
-  use.)
+  ambient keep-cap as non-root, `DynamicUser`, and ro-fs composed). A unit that
+  needs the agent-side shim (privilege drop or read-only fs) now requires the
+  vsock batch path (not `--stream`), since that spec is enforced by the shim; a
+  cgroup-only unit still streams. (`setpriv` stays in the `standard` profile for
+  manual use.)
 
 ## [0.8.2] - 2026-06-27
 
