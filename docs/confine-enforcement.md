@@ -86,10 +86,14 @@ shim applies. Import direction: `internal/vsock` must not import
 `internal/confine` — the wire type lives in `internal/vsock` and the `Plan →
 Confinement` mapping in `cmd/dew`.
 
-Backward-compat: `Confine` is `omitempty`; an old agent ignores it (so a
-newer host must not *rely* on it silently — gate on the agent handshake/version
-if we add one, otherwise document that `--confine`'s fs/seccomp halves need a
-guest built from the same release, which the asset-SHA pinning already ensures).
+Backward-compat: `Confine` is `omitempty`; an old agent ignores it, so the host
+fails closed instead of relying on it silently. The agent advertises native
+confinement support in its `SetToken` handshake ack (`ConnectResponse.Confine`);
+when `--confine` is requested and the agent doesn't ack (an older guest, or a
+mismatched `--initrd`/`--kernel`), `dew run` errors before exec rather than
+running unconfined. The `--stream` and serial-fallback paths can't drive the
+shim either, so they fail closed the same way. On the normal path the asset-SHA
+pinning keeps host and guest in lockstep, so the ack is always present.
 
 ### The fork-exec constraint (key implementation detail)
 
