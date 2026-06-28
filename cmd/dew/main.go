@@ -1643,6 +1643,12 @@ func cmdRun(args []string) error {
 			fmt.Fprintf(os.Stderr, "dew: token handshake write failed: %v\n", werr)
 		} else if rerr := vsockProto.ReadJSONTimeout(conn, &resp, 5*time.Second); rerr != nil {
 			fmt.Fprintf(os.Stderr, "dew: token handshake read failed: %v\n", rerr)
+		} else if !resp.OK {
+			reason := resp.Error
+			if reason == "" {
+				reason = "no reason given"
+			}
+			fmt.Fprintf(os.Stderr, "dew: token handshake rejected: %s\n", reason)
 		}
 		conn.Close()
 		tokenSent = resp.OK
