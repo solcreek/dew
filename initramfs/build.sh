@@ -456,9 +456,55 @@ rm -rf "$RUN"
 mkdir -p "$RUN/lower" "$RUN/upper" "$RUN/work" "$RUN/merged" "$RUN/bundle"
 
 # Ensure the persistent data dir (host side of the bind mount) exists so crun
-# can bind it; the bind itself is already declared in config.json.
+# can bind it; the bind itself is already declared in config.json. Then chown it
+# to the image's runtime user (config.json process.user): dew runs the container
+# as that uid/gid, but the bind source is created root-owned here, so a non-root
+# image (e.g. a *-rootless build at uid 1000, or vaultwarden at 65534) otherwise
+# can't write its own data dir and fails to start. Skipped for root images
+# (uid 0 — a no-op) and kept best-effort under set -e (guarded + `|| true`) so a
+# parse miss or chown error never aborts a launch.
 if [ -n "$DATA" ]; then
-    mkdir -p "${DATA%%:*}"
+    DATA_SRC="${DATA%%:*}"
+    mkdir -p "$DATA_SRC"
+    # Canonicalize before the allowlist check so `..` / symlinks can't escape the
+    # dew-managed prefix as a plain string match — e.g.
+    # `-v /var/lib/dew/volumes/../../..:/data` would glob-match but resolve to /var.
+    # realpath is required: if it's missing or fails, DATA_REAL is empty so the
+    # allowlist case below can't match and the launch proceeds without auto-chown
+    # (never re-falling back to the literal path, which would reopen the bypass).
+    # The `|| true` keeps a missing/failed realpath from tripping errexit.
+    # (chown -R below does not dereference symlinks it finds during recursion, so
+    # the top-level resolve is the only escape vector.)
+    DATA_REAL=$(realpath "$DATA_SRC" 2>/dev/null || true)
+    # Only auto-chown dew-managed persistence paths: a named volume
+    # (/var/lib/dew/volumes/*) or a service data dir (/var/lib/dew/services/*/data).
+    # A `-v /guest:/path` bind names an arbitrary absolute path (could be /etc, /,
+    # …); recursively chowning that could break the guest, so leave it to the user.
+    case "$DATA_REAL" in
+        /var/lib/dew/volumes/*|/var/lib/dew/services/*/data)
+            # Scope the parse to the process.user block so a future uid/gid field
+            # elsewhere in config.json (e.g. linux.*idMappings) can't be picked up
+            # and chown the data dir to the wrong owner. The range runs from the
+            # "user": line to the block's closing "}"; other keys may appear in the
+            # block (e.g. additionalGids, umask) but don't affect the uid/gid pick.
+            DATA_UID=$(sed -n '/"user"[[:space:]]*:/,/}/s/.*"uid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
+            DATA_GID=$(sed -n '/"user"[[:space:]]*:/,/}/s/.*"gid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
+            # Recursive (subdirs from an earlier boot may be root-owned), but only
+            # when the top-level owner+group doesn't already match — skips the full
+            # walk on every start (slow for large data dirs). Compares uid AND gid
+            # so an image swap that keeps the uid but changes the gid still
+            # re-chowns. A failed stat yields "" and falls through to the chown.
+            DATA_TGID="${DATA_GID:-$DATA_UID}"
+            # Explicit `|| true`: a failing stat inside $(...) can trip errexit in
+            # some /bin/sh (BusyBox ash), which must never abort a launch. An empty
+            # result then falls through to the chown.
+            DATA_CUR=$(stat -c '%u:%g' "$DATA_REAL" 2>/dev/null || true)
+            if [ -n "$DATA_UID" ] && [ "$DATA_UID" != "0" ] \
+               && [ "$DATA_CUR" != "${DATA_UID}:${DATA_TGID}" ]; then
+                chown -R "${DATA_UID}:${DATA_TGID}" "$DATA_REAL" 2>/dev/null || true
+            fi
+            ;;
+    esac
 fi
 
 # Do not swallow tar's stderr: a truncated/corrupt rootfs must surface a real
