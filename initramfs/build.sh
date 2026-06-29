@@ -466,11 +466,18 @@ mkdir -p "$RUN/lower" "$RUN/upper" "$RUN/work" "$RUN/merged" "$RUN/bundle"
 if [ -n "$DATA" ]; then
     DATA_SRC="${DATA%%:*}"
     mkdir -p "$DATA_SRC"
+    # Canonicalize before the allowlist check so `..` / symlinks can't escape the
+    # dew-managed prefix as a plain string match — e.g.
+    # `-v /var/lib/dew/volumes/../../..:/data` would glob-match but resolve to /var.
+    # Fall back to the literal path if realpath is unavailable. (chown -R below does
+    # not dereference symlinks it finds during recursion, so the top-level resolve
+    # is the only escape vector.)
+    DATA_REAL=$(realpath "$DATA_SRC" 2>/dev/null || echo "$DATA_SRC")
     # Only auto-chown dew-managed persistence paths: a named volume
     # (/var/lib/dew/volumes/*) or a service data dir (/var/lib/dew/services/*/data).
     # A `-v /guest:/path` bind names an arbitrary absolute path (could be /etc, /,
     # …); recursively chowning that could break the guest, so leave it to the user.
-    case "$DATA_SRC" in
+    case "$DATA_REAL" in
         /var/lib/dew/volumes/*|/var/lib/dew/services/*/data)
             DATA_UID=$(sed -n 's/.*"uid":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
             DATA_GID=$(sed -n 's/.*"gid":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
@@ -483,10 +490,10 @@ if [ -n "$DATA" ]; then
             # Explicit `|| true`: a failing stat inside $(...) can trip errexit in
             # some /bin/sh (BusyBox ash), which must never abort a launch. An empty
             # result then falls through to the chown.
-            DATA_CUR=$(stat -c '%u:%g' "$DATA_SRC" 2>/dev/null || true)
+            DATA_CUR=$(stat -c '%u:%g' "$DATA_REAL" 2>/dev/null || true)
             if [ -n "$DATA_UID" ] && [ "$DATA_UID" != "0" ] \
                && [ "$DATA_CUR" != "${DATA_UID}:${DATA_TGID}" ]; then
-                chown -R "${DATA_UID}:${DATA_TGID}" "$DATA_SRC" 2>/dev/null || true
+                chown -R "${DATA_UID}:${DATA_TGID}" "$DATA_REAL" 2>/dev/null || true
             fi
             ;;
     esac
