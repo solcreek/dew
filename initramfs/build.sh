@@ -482,8 +482,12 @@ if [ -n "$DATA" ]; then
     # …); recursively chowning that could break the guest, so leave it to the user.
     case "$DATA_REAL" in
         /var/lib/dew/volumes/*|/var/lib/dew/services/*/data)
-            DATA_UID=$(sed -n 's/.*"uid":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
-            DATA_GID=$(sed -n 's/.*"gid":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
+            # Scope the parse to the process.user block so a future uid/gid field
+            # elsewhere in config.json (e.g. linux.*idMappings) can't be picked up
+            # and chown the data dir to the wrong owner. The range runs from the
+            # "user": line to its closing "}" (uid/gid are the only keys inside).
+            DATA_UID=$(sed -n '/"user"[[:space:]]*:/,/}/s/.*"uid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
+            DATA_GID=$(sed -n '/"user"[[:space:]]*:/,/}/s/.*"gid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
             # Recursive (subdirs from an earlier boot may be root-owned), but only
             # when the top-level owner+group doesn't already match — skips the full
             # walk on every start (slow for large data dirs). Compares uid AND gid
