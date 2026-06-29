@@ -16,7 +16,7 @@
 #       --modules-from <dew-initramfs.cpio.gz> \
 #       --agent <dew-agent-linux-arch> \
 #       --out initramfs-systemd-aarch64.cpio.gz \
-#       [--suite bookworm] [--mirror http://deb.debian.org/debian] [--debug]
+#       [--suite bookworm] [--mirror https://deb.debian.org/debian] [--debug]
 #
 # --modules-from : an existing dew initramfs (e.g. the standard profile) whose
 #                  /lib/modules/<kver> matches the vmlinuz this profile boots with.
@@ -29,26 +29,35 @@ MODULES_FROM=""
 AGENT=""
 OUT=""
 SUITE="bookworm"
-MIRROR="http://deb.debian.org/debian"
+MIRROR="https://deb.debian.org/debian"
 DEBUG=0
 
 # systemd-as-PID1 essentials + the bits dew/systemd-analyze need.
 INCLUDE="systemd,systemd-sysv,udev,dbus,libpam-systemd,iproute2,iputils-ping"
 
+# A value-taking flag needs a following token; without the guard, `set -u` turns
+# a trailing `--arch` into an "unbound variable" abort (and `shift 2` would also
+# run past the end) instead of this clear message.
+need_val() { [ "$2" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
     case "$1" in
-        --arch)         ARCH="$2"; shift 2 ;;
-        --modules-from) MODULES_FROM="$2"; shift 2 ;;
-        --agent)        AGENT="$2"; shift 2 ;;
-        --out)          OUT="$2"; shift 2 ;;
-        --suite)        SUITE="$2"; shift 2 ;;
-        --mirror)       MIRROR="$2"; shift 2 ;;
+        --arch)         need_val "$1" "$#"; ARCH="$2"; shift 2 ;;
+        --modules-from) need_val "$1" "$#"; MODULES_FROM="$2"; shift 2 ;;
+        --agent)        need_val "$1" "$#"; AGENT="$2"; shift 2 ;;
+        --out)          need_val "$1" "$#"; OUT="$2"; shift 2 ;;
+        --suite)        need_val "$1" "$#"; SUITE="$2"; shift 2 ;;
+        --mirror)       need_val "$1" "$#"; MIRROR="$2"; shift 2 ;;
         --debug)        DEBUG=1; shift ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
 
-[ -n "$ARCH" ] || { echo "--arch required (arm64|amd64)" >&2; exit 2; }
+# Validate the arch early so a typo fails here, not deep inside debootstrap.
+case "$ARCH" in
+    arm64|amd64) ;;
+    "") echo "--arch required (arm64|amd64)" >&2; exit 2 ;;
+    *) echo "--arch must be arm64 or amd64 (got: $ARCH)" >&2; exit 2 ;;
+esac
 [ -n "$MODULES_FROM" ] && [ -f "$MODULES_FROM" ] || { echo "--modules-from <dew-initramfs.cpio.gz> required" >&2; exit 2; }
 [ -n "$AGENT" ] && [ -f "$AGENT" ] || { echo "--agent <dew-agent binary> required" >&2; exit 2; }
 [ -n "$OUT" ] || { echo "--out required" >&2; exit 2; }
@@ -75,9 +84,13 @@ debootstrap --arch="$ARCH" --variant=minbase --include="$INCLUDE" \
 
 echo "=== inject dew kernel modules from $MODULES_FROM ==="
 mkdir -p "$MODS"
-gzip -dc "$MODULES_FROM" | (cd "$MODS" && cpio -idm 2>/dev/null)
+# --no-absolute-filenames keeps a malformed archive from writing outside $MODS.
+gzip -dc "$MODULES_FROM" | (cd "$MODS" && cpio -idm --no-absolute-filenames 2>/dev/null)
+# Guard the dir before ls so a modules-less archive fails with this message
+# instead of an opaque `ls` error under set -e.
+[ -d "$MODS/lib/modules" ] || { echo "no /lib/modules in $MODULES_FROM" >&2; exit 1; }
 KVER="$(ls "$MODS/lib/modules" | head -1)"
-[ -n "$KVER" ] || { echo "no /lib/modules in $MODULES_FROM" >&2; exit 1; }
+[ -n "$KVER" ] || { echo "no kernel version dir under /lib/modules in $MODULES_FROM" >&2; exit 1; }
 echo "kernel modules: $KVER"
 mkdir -p "$ROOT/lib/modules"
 cp -a "$MODS/lib/modules/$KVER" "$ROOT/lib/modules/"
