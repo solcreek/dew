@@ -123,14 +123,14 @@ dew run --profile systemd --share ./deploy:ro -- sh -c '
       built-in, so `console=hvc0` works at early boot; vsock/virtio/ext4 are
       loaded via `/etc/modules-load.d/dew.conf`.)
 - [ ] CI: install `debian-archive-keyring` so the build can run —
-      `build-systemd.sh` fails fast if the keyring is absent and passes it to
-      debootstrap via `--keyring` for verified signatures.
+      `initramfs/build-systemd.sh` fails fast if the keyring is absent and passes
+      it to debootstrap via `--keyring` for verified signatures.
 - [ ] Two-stage init: the current builder boots systemd directly from the cpio
       (tmpfs rootfs — fine for dew's ephemeral model). For journald persistence,
       add the `/init-stage2` branch that `switch_root`s to ext4 then
       `exec /sbin/init`, and skip the R4 cgroup block when PID 1 is systemd.
-- [x] `dew-agent.service` baked + enabled (`build-systemd.sh` installs it and
-      symlinks it under `sysinit.target.wants`).
+- [x] `dew-agent.service` baked + enabled (`initramfs/build-systemd.sh` installs
+      it and symlinks it under `sysinit.target.wants`).
 - [ ] `applyProfileDefaults` entry (RAM/disk for the heavy tier).
 - [ ] Remove the `CodeUnavailable` guard in `parseFlags` once assets exist.
 - [ ] Gate/translate `--cgroup` + `--confine` to systemd drop-ins under this
