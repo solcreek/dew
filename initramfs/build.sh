@@ -456,9 +456,23 @@ rm -rf "$RUN"
 mkdir -p "$RUN/lower" "$RUN/upper" "$RUN/work" "$RUN/merged" "$RUN/bundle"
 
 # Ensure the persistent data dir (host side of the bind mount) exists so crun
-# can bind it; the bind itself is already declared in config.json.
+# can bind it; the bind itself is already declared in config.json. Then chown it
+# to the image's runtime user (config.json process.user): dew runs the container
+# as that uid/gid, but the bind source is created root-owned here, so a non-root
+# image (e.g. a *-rootless build at uid 1000, or vaultwarden at 65534) otherwise
+# can't write its own data dir and fails to start. Recursive so a dir left
+# root-owned by an earlier boot (pre-fix, or a root->non-root image swap) is
+# corrected. Skipped for root images (uid 0 — a no-op) and kept best-effort
+# under set -e (guarded + `|| true`) so a parse miss or chown error never aborts
+# a launch.
 if [ -n "$DATA" ]; then
-    mkdir -p "${DATA%%:*}"
+    DATA_SRC="${DATA%%:*}"
+    mkdir -p "$DATA_SRC"
+    DATA_UID=$(sed -n 's/.*"uid":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
+    DATA_GID=$(sed -n 's/.*"gid":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
+    if [ -n "$DATA_UID" ] && [ "$DATA_UID" != "0" ]; then
+        chown -R "${DATA_UID}:${DATA_GID:-$DATA_UID}" "$DATA_SRC" 2>/dev/null || true
+    fi
 fi
 
 # Do not swallow tar's stderr: a truncated/corrupt rootfs must surface a real
