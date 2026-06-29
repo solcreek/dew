@@ -136,8 +136,11 @@ dew run --profile systemd --share ./deploy:ro -- sh -c '
       oneshot unit) or switch to a libarchive-based packer.
 - [x] `dew-agent.service` baked + enabled (`initramfs/build-systemd.sh` installs
       it and symlinks it under `sysinit.target.wants`).
-- [ ] `applyProfileDefaults` entry (RAM/disk for the heavy tier).
-- [ ] Remove the `CodeUnavailable` guard in `parseFlags` once assets exist.
-- [ ] Gate/translate `--cgroup` + `--confine` to systemd drop-ins under this
-      profile.
+- [x] `applyProfileDefaults` entry (heavy tier: 4 vCPU / 2 GB / 10 GB disk).
+- [ ] Remove the `CodeUnavailable` guard in `parseFlags` once assets exist
+      (Phase 4). The host wiring it gates — `applyProfileDefaults` and
+      `systemdProfileFlagConflict` — is already in place and unit-tested.
+- [~] Gate `--cgroup` + `--confine` under this profile: both are now rejected
+      with a clear error (`systemdProfileFlagConflict`). Translating limits into
+      systemd drop-ins (MemoryMax=/CPUQuota=/TasksMax=) is still future work.
 - [ ] CI: a Linux runner that boots the profile and runs the acceptance script.
