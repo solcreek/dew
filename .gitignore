@@ -23,6 +23,8 @@ dew-darwin-arm64.zip
 initramfs/initramfs-*.cpio.gz
 initramfs/vmlinuz
 initramfs/vmlinuz.*
+# systemd profile (R1) local build scratch (build-systemd.sh output)
+/initramfs/.r1work/
 initramfs/alpine-minirootfs-*.tar.gz
 
 # Local test outputs
