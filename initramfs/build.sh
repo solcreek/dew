@@ -469,10 +469,13 @@ if [ -n "$DATA" ]; then
     # Canonicalize before the allowlist check so `..` / symlinks can't escape the
     # dew-managed prefix as a plain string match — e.g.
     # `-v /var/lib/dew/volumes/../../..:/data` would glob-match but resolve to /var.
-    # Fall back to the literal path if realpath is unavailable. (chown -R below does
-    # not dereference symlinks it finds during recursion, so the top-level resolve
-    # is the only escape vector.)
-    DATA_REAL=$(realpath "$DATA_SRC" 2>/dev/null || echo "$DATA_SRC")
+    # realpath is required: if it's missing or fails, DATA_REAL is empty so the
+    # allowlist case below can't match and the launch proceeds without auto-chown
+    # (never re-falling back to the literal path, which would reopen the bypass).
+    # The `|| true` keeps a missing/failed realpath from tripping errexit.
+    # (chown -R below does not dereference symlinks it finds during recursion, so
+    # the top-level resolve is the only escape vector.)
+    DATA_REAL=$(realpath "$DATA_SRC" 2>/dev/null || true)
     # Only auto-chown dew-managed persistence paths: a named volume
     # (/var/lib/dew/volumes/*) or a service data dir (/var/lib/dew/services/*/data).
     # A `-v /guest:/path` bind names an arbitrary absolute path (could be /etc, /,
