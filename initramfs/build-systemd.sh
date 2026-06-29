@@ -102,12 +102,12 @@ gzip -dc "$MODULES_FROM" > "$WORK/modules.cpio"
 # root. Capture the listing first (so a cpio -t failure on a corrupt archive
 # aborts here under set -e instead of being masked by grep in a pipeline — dash
 # has no pipefail), then reject any path-traversal entry before extracting.
-cpio -t < "$WORK/modules.cpio" > "$WORK/modules.list" 2>/dev/null
+cpio --quiet -t < "$WORK/modules.cpio" > "$WORK/modules.list"
 if grep -qE '(^|/)\.\.(/|$)' "$WORK/modules.list"; then
     echo "refusing to extract $MODULES_FROM: archive contains '..' path components" >&2
     exit 1
 fi
-( cd "$MODS" && cpio -idm --no-absolute-filenames < "$WORK/modules.cpio" 2>/dev/null )
+( cd "$MODS" && cpio --quiet -idm --no-absolute-filenames < "$WORK/modules.cpio" )
 # Guard the dir before ls so a modules-less archive fails with this message
 # instead of an opaque `ls` error under set -e.
 [ -d "$MODS/lib/modules" ] || { echo "no /lib/modules in $MODULES_FROM" >&2; exit 1; }
@@ -175,7 +175,7 @@ echo "=== pack $OUT ==="
 # gzip exiting 0 (dash has no pipefail), which would write a silently broken
 # initramfs. Stage the file list and the cpio archive so set -e checks each step.
 ( cd "$ROOT" && find . > "$WORK/rootfs.files" )
-( cd "$ROOT" && cpio -o -H newc 2>/dev/null < "$WORK/rootfs.files" ) > "$WORK/rootfs.cpio"
+( cd "$ROOT" && cpio --quiet -o -H newc < "$WORK/rootfs.files" ) > "$WORK/rootfs.cpio"
 gzip -1 -c "$WORK/rootfs.cpio" > "$OUT"
 echo "Profile:   systemd ($SUITE, $ARCH)"
 echo "Kernel:    $KVER"
