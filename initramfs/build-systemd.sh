@@ -97,17 +97,27 @@ mkdir -p "$MODS"
 # failure would otherwise leave $MODS silently incomplete). --no-absolute-
 # filenames keeps a malformed archive from writing outside $MODS.
 gzip -dc "$MODULES_FROM" > "$WORK/modules.cpio"
-# Preflight: --no-absolute-filenames blocks absolute paths but not `..`
-# components, so a crafted archive could still escape $MODS when extracted as
-# root. Capture the listing first (so a cpio -t failure on a corrupt archive
-# aborts here under set -e instead of being masked by grep in a pipeline — dash
-# has no pipefail), then reject any path-traversal entry before extracting.
+# Preflight before extracting as root. --no-absolute-filenames blocks absolute
+# paths but not `..` components nor symlink-based traversal (GNU cpio follows a
+# symlink already in the tree, so a later entry can write outside $MODS via a
+# planted `lib/modules/x -> /etc` link). Capture the listing first (so a cpio -t
+# failure on a corrupt archive aborts here under set -e, not masked by grep in a
+# pipeline — dash has no pipefail), then reject `..` paths and any symlink under
+# lib/modules (dew's module set legitimately has none).
 cpio --quiet -t < "$WORK/modules.cpio" > "$WORK/modules.list"
 if grep -qE '(^|/)\.\.(/|$)' "$WORK/modules.list"; then
     echo "refusing to extract $MODULES_FROM: archive contains '..' path components" >&2
     exit 1
 fi
-( cd "$MODS" && cpio --quiet -idm --no-absolute-filenames < "$WORK/modules.cpio" )
+cpio --quiet -tv < "$WORK/modules.cpio" > "$WORK/modules.listv"
+if awk '$1 ~ /^l/ && /\/lib\/modules\//{f=1} END{exit f?0:1}' "$WORK/modules.listv"; then
+    echo "refusing to extract $MODULES_FROM: symlink under lib/modules" >&2
+    exit 1
+fi
+# Extract only the lib/modules subtree: it's all this profile needs, and it keeps
+# the source initramfs's other paths (e.g. ~380 busybox symlinks under /usr/bin)
+# out of the extraction entirely, shrinking the attack surface.
+( cd "$MODS" && cpio --quiet -idm --no-absolute-filenames './lib/modules/*' < "$WORK/modules.cpio" )
 # Guard the dir before ls so a modules-less archive fails with this message
 # instead of an opaque `ls` error under set -e.
 [ -d "$MODS/lib/modules" ] || { echo "no /lib/modules in $MODULES_FROM" >&2; exit 1; }
