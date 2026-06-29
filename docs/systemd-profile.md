@@ -129,6 +129,11 @@ dew run --profile systemd --share ./deploy:ro -- sh -c '
       (tmpfs rootfs — fine for dew's ephemeral model). For journald persistence,
       add the `/init-stage2` branch that `switch_root`s to ext4 then
       `exec /sbin/init`, and skip the R4 cgroup block when PID 1 is systemd.
+- [ ] File capabilities: the newc cpio drops xattrs, so cap-bearing binaries
+      lose their caps (e.g. Debian's `/usr/bin/ping` needs `cap_net_raw+ep`, so
+      non-root / `DynamicUser=` ping breaks). GNU/bsd cpio can't emit xattrs, so
+      restore caps at boot (capture `getcap -r` at build, re-`setcap` from a
+      oneshot unit) or switch to a libarchive-based packer.
 - [x] `dew-agent.service` baked + enabled (`initramfs/build-systemd.sh` installs
       it and symlinks it under `sysinit.target.wants`).
 - [ ] `applyProfileDefaults` entry (RAM/disk for the heavy tier).

@@ -184,6 +184,15 @@ echo "=== pack $OUT ==="
 # Split the find|cpio|gzip pipeline so a find/cpio failure can't be masked by
 # gzip exiting 0 (dash has no pipefail), which would write a silently broken
 # initramfs. Stage the file list and the cpio archive so set -e checks each step.
+#
+# KNOWN LIMITATION: the newc cpio format written here does not carry extended
+# attributes, so Linux file capabilities are dropped. On Debian bookworm
+# /usr/bin/ping relies on cap_net_raw+ep (not setuid), so non-root / DynamicUser=
+# ping won't work in the unpacked tmpfs rootfs. Neither GNU cpio nor bsdcpio can
+# emit xattrs (--xattrs is a tar/libarchive feature), so preserving caps needs a
+# follow-up: a boot-time restore unit (capture `getcap -r` at build, re-`setcap`
+# via a oneshot) or switching to a libarchive-based packer. Tracked in
+# docs/systemd-profile.md.
 ( cd "$ROOT" && find . > "$WORK/rootfs.files" )
 ( cd "$ROOT" && cpio --quiet -o -H newc < "$WORK/rootfs.files" ) > "$WORK/rootfs.cpio"
 gzip -1 -c "$WORK/rootfs.cpio" > "$OUT"
