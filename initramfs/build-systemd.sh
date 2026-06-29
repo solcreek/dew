@@ -97,6 +97,13 @@ mkdir -p "$MODS"
 # failure would otherwise leave $MODS silently incomplete). --no-absolute-
 # filenames keeps a malformed archive from writing outside $MODS.
 gzip -dc "$MODULES_FROM" > "$WORK/modules.cpio"
+# Preflight: --no-absolute-filenames blocks absolute paths but not `..`
+# components, so a crafted archive could still escape $MODS when extracted as
+# root. Reject any path-traversal entry before extracting.
+if cpio -t < "$WORK/modules.cpio" 2>/dev/null | grep -qE '(^|/)\.\.(/|$)'; then
+    echo "refusing to extract $MODULES_FROM: archive contains '..' path components" >&2
+    exit 1
+fi
 ( cd "$MODS" && cpio -idm --no-absolute-filenames < "$WORK/modules.cpio" 2>/dev/null )
 # Guard the dir before ls so a modules-less archive fails with this message
 # instead of an opaque `ls` error under set -e.
