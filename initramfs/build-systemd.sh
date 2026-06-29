@@ -66,7 +66,7 @@ esac
 [ -n "$OUT" ] || { echo "--out required" >&2; exit 2; }
 [ "$(id -u)" = "0" ] || { echo "must run as root (debootstrap + device nodes + file ownership)" >&2; exit 2; }
 for t in debootstrap cpio gzip depmod; do
-    command -v "$t" >/dev/null 2>&1 || { echo "missing tool: $t (apt-get install debootstrap cpio kmod)" >&2; exit 2; }
+    command -v "$t" >/dev/null 2>&1 || { echo "missing tool: $t (apt-get install debootstrap cpio gzip kmod)" >&2; exit 2; }
 done
 
 WORK="$(mktemp -d)"
