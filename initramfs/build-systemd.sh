@@ -87,8 +87,12 @@ debootstrap --arch="$ARCH" --variant=minbase --include="$INCLUDE" \
 
 echo "=== inject dew kernel modules from $MODULES_FROM ==="
 mkdir -p "$MODS"
-# --no-absolute-filenames keeps a malformed archive from writing outside $MODS.
-gzip -dc "$MODULES_FROM" | (cd "$MODS" && cpio -idm --no-absolute-filenames 2>/dev/null)
+# Split the gzip|cpio pipeline so a decompression failure aborts under set -e
+# (#!/bin/sh is dash on the Debian build host — no pipefail, so a masked gzip
+# failure would otherwise leave $MODS silently incomplete). --no-absolute-
+# filenames keeps a malformed archive from writing outside $MODS.
+gzip -dc "$MODULES_FROM" > "$WORK/modules.cpio"
+( cd "$MODS" && cpio -idm --no-absolute-filenames < "$WORK/modules.cpio" 2>/dev/null )
 # Guard the dir before ls so a modules-less archive fails with this message
 # instead of an opaque `ls` error under set -e.
 [ -d "$MODS/lib/modules" ] || { echo "no /lib/modules in $MODULES_FROM" >&2; exit 1; }
@@ -143,7 +147,12 @@ EOF
 fi
 
 echo "=== pack $OUT ==="
-( cd "$ROOT" && find . | cpio -o -H newc 2>/dev/null ) | gzip -1 > "$OUT"
+# Split the find|cpio|gzip pipeline so a find/cpio failure can't be masked by
+# gzip exiting 0 (dash has no pipefail), which would write a silently broken
+# initramfs. Stage the file list and the cpio archive so set -e checks each step.
+( cd "$ROOT" && find . > "$WORK/rootfs.files" )
+( cd "$ROOT" && cpio -o -H newc 2>/dev/null < "$WORK/rootfs.files" ) > "$WORK/rootfs.cpio"
+gzip -1 -c "$WORK/rootfs.cpio" > "$OUT"
 echo "Profile:   systemd ($SUITE, $ARCH)"
 echo "Kernel:    $KVER"
 echo "Rootfs:    $(du -sh "$ROOT" | cut -f1) uncompressed"
