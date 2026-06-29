@@ -1,9 +1,12 @@
 # Design: `systemd` profile (R1)
 
-Status: **designed, not built.** `dew run --profile systemd` / `dew vm start
---profile systemd` currently exit `105` (`unavailable`) with a pointer to this
-doc. This document specifies the build and integration so the rootfs work is a
-well-scoped follow-up on a Linux runner.
+Status: **rootfs builder landed; host wiring + asset release pending.**
+`initramfs/build-systemd.sh` produces a bootable Debian + systemd cpio that, under
+dew's Alpine `linux-virt` kernel, boots with PID 1 = systemd, dew-agent supervised
+over vsock, and `systemctl start` / `systemd-analyze security` working end to end
+(validated 2026-06-29 on the colima/lima build VM). `dew run --profile systemd` /
+`dew vm start --profile systemd` still exit `105` (`unavailable`) until the host
+wiring and asset release land — see the build-surface checklist below.
 
 ## Why a separate profile (and why it's opt-in)
 
@@ -112,13 +115,27 @@ dew run --profile systemd --share ./deploy:ro -- sh -c '
 
 ## Build surface (follow-up checklist)
 
-- [ ] `initramfs/build.sh systemd` (or a sibling script) producing a Debian
-      rootfs + systemd, on a Debian build container; released as
-      `initramfs-systemd.cpio.gz` + reuse `vmlinuz-<arch>`.
-- [ ] Module allowlist review for systemd (autofs, etc.).
-- [ ] `/init-stage2` branch: `exec /sbin/init` when the systemd profile marker
-      is present; skip the R4 cgroup block.
-- [ ] `dew-agent.service` baked + enabled.
+- [x] `initramfs/build-systemd.sh` (sibling script) producing a Debian rootfs +
+      systemd, on a Debian/Ubuntu root host (the colima/lima VM or a CI
+      container); injects dew's matching kernel modules from an existing
+      initramfs and reuses `vmlinuz-<arch>`. Outputs `initramfs-systemd-<arch>.cpio.gz`.
+- [ ] Module allowlist review for systemd (autofs, etc.). (`virtio_console` is
+      built-in, so `console=hvc0` works at early boot; vsock/virtio/ext4 are
+      loaded via `/etc/modules-load.d/dew.conf`.)
+- [ ] CI: install `debian-archive-keyring` so the build can run —
+      `initramfs/build-systemd.sh` fails fast if the keyring is absent and passes
+      it to debootstrap via `--keyring` for verified signatures.
+- [ ] Two-stage init: the current builder boots systemd directly from the cpio
+      (tmpfs rootfs — fine for dew's ephemeral model). For journald persistence,
+      add the `/init-stage2` branch that `switch_root`s to ext4 then
+      `exec /sbin/init`, and skip the R4 cgroup block when PID 1 is systemd.
+- [ ] File capabilities: the newc cpio drops xattrs, so cap-bearing binaries
+      lose their caps (e.g. Debian's `/usr/bin/ping` needs `cap_net_raw+ep`, so
+      non-root / `DynamicUser=` ping breaks). GNU/bsd cpio can't emit xattrs, so
+      restore caps at boot (capture `getcap -r` at build, re-`setcap` from a
+      oneshot unit) or switch to a libarchive-based packer.
+- [x] `dew-agent.service` baked + enabled (`initramfs/build-systemd.sh` installs
+      it and symlinks it under `sysinit.target.wants`).
 - [ ] `applyProfileDefaults` entry (RAM/disk for the heavy tier).
 - [ ] Remove the `CodeUnavailable` guard in `parseFlags` once assets exist.
 - [ ] Gate/translate `--cgroup` + `--confine` to systemd drop-ins under this
