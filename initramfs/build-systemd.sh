@@ -68,6 +68,11 @@ esac
 for t in debootstrap cpio gzip depmod; do
     command -v "$t" >/dev/null 2>&1 || { echo "missing tool: $t (apt-get install debootstrap cpio gzip kmod)" >&2; exit 2; }
 done
+# Require the Debian archive keyring and pass it explicitly. On an Ubuntu build
+# host (dew's colima VM) debootstrap defaults to Ubuntu's keyring and would
+# otherwise fetch the Debian suite without verifying its signature.
+KEYRING="/usr/share/keyrings/debian-archive-keyring.gpg"
+[ -f "$KEYRING" ] || { echo "missing Debian archive keyring: $KEYRING (apt-get install debian-archive-keyring)" >&2; exit 2; }
 
 WORK="$(mktemp -d)"
 ROOT="$WORK/sysroot"
@@ -82,7 +87,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "=== debootstrap $SUITE ($ARCH) ==="
-debootstrap --arch="$ARCH" --variant=minbase --include="$INCLUDE" \
+debootstrap --arch="$ARCH" --variant=minbase --keyring="$KEYRING" --include="$INCLUDE" \
     "$SUITE" "$ROOT" "$MIRROR"
 
 echo "=== inject dew kernel modules from $MODULES_FROM ==="
