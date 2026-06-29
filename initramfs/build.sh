@@ -475,12 +475,14 @@ if [ -n "$DATA" ]; then
             DATA_UID=$(sed -n 's/.*"uid":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
             DATA_GID=$(sed -n 's/.*"gid":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
             # Recursive (subdirs from an earlier boot may be root-owned), but only
-            # when the top-level owner doesn't already match — skips the full walk
-            # on every start (slow for large data dirs). A failed stat yields ""
-            # and falls through to the chown.
+            # when the top-level owner+group doesn't already match — skips the full
+            # walk on every start (slow for large data dirs). Compares uid AND gid
+            # so an image swap that keeps the uid but changes the gid still
+            # re-chowns. A failed stat yields "" and falls through to the chown.
+            DATA_TGID="${DATA_GID:-$DATA_UID}"
             if [ -n "$DATA_UID" ] && [ "$DATA_UID" != "0" ] \
-               && [ "$(stat -c %u "$DATA_SRC" 2>/dev/null)" != "$DATA_UID" ]; then
-                chown -R "${DATA_UID}:${DATA_GID:-$DATA_UID}" "$DATA_SRC" 2>/dev/null || true
+               && [ "$(stat -c '%u:%g' "$DATA_SRC" 2>/dev/null)" != "${DATA_UID}:${DATA_TGID}" ]; then
+                chown -R "${DATA_UID}:${DATA_TGID}" "$DATA_SRC" 2>/dev/null || true
             fi
             ;;
     esac
