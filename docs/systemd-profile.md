@@ -128,7 +128,8 @@ dew run --profile systemd --share ./deploy:ro -- sh -c '
       (tmpfs rootfs — fine for dew's ephemeral model). For journald persistence,
       add the `/init-stage2` branch that `switch_root`s to ext4 then
       `exec /sbin/init`, and skip the R4 cgroup block when PID 1 is systemd.
-- [ ] `dew-agent.service` baked + enabled.
+- [x] `dew-agent.service` baked + enabled (`build-systemd.sh` installs it and
+      symlinks it under `sysinit.target.wants`).
 - [ ] `applyProfileDefaults` entry (RAM/disk for the heavy tier).
 - [ ] Remove the `CodeUnavailable` guard in `parseFlags` once assets exist.
 - [ ] Gate/translate `--cgroup` + `--confine` to systemd drop-ins under this

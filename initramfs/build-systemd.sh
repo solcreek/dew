@@ -18,6 +18,9 @@
 #       --out initramfs-systemd-aarch64.cpio.gz \
 #       [--suite bookworm] [--mirror https://deb.debian.org/debian] [--debug]
 #
+# --arch         : the debootstrap arch — arm64 or amd64. The --out name is
+#                  free-form; "aarch64" here just mirrors dew's vmlinuz-<arch>
+#                  asset naming (uname -m), it is NOT an --arch value.
 # --modules-from : an existing dew initramfs (e.g. the standard profile) whose
 #                  /lib/modules/<kver> matches the vmlinuz this profile boots with.
 # --debug        : empty root password + autologin on the hvc0 serial console
