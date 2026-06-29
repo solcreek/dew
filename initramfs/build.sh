@@ -460,19 +460,30 @@ mkdir -p "$RUN/lower" "$RUN/upper" "$RUN/work" "$RUN/merged" "$RUN/bundle"
 # to the image's runtime user (config.json process.user): dew runs the container
 # as that uid/gid, but the bind source is created root-owned here, so a non-root
 # image (e.g. a *-rootless build at uid 1000, or vaultwarden at 65534) otherwise
-# can't write its own data dir and fails to start. Recursive so a dir left
-# root-owned by an earlier boot (pre-fix, or a root->non-root image swap) is
-# corrected. Skipped for root images (uid 0 — a no-op) and kept best-effort
-# under set -e (guarded + `|| true`) so a parse miss or chown error never aborts
-# a launch.
+# can't write its own data dir and fails to start. Skipped for root images
+# (uid 0 — a no-op) and kept best-effort under set -e (guarded + `|| true`) so a
+# parse miss or chown error never aborts a launch.
 if [ -n "$DATA" ]; then
     DATA_SRC="${DATA%%:*}"
     mkdir -p "$DATA_SRC"
-    DATA_UID=$(sed -n 's/.*"uid":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
-    DATA_GID=$(sed -n 's/.*"gid":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
-    if [ -n "$DATA_UID" ] && [ "$DATA_UID" != "0" ]; then
-        chown -R "${DATA_UID}:${DATA_GID:-$DATA_UID}" "$DATA_SRC" 2>/dev/null || true
-    fi
+    # Only auto-chown dew-managed persistence paths: a named volume
+    # (/var/lib/dew/volumes/*) or a service data dir (/var/lib/dew/services/*/data).
+    # A `-v /guest:/path` bind names an arbitrary absolute path (could be /etc, /,
+    # …); recursively chowning that could break the guest, so leave it to the user.
+    case "$DATA_SRC" in
+        /var/lib/dew/volumes/*|/var/lib/dew/services/*/data)
+            DATA_UID=$(sed -n 's/.*"uid":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
+            DATA_GID=$(sed -n 's/.*"gid":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
+            # Recursive (subdirs from an earlier boot may be root-owned), but only
+            # when the top-level owner doesn't already match — skips the full walk
+            # on every start (slow for large data dirs). A failed stat yields ""
+            # and falls through to the chown.
+            if [ -n "$DATA_UID" ] && [ "$DATA_UID" != "0" ] \
+               && [ "$(stat -c %u "$DATA_SRC" 2>/dev/null)" != "$DATA_UID" ]; then
+                chown -R "${DATA_UID}:${DATA_GID:-$DATA_UID}" "$DATA_SRC" 2>/dev/null || true
+            fi
+            ;;
+    esac
 fi
 
 # Do not swallow tar's stderr: a truncated/corrupt rootfs must surface a real
