@@ -62,3 +62,39 @@ func TestOCIRunInjectsLocalhostHosts(t *testing.T) {
 		}
 	}
 }
+
+// dew-oci-run chowns a non-root image's data dir to its runtime uid/gid so the
+// container can write it. That convenience is security-sensitive: it must stay
+// gated so a recursive chown can never escape dew-managed persistence paths.
+// These markers guard the four invariants together — losing any one (e.g. a
+// dropped realpath canonicalization or a widened allowlist) reopens a guest-
+// breaking chown of an arbitrary -v /guest:/path bind.
+func TestOCIRunAutoChownGuard(t *testing.T) {
+	repoRoot, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(repoRoot, "initramfs", "build.sh"))
+	if err != nil {
+		t.Fatalf("read build.sh: %v", err)
+	}
+	script := string(data)
+
+	guards := map[string]string{
+		// 1) Canonicalize before the allowlist so `..`/symlinks can't bypass it.
+		"realpath canonicalization": `DATA_REAL=$(realpath "$DATA_SRC"`,
+		// 2) Allowlist restricted to dew-managed persistence paths only.
+		"dew-managed allowlist": `/var/lib/dew/volumes/*|/var/lib/dew/services/*/data)`,
+		// 3) Skip the recursive walk when the owner+group already match.
+		"ownership-skip stat": `DATA_CUR=$(stat -c '%u:%g' "$DATA_REAL"`,
+		// 4) Never chown for a root image (uid 0).
+		"root-image skip": `[ "$DATA_UID" != "0" ]`,
+		// 5) uid/gid parse scoped to the process.user block, not anywhere.
+		"user-scoped uid parse": `/"user"[[:space:]]*:/,/}/s/.*"uid"`,
+	}
+	for name, want := range guards {
+		if !strings.Contains(script, want) {
+			t.Errorf("dew-oci-run auto-chown guard weakened: missing %s (%q)", name, want)
+		}
+	}
+}
