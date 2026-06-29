@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-06-29
+
+### Added
+
+- **systemd-profile rootfs builder (`initramfs/build-systemd.sh`).** A new
+  builder produces a Debian-based rootfs that boots systemd as PID 1 (vs. the
+  default two-stage shell `init`), with `dew-agent.service` wired in and the
+  vsock core + `virtio_rng` modules loaded so the agent and entropy work from
+  first boot. The build is hardened end-to-end: debootstrap signatures are
+  verified against the Debian keyring, every script pipeline is split so `set
+  -e` actually catches failures, and the cpio/modules-archive handling fails
+  closed — path-traversal entries and symlinks at or under `lib`/`lib/modules`
+  are rejected, module extraction is restricted to `lib/modules`, exactly one
+  kernel-version dir is required, and cpio errors are surfaced via `--quiet`
+  rather than swallowed.
+
+### Fixed
+
+- **A service's data dir is chowned to the image's runtime user.** Services run
+  via crun/`dew-oci-run` (e.g. postgres) now have their host data dir chowned to
+  the image's runtime uid/gid so the container can write it. The chown is
+  restricted to dew-managed paths (canonicalized via `realpath`, allowlist
+  checked), skipped when the dir is already owned by the right uid *and* gid,
+  and the stat probe is errexit-safe.
+- **CI: pin `cosign-installer` to `v4.1.2`** instead of the moving `v4` tag.
+
 ## [0.8.4] - 2026-06-28
 
 ### Added
