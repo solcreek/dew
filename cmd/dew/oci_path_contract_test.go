@@ -66,7 +66,7 @@ func TestOCIRunInjectsLocalhostHosts(t *testing.T) {
 // dew-oci-run chowns a non-root image's data dir to its runtime uid/gid so the
 // container can write it. That convenience is security-sensitive: it must stay
 // gated so a recursive chown can never escape dew-managed persistence paths.
-// These markers guard the four invariants together — losing any one (e.g. a
+// These markers guard the five invariants together — losing any one (e.g. a
 // dropped realpath canonicalization or a widened allowlist) reopens a guest-
 // breaking chown of an arbitrary -v /guest:/path bind.
 func TestOCIRunAutoChownGuard(t *testing.T) {

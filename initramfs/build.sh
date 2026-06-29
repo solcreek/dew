@@ -485,7 +485,8 @@ if [ -n "$DATA" ]; then
             # Scope the parse to the process.user block so a future uid/gid field
             # elsewhere in config.json (e.g. linux.*idMappings) can't be picked up
             # and chown the data dir to the wrong owner. The range runs from the
-            # "user": line to its closing "}" (uid/gid are the only keys inside).
+            # "user": line to the block's closing "}"; other keys may appear in the
+            # block (e.g. additionalGids, umask) but don't affect the uid/gid pick.
             DATA_UID=$(sed -n '/"user"[[:space:]]*:/,/}/s/.*"uid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
             DATA_GID=$(sed -n '/"user"[[:space:]]*:/,/}/s/.*"gid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$BUNDLE/config.json" | head -1)
             # Recursive (subdirs from an earlier boot may be root-owned), but only
