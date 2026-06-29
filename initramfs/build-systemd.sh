@@ -99,8 +99,11 @@ mkdir -p "$MODS"
 gzip -dc "$MODULES_FROM" > "$WORK/modules.cpio"
 # Preflight: --no-absolute-filenames blocks absolute paths but not `..`
 # components, so a crafted archive could still escape $MODS when extracted as
-# root. Reject any path-traversal entry before extracting.
-if cpio -t < "$WORK/modules.cpio" 2>/dev/null | grep -qE '(^|/)\.\.(/|$)'; then
+# root. Capture the listing first (so a cpio -t failure on a corrupt archive
+# aborts here under set -e instead of being masked by grep in a pipeline — dash
+# has no pipefail), then reject any path-traversal entry before extracting.
+cpio -t < "$WORK/modules.cpio" > "$WORK/modules.list" 2>/dev/null
+if grep -qE '(^|/)\.\.(/|$)' "$WORK/modules.list"; then
     echo "refusing to extract $MODULES_FROM: archive contains '..' path components" >&2
     exit 1
 fi
