@@ -132,8 +132,13 @@ mkdir -p "$ROOT/etc/systemd/system/sysinit.target.wants"
 ln -sf ../dew-agent.service "$ROOT/etc/systemd/system/sysinit.target.wants/dew-agent.service"
 
 # Load vsock (for the agent) + virtio + ext4 early via systemd-modules-load.
+# vsock is the core AF_VSOCK module the transport needs; virtio_rng feeds the
+# guest entropy pool (without it a heavier systemd userland starves /dev/random
+# and getrandom() callers block). These match dew's standard early-boot set.
 cat > "$ROOT/etc/modules-load.d/dew.conf" <<EOF
+vsock
 vmw_vsock_virtio_transport
+virtio_rng
 virtio_blk
 virtio_net
 ext4
