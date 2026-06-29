@@ -480,8 +480,12 @@ if [ -n "$DATA" ]; then
             # so an image swap that keeps the uid but changes the gid still
             # re-chowns. A failed stat yields "" and falls through to the chown.
             DATA_TGID="${DATA_GID:-$DATA_UID}"
+            # Explicit `|| true`: a failing stat inside $(...) can trip errexit in
+            # some /bin/sh (BusyBox ash), which must never abort a launch. An empty
+            # result then falls through to the chown.
+            DATA_CUR=$(stat -c '%u:%g' "$DATA_SRC" 2>/dev/null || true)
             if [ -n "$DATA_UID" ] && [ "$DATA_UID" != "0" ] \
-               && [ "$(stat -c '%u:%g' "$DATA_SRC" 2>/dev/null)" != "${DATA_UID}:${DATA_TGID}" ]; then
+               && [ "$DATA_CUR" != "${DATA_UID}:${DATA_TGID}" ]; then
                 chown -R "${DATA_UID}:${DATA_TGID}" "$DATA_SRC" 2>/dev/null || true
             fi
             ;;
