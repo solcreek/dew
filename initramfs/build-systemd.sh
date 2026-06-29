@@ -96,8 +96,12 @@ gzip -dc "$MODULES_FROM" > "$WORK/modules.cpio"
 # Guard the dir before ls so a modules-less archive fails with this message
 # instead of an opaque `ls` error under set -e.
 [ -d "$MODS/lib/modules" ] || { echo "no /lib/modules in $MODULES_FROM" >&2; exit 1; }
-KVER="$(ls "$MODS/lib/modules" | head -1)"
-[ -n "$KVER" ] || { echo "no kernel version dir under /lib/modules in $MODULES_FROM" >&2; exit 1; }
+# Require exactly one /lib/modules/<kver>: more than one means the source
+# initramfs carries multiple kernels, and silently picking the first (head -1)
+# could depmod/inject a set that mismatches the vmlinuz this profile boots with.
+KCOUNT="$(ls "$MODS/lib/modules" | wc -l)"
+[ "$KCOUNT" -eq 1 ] || { echo "expected exactly one /lib/modules/<kver> in $MODULES_FROM, found $KCOUNT: $(ls "$MODS/lib/modules" | tr '\n' ' ')" >&2; exit 1; }
+KVER="$(ls "$MODS/lib/modules")"
 echo "kernel modules: $KVER"
 mkdir -p "$ROOT/lib/modules"
 cp -a "$MODS/lib/modules/$KVER" "$ROOT/lib/modules/"
