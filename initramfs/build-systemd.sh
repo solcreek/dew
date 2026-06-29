@@ -102,16 +102,24 @@ gzip -dc "$MODULES_FROM" > "$WORK/modules.cpio"
 # symlink already in the tree, so a later entry can write outside $MODS via a
 # planted `lib/modules/x -> /etc` link). Capture the listing first (so a cpio -t
 # failure on a corrupt archive aborts here under set -e, not masked by grep in a
-# pipeline — dash has no pipefail), then reject `..` paths and any symlink under
-# lib/modules (dew's module set legitimately has none).
+# pipeline — dash has no pipefail), then reject `..` paths and any symlink on the
+# extraction path (dew's module set legitimately has none).
 cpio --quiet -t < "$WORK/modules.cpio" > "$WORK/modules.list"
 if grep -qE '(^|/)\.\.(/|$)' "$WORK/modules.list"; then
     echo "refusing to extract $MODULES_FROM: archive contains '..' path components" >&2
     exit 1
 fi
+# Reject a symlink at any component we extract through — `lib`, `lib/modules`, or
+# anything under `lib/modules/`. Checking only entries *under* lib/modules would
+# miss `lib/modules` (or `lib`) being itself a symlink (no trailing slash), which
+# cpio -idm would follow during extraction and escape $MODS. Compare the symlink
+# source path (strip the ` -> target` and any leading `./`), not the whole line.
 cpio --quiet -tv < "$WORK/modules.cpio" > "$WORK/modules.listv"
-if awk '$1 ~ /^l/ && /\/lib\/modules\//{f=1} END{exit f?0:1}' "$WORK/modules.listv"; then
-    echo "refusing to extract $MODULES_FROM: symlink under lib/modules" >&2
+if awk '$1 ~ /^l/ {
+        p=$0; sub(/ -> .*/, "", p); n=split(p, a, /[ \t]+/); path=a[n]; sub(/^\.\//, "", path)
+        if (path=="lib" || path=="lib/modules" || path ~ /^lib\/modules\//) f=1
+    } END{exit f?0:1}' "$WORK/modules.listv"; then
+    echo "refusing to extract $MODULES_FROM: symlink on the lib/modules extraction path" >&2
     exit 1
 fi
 # Extract only the lib/modules subtree: it's all this profile needs, and it keeps
