@@ -31,11 +31,14 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/solcreek/dew/internal/services"
 )
 
 const (
@@ -95,6 +98,7 @@ func printUsage() {
 Usage:
   dew setup              Install/update WSL2 distro
   dew up [dir]           Detect a Node project + run its dev server in WSL2
+  dew up --with <svc,...> Start services too (postgres,redis,mysql,mongo,minio)
   dew run [--] <cmd>     Run a one-shot command in the WSL2 distro
   dew exec <cmd>         Run a command inside the WSL2 distro
   dew vm start           Ensure the WSL2 distro is running
@@ -446,6 +450,183 @@ func cmdExec(args []string) error {
 	return runPassthrough(cmd)
 }
 
+// parseUpArgs extracts the project dir and any `--with <csv>` /
+// `--with=<csv>` services from `dew up` arguments.
+func parseUpArgs(args []string) (dir string, with []string, err error) {
+	dir = "."
+	dirSet := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--with":
+			if i+1 >= len(args) {
+				return "", nil, fmt.Errorf("--with needs a comma-separated service list")
+			}
+			svcs := splitCSV(args[i+1])
+			if len(svcs) == 0 {
+				return "", nil, fmt.Errorf("--with needs a comma-separated service list")
+			}
+			with = append(with, svcs...)
+			i++
+		case strings.HasPrefix(a, "--with="):
+			svcs := splitCSV(strings.TrimPrefix(a, "--with="))
+			if len(svcs) == 0 {
+				return "", nil, fmt.Errorf("--with needs a comma-separated service list")
+			}
+			with = append(with, svcs...)
+		case strings.HasPrefix(a, "--"):
+			return "", nil, fmt.Errorf("unknown flag %q for dew up", a)
+		default:
+			// Reject a second positional rather than silently taking the
+			// last one (e.g. `dew up ./a ./b` is a user error, not "./b").
+			if dirSet {
+				return "", nil, fmt.Errorf("dew up takes at most one project dir, got %q and %q", dir, a)
+			}
+			dir, dirSet = a, true
+		}
+	}
+	return dir, dedupPreserveOrder(with), nil
+}
+
+// dedupPreserveOrder removes duplicate names, keeping first-seen order, so
+// `--with redis,redis` (or repeated --with flags) doesn't start the same
+// container twice.
+func dedupPreserveOrder(names []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, n := range names {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// splitCSV splits a comma-separated list, dropping blanks.
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// serviceContainer is the podman container name for a dew service.
+func serviceContainer(name string) string { return "dew-svc-" + name }
+
+// ensurePodman installs podman in the distro on first --with use. The dew
+// rootfs is minimal Alpine with no container runtime baked in, so apk-add it
+// once (persisted on the distro's disk).
+func ensurePodman() error {
+	if exec.Command("wsl", "-d", distroName, "--exec", "sh", "-c", "command -v podman").Run() == nil {
+		return nil
+	}
+	fmt.Println("dew: installing podman in the distro (first --with use)...")
+	add := exec.Command("wsl", "-d", distroName, "--exec", "sh", "-c", "apk add --no-cache podman")
+	add.Stdout, add.Stderr = os.Stdout, os.Stderr
+	if err := add.Run(); err != nil {
+		return fmt.Errorf("apk add podman: %w", err)
+	}
+	return nil
+}
+
+// podmanRunArgs builds the wsl.exe argv that starts a service container on
+// the distro's host network. Pure, so the exact flags — host networking, the
+// -e env pairs, image, and trailing server args — are unit-testable.
+func podmanRunArgs(s services.Service) []string {
+	args := []string{"-d", distroName, "--exec", "podman", "run", "-d",
+		"--name", serviceContainer(s.Name), "--network=host"}
+	for _, e := range s.Env {
+		args = append(args, "-e", e)
+	}
+	args = append(args, s.Image)
+	return append(args, s.Args...)
+}
+
+// startService runs one service via podman on the distro's host network
+// (required: rootful podman's bridge conflicts with WSL2 mirrored mode) and
+// waits until its port is listening. Returns the client connection string.
+func startService(s services.Service) (string, error) {
+	// Clear any stale container from a previous run.
+	exec.Command("wsl", "-d", distroName, "--exec", "podman", "rm", "-f", serviceContainer(s.Name)).Run()
+
+	if out, err := exec.Command("wsl", podmanRunArgs(s)...).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("podman run %s: %w: %s", s.Name, err, strings.TrimSpace(string(out)))
+	}
+	if err := waitForServicePort(s.Port); err != nil {
+		return "", fmt.Errorf("%s: %w", s.Name, err)
+	}
+	return services.ConnString(s, s.Port), nil
+}
+
+// waitForServicePort polls ListenProbeCmd inside the distro until the port is
+// listening. A host-network container binds the distro's netns, so the port
+// shows up in the distro's own /proc/net/tcp.
+func waitForServicePort(port int) error {
+	probe := services.ListenProbeCmd(port)
+	for i := 0; i < 120; i++ { // ~60s at 500ms
+		if exec.Command("wsl", "-d", distroName, "--exec", "sh", "-c", probe).Run() == nil {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("port %d not listening after 60s", port)
+}
+
+// stopServices force-removes the service containers. Idempotent.
+func stopServices(names []string) {
+	for _, n := range names {
+		exec.Command("wsl", "-d", distroName, "--exec", "podman", "rm", "-f", serviceContainer(n)).Run()
+	}
+}
+
+// startWithServices starts the requested services and returns a cleanup func.
+// It also installs a Ctrl+C handler that stops them and exits, since the dev
+// server's os.Exit (or the services-only blocking wait) would otherwise skip
+// cleanup. No-op when names is empty.
+func startWithServices(names []string) (func(), error) {
+	stop := func() { stopServices(names) }
+	if len(names) == 0 {
+		return func() {}, nil
+	}
+	if err := ensurePodman(); err != nil {
+		return nil, err
+	}
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	go func() {
+		<-sig
+		fmt.Println("\ndew: stopping services...")
+		stop()
+		// The dev server runs as a child wsl.exe; on Windows, exiting dew
+		// doesn't reliably kill it, so terminate the distro to bring down
+		// the dev server (and anything else) before we exit.
+		exec.Command("wsl", "--terminate", distroName).Run()
+		os.Exit(130)
+	}()
+	for _, name := range names {
+		svc := services.Lookup(name)
+		if svc == nil {
+			// cmdUp validates names first, but don't panic if a future
+			// caller doesn't — this function already returns an error.
+			stop()
+			return nil, fmt.Errorf("unknown service %q", name)
+		}
+		s := *svc
+		fmt.Printf("dew: starting %s (%s)...\n", name, s.Image)
+		conn, err := startService(s)
+		if err != nil {
+			stop()
+			return nil, err
+		}
+		fmt.Printf("dew:   %s ready -> %s\n", name, conn)
+	}
+	return stop, nil
+}
+
 // cmdUp detects a Node-style project in dir (or cwd) and runs its
 // dev server inside the WSL2 distro. The project is reached via
 // the auto-mounted /mnt/<drive>/... path; WSL2's mirrored
@@ -460,24 +641,64 @@ func cmdExec(args []string) error {
 // Heavier project-aware behavior can land iteratively as Windows
 // users hit specific gaps.
 func cmdUp(args []string) error {
-	dir := "."
-	if len(args) > 0 && !strings.HasPrefix(args[0], "--") {
-		dir = args[0]
+	dir, withServices, err := parseUpArgs(args)
+	if err != nil {
+		return err
+	}
+	for _, name := range withServices {
+		if services.Lookup(name) == nil {
+			// services.Names() iterates a map; sort for a stable message.
+			avail := services.Names()
+			sort.Strings(avail)
+			return fmt.Errorf("unknown service %q (available: %s)", name, strings.Join(avail, ", "))
+		}
 	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return fmt.Errorf("resolve %q: %w", dir, err)
 	}
+	// Validate the dir itself so a typoed path (e.g. `dew up --with redis
+	// ./typo`) surfaces an error instead of silently falling into
+	// services-only mode. A real dir without package.json still works.
+	if fi, err := os.Stat(absDir); err != nil {
+		return fmt.Errorf("dew up %s: %w", dir, err)
+	} else if !fi.IsDir() {
+		return fmt.Errorf("dew up: %s is not a directory", dir)
+	}
 
-	// Node-only fast check. If we ever support Python/Go/etc.
-	// projects on Windows, branch here per project type.
+	// The dev-server half is Node-only; with --with the project is optional
+	// (services can run on their own). Only a genuine "not found" means no
+	// project — surface permission/IO stat errors instead of silently
+	// treating them as a missing package.json.
 	pkgPath := filepath.Join(absDir, "package.json")
-	if _, err := os.Stat(pkgPath); err != nil {
-		return fmt.Errorf("no package.json in %s — dew up on Windows currently supports Node-style projects only", absDir)
+	_, statErr := os.Stat(pkgPath)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return fmt.Errorf("stat %s: %w", pkgPath, statErr)
+	}
+	hasProject := statErr == nil
+	if !hasProject && len(withServices) == 0 {
+		return fmt.Errorf("no package.json in %s — dew up on Windows supports Node-style projects; or use --with <service>", absDir)
 	}
 
 	if err := ensureDistro(); err != nil {
 		return err
+	}
+
+	stop, err := startWithServices(withServices)
+	if err != nil {
+		return err
+	}
+	// Guarantee cleanup on every early error return below (winPathToWSL,
+	// npm install, missing script). The dev-server path calls stop()
+	// explicitly before its os.Exit (which would skip this defer), and the
+	// Ctrl+C handler stops them too; stopServices is idempotent.
+	defer stop()
+
+	// Services-only: no project to run, so hold the distro open (which keeps
+	// the containers alive) until Ctrl+C, handled by startWithServices.
+	if !hasProject {
+		fmt.Println("dew: services running. Ctrl+C to stop.")
+		select {}
 	}
 
 	// Translate the Windows path to the WSL2 mount path
@@ -524,7 +745,15 @@ func cmdUp(args []string) error {
 	dev.Stdin = os.Stdin
 	dev.Stdout = os.Stdout
 	dev.Stderr = os.Stderr
-	return runPassthrough(dev)
+	runErr := dev.Run()
+	var ee *exec.ExitError
+	if errors.As(runErr, &ee) {
+		// os.Exit skips the deferred stop(), so clean up explicitly first.
+		stop()
+		os.Exit(ee.ExitCode())
+	}
+	// Non-exit-code paths fall through to the deferred stop().
+	return runErr
 }
 
 // winPathToWSL converts a Windows absolute path into its WSL2

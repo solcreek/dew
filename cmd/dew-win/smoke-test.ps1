@@ -137,6 +137,46 @@ Check "dev server reachable at localhost:$port" { $body -eq 'smoke-ok' }
 if ($up -and -not $up.HasExited) { $up.Kill() }
 wsl --terminate dew 2>&1 | Out-Null
 
+# --- up --with: service starts, is reachable, and is cleaned up ----
+Write-Host "== up --with: service lifecycle ==" -ForegroundColor Cyan
+$svcProj = Join-Path $env:TEMP 'dew-smoke-svc'
+New-Item -ItemType Directory -Force -Path $svcProj | Out-Null
+# dev script that self-exits after ~15s so the cleanup path (dev exits ->
+# stop()) runs on its own without needing a Ctrl+C we can't send here.
+Set-Content -Path (Join-Path $svcProj 'package.json') -Encoding ascii -Value '{"name":"svc","private":true,"scripts":{"dev":"node -e \"setTimeout(()=>process.exit(0),15000)\""}}'
+$svcLog = Join-Path $env:TEMP 'dew-smoke-svc.log'
+Remove-Item $svcLog -ErrorAction SilentlyContinue
+$svc = Start-Process $dew -ArgumentList "up --with redis `"$svcProj`"" -RedirectStandardOutput $svcLog -RedirectStandardError "$svcLog.err" -PassThru -NoNewWindow
+$svcReady = $false
+foreach ($i in 1..90) {
+    Start-Sleep -Seconds 1
+    if ((Get-Content $svcLog -Raw -ErrorAction SilentlyContinue) -match 'redis ready') { $svcReady = $true; break }
+    if ($svc.HasExited) { break }
+}
+Check "up --with redis reports the service ready" { $svcReady }
+Check "redis reachable on Windows localhost:6379" {
+    (Test-NetConnection -ComputerName 127.0.0.1 -Port 6379 -WarningAction SilentlyContinue).TcpTestSucceeded
+}
+Check "service container is running" {
+    (wsl -d dew -e podman ps --format '{{.Names}}' | Out-String) -match 'dew-svc-redis'
+}
+# Let the dev server self-exit so stop() removes the container. If it
+# overruns the wait, Kill() it and rm the container ourselves -- a force
+# kill skips stop(), so this prevents a leak into the rest of the run.
+if (-not $svc.HasExited) { $svc.WaitForExit(25000) | Out-Null }
+if (-not $svc.HasExited) {
+    $svc.Kill()
+    wsl -d dew -e podman rm -f dew-svc-redis 2>&1 | Out-Null
+}
+# Poll for removal instead of a fixed sleep (slower machines/CI).
+$removed = $false
+foreach ($i in 1..20) {
+    if (-not ((wsl -d dew -e podman ps -a --format '{{.Names}}' | Out-String) -match 'dew-svc-redis')) { $removed = $true; break }
+    Start-Sleep -Milliseconds 500
+}
+Check "service container removed after dev server exits" { $removed }
+wsl --terminate dew 2>&1 | Out-Null
+
 # --- Result --------------------------------------------------------
 Write-Host ""
 if ($script:Failures -eq 0) {
