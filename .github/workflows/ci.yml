@@ -45,6 +45,33 @@ jobs:
       - name: Test guest agent + shared protocol (linux)
         run: go test -count=1 -v ./cmd/dew-agent/ ./internal/vsock/
 
+  # dew-win is //go:build windows and is skipped by the macOS test job
+  # (go test ./... excludes windows-tagged files there). Build and test
+  # it natively on Windows so the wrapper's pure helpers — exec/argv
+  # building, wsl --list parsing, .wslconfig and package.json detection —
+  # are compiled and exercised, and windows/arm64 build breaks (which no
+  # other job would catch) surface here.
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+
+      - name: Build dew-win
+        run: go build ./cmd/dew-win/
+
+      - name: Test dew-win
+        run: go test ./cmd/dew-win/ -count=1 -v -cover
+
+      - name: Cross-compile dew-win (windows/arm64)
+        run: go build ./cmd/dew-win/
+        env:
+          GOOS: windows
+          GOARCH: arm64
+
   npm:
     runs-on: ubuntu-latest
     steps:
