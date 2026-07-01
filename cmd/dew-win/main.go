@@ -145,10 +145,17 @@ func distroListNames(extra ...string) map[string]bool {
 	cmd := exec.Command("wsl", append([]string{"--list", "--quiet"}, extra...)...)
 	cmd.Env = append(os.Environ(), "WSL_UTF8=1")
 	out, err := cmd.Output()
-	names := map[string]bool{}
 	if err != nil {
-		return names
+		return map[string]bool{}
 	}
+	return parseDistroNames(out)
+}
+
+// parseDistroNames extracts the set of distro names from `wsl --list
+// --quiet` output. Strips stray NUL bytes so a legacy UTF-16LE build
+// still yields ASCII names, and skips blank lines.
+func parseDistroNames(out []byte) map[string]bool {
+	names := map[string]bool{}
 	for _, line := range strings.Split(strings.ReplaceAll(string(out), "\x00", ""), "\n") {
 		if n := strings.TrimSpace(line); n != "" {
 			names[n] = true
@@ -364,6 +371,15 @@ func runPassthrough(cmd *exec.Cmd) error {
 	return err
 }
 
+// execWSLArgs builds the wsl.exe argv that runs the given command
+// directly inside the dew distro. The `--exec` (not bare `--`) is
+// load-bearing: it bypasses the distro's implicit /bin/sh so the
+// caller's argv is passed through without shell re-parsing. See
+// cmdExec.
+func execWSLArgs(args []string) []string {
+	return append([]string{"-d", distroName, "--exec"}, args...)
+}
+
 // cmdExec runs a command inside the WSL2 distro, passing the caller's
 // argv through unchanged (docker-exec semantics: no shell unless the
 // caller asks for one via `dew exec sh -c '...'`).
@@ -382,8 +398,7 @@ func cmdExec(args []string) error {
 	if err := ensureDistro(); err != nil {
 		return err
 	}
-	wslArgs := append([]string{"-d", distroName, "--exec"}, args...)
-	cmd := exec.Command("wsl", wslArgs...)
+	cmd := exec.Command("wsl", execWSLArgs(args)...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
