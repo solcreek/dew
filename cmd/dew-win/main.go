@@ -9,12 +9,12 @@
 // directly into WSL operations rather than forwarding them to a
 // dedicated in-distro CLI:
 //
-//   dew setup       → download rootfs + wsl --import dew
-//   dew vm start    → ensure distro is running (wsl auto-starts on use)
-//   dew vm stop     → wsl --terminate dew
-//   dew vm status   → check if distro is registered
-//   dew down        → alias for vm stop
-//   dew exec <cmd>  → wsl -d dew -- <cmd>
+//	dew setup       → download rootfs + wsl --import dew
+//	dew vm start    → ensure distro is running (wsl auto-starts on use)
+//	dew vm stop     → wsl --terminate dew
+//	dew vm status   → check if distro is registered
+//	dew down        → alias for vm stop
+//	dew exec <cmd>  → wsl -d dew -- <cmd>
 //
 // This is fundamentally different from the macOS path (where we
 // drive Apple Virtualization + our own kernel + initramfs); on
@@ -115,10 +115,22 @@ is reachable on the Windows host via WSL2 localhost forwarding.
 `)
 }
 
+// wslQuery runs wsl.exe with the given args and returns its captured
+// stdout. It is a package var so tests can stub wsl.exe without a real
+// WSL2 install. WSL_UTF8=1 is set so `wsl --list` yields UTF-8 rather
+// than UTF-16. Only query/control commands (status, list, terminate,
+// in-distro probes) go through here; the streaming commands (exec, up,
+// setup import) wire stdio directly and are covered by the smoke test.
+var wslQuery = func(args ...string) ([]byte, error) {
+	cmd := exec.Command("wsl", args...)
+	cmd.Env = append(os.Environ(), "WSL_UTF8=1")
+	return cmd.Output()
+}
+
 // wslInstalled checks if WSL2 is available.
 func wslInstalled() bool {
-	cmd := exec.Command("wsl", "--status")
-	return cmd.Run() == nil
+	_, err := wslQuery("--status")
+	return err == nil
 }
 
 // distroExists checks if the dew distro is already imported.
@@ -136,14 +148,12 @@ func wslInstalled() bool {
 // Side effect: starts the distro if it was stopped. That's fine —
 // every caller of ensureDistro is about to run a command inside
 // it anyway, so we just pay the start cost a few hundred ms
-// earlier. Zero cost on an already-running distro. Stdout/stderr
-// silenced so the welcome banner some wsl versions emit doesn't
-// leak into grove's own output.
+// earlier. Zero cost on an already-running distro. wslQuery captures
+// stdout/stderr, so the welcome banner some wsl versions emit doesn't
+// leak into dew's own output.
 func distroExists() bool {
-	cmd := exec.Command("wsl", "-d", distroName, "--", "true")
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Run() == nil
+	_, err := wslQuery("-d", distroName, "--", "true")
+	return err == nil
 }
 
 // distroListNames returns the distro names printed by `wsl --list
@@ -153,9 +163,7 @@ func distroExists() bool {
 // build still emits UTF-16LE, sidestepping the encoding trap that made
 // earlier `wsl -l` parsing unreliable.
 func distroListNames(extra ...string) map[string]bool {
-	cmd := exec.Command("wsl", append([]string{"--list", "--quiet"}, extra...)...)
-	cmd.Env = append(os.Environ(), "WSL_UTF8=1")
-	out, err := cmd.Output()
+	out, err := wslQuery(append([]string{"--list", "--quiet"}, extra...)...)
 	if err != nil {
 		return map[string]bool{}
 	}
@@ -333,10 +341,7 @@ func cmdVM(args []string) error {
 			return fmt.Errorf("WSL2 not installed")
 		}
 		// Idempotent: terminating a non-running distro exits 0.
-		c := exec.Command("wsl", "--terminate", distroName)
-		c.Stdout = os.Stdout
-		c.Stderr = os.Stderr
-		if err := c.Run(); err != nil {
+		if _, err := wslQuery("--terminate", distroName); err != nil {
 			return fmt.Errorf("wsl --terminate %s: %w", distroName, err)
 		}
 		fmt.Println("dew: stopped")
@@ -346,17 +351,7 @@ func cmdVM(args []string) error {
 			fmt.Println("dew: WSL2 not installed")
 			return nil
 		}
-		// Passive checks only: reporting status must not start the
-		// distro (distroExists would). This lets status distinguish a
-		// registered-but-stopped distro from a running one.
-		switch {
-		case !distroRegistered():
-			fmt.Println("dew: not installed (run: dew setup)")
-		case distroRunningNow():
-			fmt.Println("dew: running")
-		default:
-			fmt.Println("dew: stopped")
-		}
+		fmt.Println(vmStatusLine())
 		return nil
 	case "list":
 		if !wslInstalled() {
@@ -549,7 +544,7 @@ func detectDevScript(pkgPath string) string {
 // when interpolating WSL paths into an inline `sh -c` string. The
 // WSL path is alphanumeric + / + . in practice but a user's project
 // dir could theoretically contain a single-quote in a parent dir
-// name (rare), so escape per POSIX: '...'\''...' .
+// name (rare), so escape per POSIX: '...'\”...' .
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
@@ -658,6 +653,19 @@ func distroState() string {
 	return "stopped"
 }
 
+// vmStatusLine is the human line printed by `dew vm status`, derived
+// passively from distroState (never starts the distro).
+func vmStatusLine() string {
+	switch distroState() {
+	case "not installed":
+		return "dew: not installed (run: dew setup)"
+	case "running":
+		return "dew: running"
+	default:
+		return "dew: stopped"
+	}
+}
+
 // cmdEnv prints where the wrapper keeps things and the distro's current
 // state. Handy for debugging and for scripts that need the paths.
 func cmdEnv() error {
@@ -680,59 +688,106 @@ func cmdEnv() error {
 	return nil
 }
 
-// cmdDoctor runs environment diagnostics, printing an OK/WARN/FAIL line
-// per check. A hard prerequisite failure exits non-zero so scripts can
-// gate on `dew doctor`; warnings alone do not.
-func cmdDoctor() error {
-	healthy := true
-	pass := func(label, detail string) { fmt.Printf("  OK    %-14s %s\n", label, detail) }
-	warn := func(label, detail string) { fmt.Printf("  WARN  %-14s %s\n", label, detail) }
-	fail := func(label, detail string) {
-		fmt.Printf("  FAIL  %-14s %s\n", label, detail)
-		healthy = false
-	}
+// doctorCheck is one diagnostic result line.
+type doctorCheck struct {
+	level  string // OK | WARN | FAIL
+	label  string
+	detail string
+}
 
-	if !wslInstalled() {
-		fail("wsl2", "not installed - run: wsl --install --no-distribution")
-		fmt.Println()
-		fmt.Println("dew doctor: WSL2 missing; fix the above and re-run.")
-		os.Exit(1)
-	}
-	pass("wsl2", "installed")
+// doctorInputs are the probed facts doctor reasons about, injected so
+// the decision logic is unit-testable without a live WSL2.
+type doctorInputs struct {
+	wslInstalled bool
+	registered   bool
+	running      bool
+	nodeVersion  string // "" when node is absent or the distro isn't up
+	mirrored     bool
+	rootfsMB     int64 // -1 when the rootfs isn't cached
+}
 
-	registered := distroRegistered()
-	switch {
-	case !registered:
-		fail("distro", fmt.Sprintf("%q not imported - run: dew setup", distroName))
-	case distroRunningNow():
-		pass("distro", fmt.Sprintf("%q running", distroName))
-	default:
-		pass("distro", fmt.Sprintf("%q registered (stopped)", distroName))
-	}
-
-	// node/npm live inside the distro; probing them starts it, which is
-	// fine for an active diagnostic. Only meaningful once imported.
-	if registered {
-		if out, err := exec.Command("wsl", "-d", distroName, "--exec", "node", "--version").Output(); err == nil {
-			pass("node", strings.TrimSpace(string(out)))
-		} else {
-			warn("node", "not found in distro (dew up needs it)")
+// doctorReport turns probed facts into report lines plus an overall
+// health verdict — false if any hard prerequisite failed (warnings do
+// not fail the verdict). Pure: no I/O, no printing.
+func doctorReport(in doctorInputs) (checks []doctorCheck, healthy bool) {
+	healthy = true
+	add := func(level, label, detail string) {
+		checks = append(checks, doctorCheck{level, label, detail})
+		if level == "FAIL" {
+			healthy = false
 		}
 	}
 
-	if mirroredNetworkingEnabled() {
-		pass("mirrored net", "enabled (dev servers reachable on localhost)")
-	} else {
-		warn("mirrored net", "off - add [wsl2] networkingMode=mirrored to "+wslConfigPath())
+	if !in.wslInstalled {
+		add("FAIL", "wsl2", "not installed - run: wsl --install --no-distribution")
+		return checks, false
+	}
+	add("OK", "wsl2", "installed")
+
+	switch {
+	case !in.registered:
+		add("FAIL", "distro", fmt.Sprintf("%q not imported - run: dew setup", distroName))
+	case in.running:
+		add("OK", "distro", fmt.Sprintf("%q running", distroName))
+	default:
+		add("OK", "distro", fmt.Sprintf("%q registered (stopped)", distroName))
 	}
 
-	rootfs := filepath.Join(dewDataDir(), "dew-rootfs.tar.gz")
-	if fi, err := os.Stat(rootfs); err == nil {
-		pass("rootfs", fmt.Sprintf("%d MB cached", fi.Size()/(1024*1024)))
-	} else {
-		warn("rootfs", "not cached (downloads on next setup)")
+	if in.registered {
+		if in.nodeVersion != "" {
+			add("OK", "node", in.nodeVersion)
+		} else {
+			add("WARN", "node", "not found in distro (dew up needs it)")
+		}
 	}
 
+	if in.mirrored {
+		add("OK", "mirrored net", "enabled (dev servers reachable on localhost)")
+	} else {
+		add("WARN", "mirrored net", "off - add [wsl2] networkingMode=mirrored to "+wslConfigPath())
+	}
+
+	if in.rootfsMB >= 0 {
+		add("OK", "rootfs", fmt.Sprintf("%d MB cached", in.rootfsMB))
+	} else {
+		add("WARN", "rootfs", "not cached (downloads on next setup)")
+	}
+	return checks, healthy
+}
+
+// cmdDoctor gathers the environment facts, prints an OK/WARN/FAIL line
+// per check, and exits non-zero on a hard failure so scripts can gate
+// on `dew doctor`. The decision logic lives in doctorReport.
+func cmdDoctor() error {
+	installed := wslInstalled()
+	registered, running, nodeVersion := false, false, ""
+	if installed {
+		registered = distroRegistered()
+		if registered {
+			running = distroRunningNow()
+			// Probing node starts the distro — acceptable for an active
+			// diagnostic. Only meaningful once imported.
+			if out, err := wslQuery("-d", distroName, "--exec", "node", "--version"); err == nil {
+				nodeVersion = strings.TrimSpace(string(out))
+			}
+		}
+	}
+	rootfsMB := int64(-1)
+	if fi, err := os.Stat(filepath.Join(dewDataDir(), "dew-rootfs.tar.gz")); err == nil {
+		rootfsMB = fi.Size() / (1024 * 1024)
+	}
+
+	checks, healthy := doctorReport(doctorInputs{
+		wslInstalled: installed,
+		registered:   registered,
+		running:      running,
+		nodeVersion:  nodeVersion,
+		mirrored:     mirroredNetworkingEnabled(),
+		rootfsMB:     rootfsMB,
+	})
+	for _, c := range checks {
+		fmt.Printf("  %-5s %-14s %s\n", c.level, c.label, c.detail)
+	}
 	fmt.Println()
 	if !healthy {
 		fmt.Println("dew doctor: some checks failed (see above)")
