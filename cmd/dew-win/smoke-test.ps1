@@ -107,13 +107,20 @@ Check "doctor passes on a set-up box" {
 
 # --- up: dev server reachable on Windows localhost -----------------
 Write-Host "== up: node dev server on localhost ==" -ForegroundColor Cyan
+# Ask the OS for a free port (bind :0, read it back, release) so a busy
+# fixed port can't fail an otherwise-healthy run.
+$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+$listener.Start()
+$port = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+$listener.Stop()
+
 $proj = Join-Path $env:TEMP 'dew-smoke-proj'
 New-Item -ItemType Directory -Force -Path $proj | Out-Null
 Set-Content -Path (Join-Path $proj 'package.json') -Encoding ascii -Value '{"name":"smoke","private":true,"scripts":{"dev":"node server.js"}}'
-Set-Content -Path (Join-Path $proj 'server.js') -Encoding ascii -Value @'
+Set-Content -Path (Join-Path $proj 'server.js') -Encoding ascii -Value @"
 const http = require('http');
-http.createServer((_, res) => res.end('smoke-ok')).listen(5199, '0.0.0.0');
-'@
+http.createServer((_, res) => res.end('smoke-ok')).listen($port, '0.0.0.0');
+"@
 $log = Join-Path $env:TEMP 'dew-smoke-up.log'
 Remove-Item $log -ErrorAction SilentlyContinue
 # curl.exe, not Invoke-WebRequest: IWR is unreliable against WSL2's
@@ -123,10 +130,10 @@ $up = Start-Process $dew -ArgumentList "up `"$proj`"" -RedirectStandardOutput $l
 $body = ''
 foreach ($i in 1..30) {
     Start-Sleep -Seconds 1
-    $body = (& curl.exe -s --max-time 3 http://localhost:5199) 2>$null
+    $body = (& curl.exe -s --max-time 3 "http://localhost:$port") 2>$null
     if ($body -eq 'smoke-ok') { break }
 }
-Check "dev server reachable at localhost:5199" { $body -eq 'smoke-ok' }
+Check "dev server reachable at localhost:$port" { $body -eq 'smoke-ok' }
 if ($up -and -not $up.HasExited) { $up.Kill() }
 wsl --terminate dew 2>&1 | Out-Null
 
