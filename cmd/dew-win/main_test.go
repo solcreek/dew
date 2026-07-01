@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/solcreek/dew/internal/dewfile"
 	"github.com/solcreek/dew/internal/services"
 )
 
@@ -459,29 +461,32 @@ func TestDewDataDir(t *testing.T) {
 
 func TestParseUpArgs(t *testing.T) {
 	cases := []struct {
-		name    string
-		args    []string
-		dir     string
-		with    []string
-		wantErr bool
+		name         string
+		args         []string
+		dir          string
+		with         []string
+		servicesOnly bool
+		wantErr      bool
 	}{
-		{"empty", nil, ".", nil, false},
-		{"dir only", []string{"./app"}, "./app", nil, false},
-		{"with space form", []string{"--with", "postgres,redis"}, ".", []string{"postgres", "redis"}, false},
-		{"with equals form", []string{"--with=postgres"}, ".", []string{"postgres"}, false},
-		{"dir and with", []string{"./app", "--with", "redis"}, "./app", []string{"redis"}, false},
-		{"with then dir (PR example)", []string{"--with", "redis", "./app"}, "./app", []string{"redis"}, false},
-		{"csv trims blanks", []string{"--with", "a, b ,,c"}, ".", []string{"a", "b", "c"}, false},
-		{"dedup preserves order", []string{"--with", "redis,redis,postgres,redis"}, ".", []string{"redis", "postgres"}, false},
-		{"with needs arg", []string{"--with"}, "", nil, true},
-		{"with empty equals rejected", []string{"--with="}, "", nil, true},
-		{"with blank value rejected", []string{"--with", "  ,  "}, "", nil, true},
-		{"unknown flag", []string{"--bogus"}, "", nil, true},
-		{"multiple dirs rejected", []string{"./a", "./b"}, "", nil, true},
+		{"empty", nil, ".", nil, false, false},
+		{"dir only", []string{"./app"}, "./app", nil, false, false},
+		{"with space form", []string{"--with", "postgres,redis"}, ".", []string{"postgres", "redis"}, false, false},
+		{"with equals form", []string{"--with=postgres"}, ".", []string{"postgres"}, false, false},
+		{"dir and with", []string{"./app", "--with", "redis"}, "./app", []string{"redis"}, false, false},
+		{"with then dir (PR example)", []string{"--with", "redis", "./app"}, "./app", []string{"redis"}, false, false},
+		{"csv trims blanks", []string{"--with", "a, b ,,c"}, ".", []string{"a", "b", "c"}, false, false},
+		{"dedup preserves order", []string{"--with", "redis,redis,postgres,redis"}, ".", []string{"redis", "postgres"}, false, false},
+		{"services-only flag", []string{"--services-only"}, ".", nil, true, false},
+		{"services-only with dir", []string{"--services-only", "./eng"}, "./eng", nil, true, false},
+		{"with needs arg", []string{"--with"}, "", nil, false, true},
+		{"with empty equals rejected", []string{"--with="}, "", nil, false, true},
+		{"with blank value rejected", []string{"--with", "  ,  "}, "", nil, false, true},
+		{"unknown flag", []string{"--bogus"}, "", nil, false, true},
+		{"multiple dirs rejected", []string{"./a", "./b"}, "", nil, false, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			dir, with, err := parseUpArgs(c.args)
+			dir, with, servicesOnly, err := parseUpArgs(c.args)
 			if (err != nil) != c.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, c.wantErr)
 			}
@@ -494,7 +499,139 @@ func TestParseUpArgs(t *testing.T) {
 			if !reflect.DeepEqual(with, c.with) {
 				t.Errorf("with = %v, want %v", with, c.with)
 			}
+			if servicesOnly != c.servicesOnly {
+				t.Errorf("servicesOnly = %v, want %v", servicesOnly, c.servicesOnly)
+			}
 		})
+	}
+}
+
+func TestServiceFromDewfile(t *testing.T) {
+	ds := dewfile.Service{
+		Name:  "pocketbase",
+		Image: "ghcr.io/pocketbase/pocketbase:latest",
+		Port:  8090,
+		Ports: []string{"9000:9000"}, // extra forwards: not yet mapped
+		Env:   []string{"FOO=bar"},
+		Data:  "/pb_data", // volume persistence: not yet mapped
+		Args:  []string{"serve", "--http=0.0.0.0:8090"},
+	}
+	got := serviceFromDewfile(ds)
+	want := services.Service{
+		Name:  "pocketbase",
+		Image: "ghcr.io/pocketbase/pocketbase:latest",
+		Port:  8090,
+		Env:   []string{"FOO=bar"},
+		Args:  []string{"serve", "--http=0.0.0.0:8090"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("serviceFromDewfile() = %+v, want %+v", got, want)
+	}
+}
+
+func TestCmdServicesJSON(t *testing.T) {
+	dir := t.TempDir()
+	toml := `[[service]]
+  name = "pocketbase-pocketbase"
+  image = "ghcr.io/x/pocketbase:0.39.0"
+  port = 8090
+
+[[service]]
+  name = "redis"
+  image = "docker.io/library/redis:alpine"
+  port = 6379
+`
+	if err := os.WriteFile(filepath.Join(dir, "dew.toml"), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Distro not running -> every service reports stopped, and no podman probe
+	// is attempted (a status query must not start the distro).
+	var out string
+	withStubWSL(t, true, []string{distroName}, nil, func() {
+		out = captureStdout(t, func() {
+			if err := cmdServices([]string{"--json", dir}); err != nil {
+				t.Fatalf("cmdServices: %v", err)
+			}
+		})
+	})
+
+	var env struct {
+		OK            bool   `json:"ok"`
+		SchemaVersion string `json:"schema_version"`
+		Data          struct {
+			Services []struct {
+				Name      string `json:"name"`
+				Running   bool   `json:"running"`
+				HostPort  int    `json:"host_port"`
+				GuestPort int    `json:"guest_port"`
+			} `json:"services"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("parse envelope %q: %v", out, err)
+	}
+	if !env.OK || env.SchemaVersion != "1.0" {
+		t.Errorf("envelope ok=%v schema=%q, want ok=true schema=1.0", env.OK, env.SchemaVersion)
+	}
+	if len(env.Data.Services) != 2 {
+		t.Fatalf("got %d services, want 2", len(env.Data.Services))
+	}
+	pb := env.Data.Services[0]
+	if pb.Name != "pocketbase-pocketbase" || pb.Running || pb.HostPort != 8090 || pb.GuestPort != 8090 {
+		t.Errorf("service[0] = %+v, want name=pocketbase-pocketbase running=false host=guest=8090", pb)
+	}
+}
+
+func TestCmdServicesPropagatesProbeError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "dew.toml"),
+		[]byte("[[service]]\n  name = \"redis\"\n  image = \"redis\"\n  port = 6379\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// wsl not installed -> the running-state probe fails. cmdServices must
+	// surface that error rather than report every service stopped.
+	var got error
+	withStubWSL(t, false, nil, nil, func() {
+		got = cmdServices([]string{"--json", dir})
+	})
+	if got == nil {
+		t.Fatal("cmdServices with a failing probe = nil, want an error")
+	}
+}
+
+func TestSplitExecJSONFlag(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		wantJSON bool
+		wantRest []string
+	}{
+		{"leading --json triggers envelope", []string{"--json", "sh", "-c", "echo hi"}, true, []string{"sh", "-c", "echo hi"}},
+		{"no --json is passthrough", []string{"sh", "-c", "echo hi"}, false, []string{"sh", "-c", "echo hi"}},
+		{"non-leading --json stays guest argv", []string{"sh", "-c", "printf --json"}, false, []string{"sh", "-c", "printf --json"}},
+		{"only --json", []string{"--json"}, true, []string{}},
+		{"empty", nil, false, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotJSON, gotRest := splitExecJSONFlag(c.args)
+			if gotJSON != c.wantJSON {
+				t.Errorf("jsonOut = %v, want %v", gotJSON, c.wantJSON)
+			}
+			if !reflect.DeepEqual(gotRest, c.wantRest) {
+				t.Errorf("rest = %v, want %v", gotRest, c.wantRest)
+			}
+		})
+	}
+}
+
+func TestCmdServicesRejectsMultipleDirs(t *testing.T) {
+	err := cmdServices([]string{"./a", "./b"})
+	if err == nil {
+		t.Fatal("cmdServices(./a ./b) = nil, want an error rejecting the second dir")
+	}
+	if !strings.Contains(err.Error(), "at most one dir") {
+		t.Errorf("error = %q, want it to mention 'at most one dir'", err)
 	}
 }
 

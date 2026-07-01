@@ -24,6 +24,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,6 +39,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/solcreek/dew/internal/dewfile"
 	"github.com/solcreek/dew/internal/services"
 )
 
@@ -74,6 +76,8 @@ func main() {
 		err = cmdRun(os.Args[2:])
 	case "up":
 		err = cmdUp(os.Args[2:])
+	case "services":
+		err = cmdServices(os.Args[2:])
 	case "down":
 		// alias for `dew vm stop`
 		err = cmdVM([]string{"stop"})
@@ -83,7 +87,7 @@ func main() {
 		err = cmdEnv()
 	default:
 		fmt.Fprintf(os.Stderr, "dew: %q is not implemented in the Windows wrapper yet.\n", os.Args[1])
-		fmt.Fprintf(os.Stderr, "Supported on Windows today: setup, up, run, exec, vm start|stop|status|list, down, doctor, env.\n")
+		fmt.Fprintf(os.Stderr, "Supported on Windows today: setup, up, run, exec, services, vm start|stop|status|list, down, doctor, env.\n")
 		os.Exit(1)
 	}
 	if err != nil {
@@ -99,8 +103,10 @@ Usage:
   dew setup              Install/update WSL2 distro
   dew up [dir]           Detect a Node project + run its dev server in WSL2
   dew up --with <svc,...> Start services too (postgres,redis,mysql,mongo,minio)
+  dew up --services-only Run the dew.toml's services as an engine (used by grove)
+  dew services [--json]  List the dew.toml's services and their running state
   dew run [--] <cmd>     Run a one-shot command in the WSL2 distro
-  dew exec <cmd>         Run a command inside the WSL2 distro
+  dew exec [--json] <cmd> Run a command inside the WSL2 distro
   dew vm start           Ensure the WSL2 distro is running
   dew vm stop            Terminate the WSL2 distro (alias: dew down)
   dew vm status          Show whether the WSL2 distro is running
@@ -373,6 +379,10 @@ func cmdVM(args []string) error {
 		if _, err := wslQuery("--terminate", distroName); err != nil {
 			return fmt.Errorf("wsl --terminate %s: %w", distroName, withWSLStderr(err))
 		}
+		// Clear the services-engine readiness marker so grove sees the engine
+		// as down; terminating the distro also unblocks a running
+		// `up --services-only` supervisor, which clears it too (idempotent).
+		removeEngineMarker()
 		fmt.Println("dew: stopped")
 		return nil
 	case "status":
@@ -437,11 +447,15 @@ func execWSLArgs(args []string) []string {
 // arrives byte-for-byte. Stdin/stdout/stderr connect straight through
 // so interactive commands work and the exit code propagates.
 func cmdExec(args []string) error {
+	jsonOut, args := splitExecJSONFlag(args)
 	if len(args) == 0 {
-		return fmt.Errorf("usage: dew exec <cmd> [args...]")
+		return fmt.Errorf("usage: dew exec [--json] <cmd> [args...]")
 	}
 	if err := ensureDistro(); err != nil {
 		return err
+	}
+	if jsonOut {
+		return cmdExecJSON(args)
 	}
 	cmd := exec.Command("wsl", execWSLArgs(args)...)
 	cmd.Stdin = os.Stdin
@@ -450,9 +464,47 @@ func cmdExec(args []string) error {
 	return runPassthrough(cmd)
 }
 
+// splitExecJSONFlag separates dew's own --json flag from the guest argv. grove
+// drives `dew exec --json sh -c CMD`, placing --json right after exec, because
+// a trailing --json would be handed to the guest sh. So ONLY a leading --json
+// is dew's flag; it is stripped and the rest is the guest command. Any later
+// --json stays part of the guest argv, untouched.
+func splitExecJSONFlag(args []string) (jsonOut bool, rest []string) {
+	if len(args) > 0 && args[0] == "--json" {
+		return true, args[1:]
+	}
+	return false, args
+}
+
+// cmdExecJSON runs the guest command capturing stdout/stderr and the guest exit
+// code, then emits the ok-envelope grove's dewbridge parses. dew "succeeded"
+// (ok:true) whenever it dispatched the command — a non-zero guest exit is
+// carried in guest_exit_code, which grove turns into a GuestExitError. So this
+// exits 0 even when the guest command failed; the envelope holds the real code.
+// Only a genuine dispatch failure (wsl missing, etc.) is returned as an error.
+func cmdExecJSON(args []string) error {
+	cmd := exec.Command("wsl", execWSLArgs(args)...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	code := 0
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) {
+			return err
+		}
+		code = ee.ExitCode()
+	}
+	return emitEnvelope(map[string]any{
+		"guest_exit_code": code,
+		"stdout":          stdout.String(),
+		"stderr":          stderr.String(),
+	})
+}
+
 // parseUpArgs extracts the project dir and any `--with <csv>` /
 // `--with=<csv>` services from `dew up` arguments.
-func parseUpArgs(args []string) (dir string, with []string, err error) {
+func parseUpArgs(args []string) (dir string, with []string, servicesOnly bool, err error) {
 	dir = "."
 	dirSet := false
 	for i := 0; i < len(args); i++ {
@@ -460,32 +512,36 @@ func parseUpArgs(args []string) (dir string, with []string, err error) {
 		switch {
 		case a == "--with":
 			if i+1 >= len(args) {
-				return "", nil, fmt.Errorf("--with needs a comma-separated service list")
+				return "", nil, false, fmt.Errorf("--with needs a comma-separated service list")
 			}
 			svcs := splitCSV(args[i+1])
 			if len(svcs) == 0 {
-				return "", nil, fmt.Errorf("--with needs a comma-separated service list")
+				return "", nil, false, fmt.Errorf("--with needs a comma-separated service list")
 			}
 			with = append(with, svcs...)
 			i++
 		case strings.HasPrefix(a, "--with="):
 			svcs := splitCSV(strings.TrimPrefix(a, "--with="))
 			if len(svcs) == 0 {
-				return "", nil, fmt.Errorf("--with needs a comma-separated service list")
+				return "", nil, false, fmt.Errorf("--with needs a comma-separated service list")
 			}
 			with = append(with, svcs...)
+		case a == "--services-only":
+			// grove's services engine: run the union dew.toml in dir, no Node
+			// dev server. See cmdUpServicesEngine.
+			servicesOnly = true
 		case strings.HasPrefix(a, "--"):
-			return "", nil, fmt.Errorf("unknown flag %q for dew up", a)
+			return "", nil, false, fmt.Errorf("unknown flag %q for dew up", a)
 		default:
 			// Reject a second positional rather than silently taking the
 			// last one (e.g. `dew up ./a ./b` is a user error, not "./b").
 			if dirSet {
-				return "", nil, fmt.Errorf("dew up takes at most one project dir, got %q and %q", dir, a)
+				return "", nil, false, fmt.Errorf("dew up takes at most one project dir, got %q and %q", dir, a)
 			}
 			dir, dirSet = a, true
 		}
 	}
-	return dir, dedupPreserveOrder(with), nil
+	return dir, dedupPreserveOrder(with), servicesOnly, nil
 }
 
 // dedupPreserveOrder removes duplicate names, keeping first-seen order, so
@@ -627,6 +683,236 @@ func startWithServices(names []string) (func(), error) {
 	return stop, nil
 }
 
+// engineMarkerPath is grove's engine-readiness marker: ~/.local/state/dew/
+// default.sock. grove's dewbridge.VMRunning() only os.Stats this path to decide
+// the engine is up — it never dials it (dew's own CLI would) — so on Windows a
+// plain marker file satisfies the contract without a real daemon socket.
+func engineMarkerPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".local", "state", "dew", "default.sock"), nil
+}
+
+// writeEngineMarker creates the readiness marker. It is written as soon as the
+// distro is up (before services are pulled/started), so grove's readiness poll
+// doesn't wait out a slow first image pull — see cmdUpServicesEngine.
+func writeEngineMarker() error {
+	p, err := engineMarkerPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(p, []byte("dew-win services engine\n"), 0o644)
+}
+
+// removeEngineMarker clears the readiness marker on shutdown. Idempotent.
+func removeEngineMarker() {
+	if p, err := engineMarkerPath(); err == nil {
+		os.Remove(p)
+	}
+}
+
+// emitEnvelope prints dew's success envelope on stdout — the shape grove's
+// dewbridge parses: {"ok":true,"schema_version":"1.0","data":<data>}.
+func emitEnvelope(data any) error {
+	enc := json.NewEncoder(os.Stdout)
+	return enc.Encode(map[string]any{
+		"ok":             true,
+		"schema_version": "1.0",
+		"data":           data,
+	})
+}
+
+// runningServiceContainers returns the set of running dew-svc-* container names
+// in the distro. It probes passively: a stopped distro is a normal state (grove
+// polls `dew services` while the engine is still booting), so that yields an
+// empty set and no error, and never starts the distro. A genuine probe failure
+// — the running-state check or `podman ps` erroring — is returned so callers can
+// distinguish "stopped" from "couldn't determine" instead of misreporting every
+// service as stopped.
+func runningServiceContainers() (map[string]bool, error) {
+	set := map[string]bool{}
+	running, err := distroRunningNow()
+	if err != nil {
+		return nil, fmt.Errorf("check distro running: %w", err)
+	}
+	if !running {
+		return set, nil
+	}
+	out, err := exec.Command("wsl", "-d", distroName, "--exec",
+		"podman", "ps", "--format", "{{.Names}}").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("podman ps: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if n := strings.TrimSpace(line); n != "" {
+			set[n] = true
+		}
+	}
+	return set, nil
+}
+
+// cmdServices reports the union dew.toml's services and their running state —
+// the contract grove's dewbridge.Services() drives (`dew services --json`). It
+// reads the dew.toml from the working dir (grove sets cwd to its engine dir),
+// then reports each service as {name, running, host_port, guest_port}. Services
+// run on the distro's host network, so host_port == guest_port == the primary
+// port. grove polls this for install health (waitServiceRunning) and reads it
+// for `grove list`/`stats`.
+func cmdServices(args []string) error {
+	jsonOut := false
+	dir := "."
+	dirSet := false
+	for _, a := range args {
+		switch {
+		case a == "--json":
+			jsonOut = true
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("unknown flag %q for dew services", a)
+		default:
+			// Reject a second positional rather than silently taking the last,
+			// matching dew up (a typoed extra path is a user error, not the dir).
+			if dirSet {
+				return fmt.Errorf("dew services takes at most one dir, got %q and %q", dir, a)
+			}
+			dir, dirSet = a, true
+		}
+	}
+
+	f, err := dewfile.Load(dir)
+	if err != nil {
+		return fmt.Errorf("load dew.toml: %w", err)
+	}
+	type svcJSON struct {
+		Name      string `json:"name"`
+		Running   bool   `json:"running"`
+		HostPort  int    `json:"host_port"`
+		GuestPort int    `json:"guest_port"`
+	}
+	list := []svcJSON{}
+	if f != nil {
+		running, err := runningServiceContainers()
+		if err != nil {
+			return err
+		}
+		for _, s := range f.Services {
+			list = append(list, svcJSON{
+				Name:      s.Name,
+				Running:   running[serviceContainer(s.Name)],
+				HostPort:  s.Port,
+				GuestPort: s.Port,
+			})
+		}
+	}
+
+	if jsonOut {
+		return emitEnvelope(map[string]any{"services": list})
+	}
+	if len(list) == 0 {
+		fmt.Println("dew: no services")
+		return nil
+	}
+	for _, s := range list {
+		state := "stopped"
+		if s.Running {
+			state = "running"
+		}
+		fmt.Printf("%-24s %-8s localhost:%d\n", s.Name, state, s.HostPort)
+	}
+	return nil
+}
+
+// serviceFromDewfile maps a dew.toml [[service]] to the services.Service shape
+// startService/podmanRunArgs consume. dewfile.Service already mirrors
+// services.Service. Data (volume persistence) and Ports (extra forwards) are
+// not yet wired on Windows: with --network=host every container port already
+// lands on the distro's netns (hence Windows localhost), and volume
+// persistence is a follow-up.
+func serviceFromDewfile(s dewfile.Service) services.Service {
+	return services.Service{
+		Name:  s.Name,
+		Image: s.Image,
+		Port:  s.Port,
+		Env:   s.Env,
+		Args:  s.Args,
+	}
+}
+
+// cmdUpServicesEngine runs dew-win as grove's services engine. grove renders a
+// union dew.toml (one [[service]] per installed app), sets cwd to that dir, and
+// spawns `dew up --services-only` DETACHED; it then polls the readiness marker
+// to decide the engine is up. So we boot the distro, drop the marker, load the
+// dew.toml from dir, start each service via podman on the distro's host
+// network, and stay foreground holding the distro (and its containers) alive
+// until `dew vm stop` terminates it or Ctrl+C. An empty union still boots the
+// distro + marker, so grove's bare-VM path (no apps) is satisfied too.
+func cmdUpServicesEngine(dir string) error {
+	if err := ensureDistro(); err != nil {
+		return err
+	}
+	// Drop the readiness marker as soon as the distro is up — matching macOS
+	// dew, where the daemon socket appears when the VM boots, before images
+	// are pulled. grove health-checks each app separately (with its own
+	// generous timeout), so a slow first image pull can't blow the engine's
+	// much shorter readiness window.
+	if err := writeEngineMarker(); err != nil {
+		return fmt.Errorf("write engine marker: %w", err)
+	}
+	// The engine is a detached daemon under grove, so Ctrl+C must clean up
+	// itself: clear the marker and terminate the distro (which kills the
+	// host-network containers) before exiting.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	go func() {
+		<-sig
+		removeEngineMarker()
+		exec.Command("wsl", "--terminate", distroName).Run()
+		os.Exit(130)
+	}()
+
+	f, err := dewfile.Load(dir)
+	if err != nil {
+		removeEngineMarker()
+		return fmt.Errorf("load dew.toml: %w", err)
+	}
+	var started []string
+	if f != nil && len(f.Services) > 0 {
+		if err := ensurePodman(); err != nil {
+			removeEngineMarker()
+			return err
+		}
+		for _, ds := range f.Services {
+			s := serviceFromDewfile(ds)
+			fmt.Printf("dew: starting %s (%s)...\n", s.Name, s.Image)
+			if _, err := startService(s); err != nil {
+				stopServices(started)
+				removeEngineMarker()
+				return err
+			}
+			started = append(started, s.Name)
+			fmt.Printf("dew:   %s ready\n", s.Name)
+		}
+	}
+	fmt.Println("dew: services engine ready")
+	// Hold the distro open — an active wsl session keeps WSL2 (and the
+	// host-network containers) alive. The normal way out is `dew vm stop`
+	// running `wsl --terminate`, which kills this session — an ExitError we
+	// treat as the expected stop. A non-ExitError means wsl couldn't run the
+	// session at all (so the distro was never actually held); surface that so
+	// the failure isn't hidden behind "services engine ready".
+	err = exec.Command("wsl", "-d", distroName, "--exec", "sh", "-c", "while true; do sleep 86400; done").Run()
+	removeEngineMarker()
+	var ee *exec.ExitError
+	if err != nil && !errors.As(err, &ee) {
+		return fmt.Errorf("hold distro open: %w", err)
+	}
+	return nil
+}
+
 // cmdUp detects a Node-style project in dir (or cwd) and runs its
 // dev server inside the WSL2 distro. The project is reached via
 // the auto-mounted /mnt/<drive>/... path; WSL2's mirrored
@@ -641,9 +927,15 @@ func startWithServices(names []string) (func(), error) {
 // Heavier project-aware behavior can land iteratively as Windows
 // users hit specific gaps.
 func cmdUp(args []string) error {
-	dir, withServices, err := parseUpArgs(args)
+	dir, withServices, servicesOnly, err := parseUpArgs(args)
 	if err != nil {
 		return err
+	}
+	if servicesOnly {
+		// grove drives dew as a services engine, not a Node dev runner: it
+		// renders a union dew.toml and spawns `dew up --services-only`. Take
+		// that whole path here; the Node-project logic below doesn't apply.
+		return cmdUpServicesEngine(dir)
 	}
 	for _, name := range withServices {
 		if services.Lookup(name) == nil {
