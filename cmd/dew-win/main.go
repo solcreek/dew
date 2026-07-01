@@ -747,7 +747,7 @@ func detectDevScript(pkgPath string) string {
 // when interpolating WSL paths into an inline `sh -c` string. The
 // WSL path is alphanumeric + / + . in practice but a user's project
 // dir could theoretically contain a single-quote in a parent dir
-// name (rare), so escape per POSIX: '...'\”...' .
+// name (rare), so escape per POSIX: '...'\''...' .
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
