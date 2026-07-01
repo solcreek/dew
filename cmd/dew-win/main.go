@@ -12,9 +12,9 @@
 //	dew setup       → download rootfs + wsl --import dew
 //	dew vm start    → ensure distro is running (wsl auto-starts on use)
 //	dew vm stop     → wsl --terminate dew
-//	dew vm status   → check if distro is registered
+//	dew vm status   → report running / stopped / not installed (passive)
 //	dew down        → alias for vm stop
-//	dew exec <cmd>  → wsl -d dew -- <cmd>
+//	dew exec <cmd>  → wsl -d dew --exec <cmd> (no implicit shell)
 //
 // This is fundamentally different from the macOS path (where we
 // drive Apple Virtualization + our own kernel + initramfs); on
@@ -148,9 +148,10 @@ func wslInstalled() bool {
 // Side effect: starts the distro if it was stopped. That's fine —
 // every caller of ensureDistro is about to run a command inside
 // it anyway, so we just pay the start cost a few hundred ms
-// earlier. Zero cost on an already-running distro. wslQuery captures
-// stdout/stderr, so the welcome banner some wsl versions emit doesn't
-// leak into dew's own output.
+// earlier. Zero cost on an already-running distro. wslQuery uses
+// cmd.Output(): the probe's stdout is captured (not forwarded) and its
+// stderr is discarded, so the welcome banner some wsl versions emit
+// doesn't leak into dew's own output.
 func distroExists() bool {
 	_, err := wslQuery("-d", distroName, "--", "true")
 	return err == nil
@@ -327,7 +328,7 @@ func ensureDistro() error {
 // is the start.
 func cmdVM(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: dew vm start|stop|status")
+		return fmt.Errorf("usage: dew vm start|stop|status|list")
 	}
 	switch args[0] {
 	case "start":
@@ -544,7 +545,7 @@ func detectDevScript(pkgPath string) string {
 // when interpolating WSL paths into an inline `sh -c` string. The
 // WSL path is alphanumeric + / + . in practice but a user's project
 // dir could theoretically contain a single-quote in a parent dir
-// name (rare), so escape per POSIX: '...'\''...' .
+// name (rare), so escape per POSIX: '...'\”...' .
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
