@@ -134,6 +134,39 @@ func distroExists() bool {
 	return cmd.Run() == nil
 }
 
+// distroListNames returns the distro names printed by `wsl --list
+// --quiet <extra>`. Unlike distroExists, listing is passive — it never
+// starts a distro. WSL_UTF8=1 forces plain UTF-8 output (modern WSL);
+// stripping stray NUL bytes recovers ASCII names even if a legacy
+// build still emits UTF-16LE, sidestepping the encoding trap that made
+// earlier `wsl -l` parsing unreliable.
+func distroListNames(extra ...string) map[string]bool {
+	cmd := exec.Command("wsl", append([]string{"--list", "--quiet"}, extra...)...)
+	cmd.Env = append(os.Environ(), "WSL_UTF8=1")
+	out, err := cmd.Output()
+	names := map[string]bool{}
+	if err != nil {
+		return names
+	}
+	for _, line := range strings.Split(strings.ReplaceAll(string(out), "\x00", ""), "\n") {
+		if n := strings.TrimSpace(line); n != "" {
+			names[n] = true
+		}
+	}
+	return names
+}
+
+// distroRegistered reports whether the dew distro is imported, without
+// starting it — contrast distroExists, whose `true` probe starts the
+// distro as a side effect.
+func distroRegistered() bool { return distroListNames()[distroName] }
+
+// distroRunningNow reports whether the dew distro is currently running,
+// without starting it. `wsl --list --running` lists only running
+// distros, so this is a name lookup — immune to STATE-column
+// localization on non-English Windows.
+func distroRunningNow() bool { return distroListNames("--running")[distroName] }
+
 // dewDataDir returns the Windows data directory for Dew.
 func dewDataDir() string {
 	home, _ := os.UserHomeDir()
@@ -294,10 +327,16 @@ func cmdVM(args []string) error {
 			fmt.Println("dew: WSL2 not installed")
 			return nil
 		}
-		if distroExists() {
-			fmt.Println("dew: running")
-		} else {
+		// Passive checks only: reporting status must not start the
+		// distro (distroExists would). This lets status distinguish a
+		// registered-but-stopped distro from a running one.
+		switch {
+		case !distroRegistered():
 			fmt.Println("dew: not installed (run: dew setup)")
+		case distroRunningNow():
+			fmt.Println("dew: running")
+		default:
+			fmt.Println("dew: stopped")
 		}
 		return nil
 	default:
