@@ -171,7 +171,10 @@ jobs:
         run: |
           mkdir -p /tmp/wsl-rootfs
           cd /tmp/wsl-rootfs
-          gzip -dc $GITHUB_WORKSPACE/initramfs/initramfs-standard.cpio.gz | cpio -id 2>/dev/null
+          # Use the arch-stamped copy (not initramfs/initramfs-standard.cpio.gz,
+          # which the aarch64 build overwrites) so this step can't pick up the
+          # wrong arch regardless of ordering.
+          gzip -dc $GITHUB_WORKSPACE/initramfs-standard-x86_64.cpio.gz | cpio -id 2>/dev/null
           # Tailor the VM rootfs for WSL2: it supplies its own kernel + init
           # at runtime, so the VM kernel modules and our two-stage /init are
           # dead files here. Drop them, and add a wsl.conf so the distro has a
@@ -207,18 +210,15 @@ jobs:
           cp initramfs/initramfs-standard.cpio.gz initramfs-standard-aarch64.cpio.gz
 
       - name: Build WSL2 rootfs (aarch64)
-        # Runs AFTER the aarch64 initramfs build because that step
-        # overwrites initramfs/initramfs-standard.cpio.gz with the
-        # aarch64 version (the x86_64 rootfs above was tarred while
-        # initramfs/* still held the x86_64 archive). Same recipe
-        # as the x86_64 path — extract the standard cpio, repack as
-        # tar.gz for WSL2 import. Required so `dew setup` on
-        # Windows-on-ARM has a matching rootfs to fetch; WSL2 on
-        # ARM runs an aarch64 kernel and rejects an x86_64 rootfs.
+        # Same recipe as the x86_64 path — extract the standard cpio, tailor
+        # it for WSL2, repack as tar.gz. Required so `dew setup` on
+        # Windows-on-ARM has a matching rootfs to fetch; WSL2 on ARM runs an
+        # aarch64 kernel and rejects an x86_64 rootfs. Reads the arch-stamped
+        # copy so it no longer depends on running after the aarch64 build.
         run: |
           mkdir -p /tmp/wsl-rootfs-aarch64
           cd /tmp/wsl-rootfs-aarch64
-          gzip -dc $GITHUB_WORKSPACE/initramfs/initramfs-standard.cpio.gz | cpio -id 2>/dev/null
+          gzip -dc $GITHUB_WORKSPACE/initramfs-standard-aarch64.cpio.gz | cpio -id 2>/dev/null
           # Same WSL2 tailoring as the x86_64 rootfs above.
           rm -rf ./lib/modules ./init ./init-stage2
           mkdir -p ./etc
