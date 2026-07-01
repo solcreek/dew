@@ -344,12 +344,17 @@ func cmdVM(args []string) error {
 	}
 }
 
-// cmdExec runs a command inside the WSL2 distro, passing the
-// caller's argv through unchanged. The "--" separator in `wsl -d
-// <name> -- <cmd...>" tells wsl.exe everything after is the
-// command line for the distro, no further flag parsing on its side.
-// Stdin/stdout/stderr connect straight through so interactive
-// commands work and exit code propagates.
+// cmdExec runs a command inside the WSL2 distro, passing the caller's
+// argv through unchanged (docker-exec semantics: no shell unless the
+// caller asks for one via `dew exec sh -c '...'`).
+//
+// It uses `--exec` (`-e`), not the bare `--` separator. With `--`,
+// wsl.exe hands the post-separator tokens to the distro's default
+// shell (`/bin/sh -c "<tokens>"`), which re-parses them: an argument
+// like `[%s]|` gets its `|` treated as a pipe and args with `$vars`
+// or spaces are mangled. `--exec` runs the command directly, so argv
+// arrives byte-for-byte. Stdin/stdout/stderr connect straight through
+// so interactive commands work and the exit code propagates.
 func cmdExec(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: dew exec <cmd> [args...]")
@@ -357,7 +362,7 @@ func cmdExec(args []string) error {
 	if err := ensureDistro(); err != nil {
 		return err
 	}
-	wslArgs := append([]string{"-d", distroName, "--"}, args...)
+	wslArgs := append([]string{"-d", distroName, "--exec"}, args...)
 	cmd := exec.Command("wsl", wslArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -413,11 +418,11 @@ func cmdUp(args []string) error {
 	// Install dependencies if node_modules is missing. Skip when
 	// it exists — preserves the user's last install (the install
 	// itself is idempotent but slow on cold cache).
-	nmTest := exec.Command("wsl", "-d", distroName, "--",
-		"test", "-d", wslPath+"/node_modules")
+	nmTest := exec.Command("wsl", "-d", distroName, "--exec",
+		"sh", "-c", "test -d "+shellQuote(wslPath+"/node_modules"))
 	if nmTest.Run() != nil {
 		fmt.Println("dew: installing dependencies (npm install)...")
-		install := exec.Command("wsl", "-d", distroName, "--",
+		install := exec.Command("wsl", "-d", distroName, "--exec",
 			"sh", "-c", fmt.Sprintf("cd %s && npm install", shellQuote(wslPath)))
 		install.Stdin = os.Stdin
 		install.Stdout = os.Stdout
@@ -438,7 +443,7 @@ func cmdUp(args []string) error {
 	fmt.Println("dew: dev server output follows. Ctrl+C to stop.")
 	fmt.Println()
 
-	dev := exec.Command("wsl", "-d", distroName, "--",
+	dev := exec.Command("wsl", "-d", distroName, "--exec",
 		"sh", "-c", fmt.Sprintf("cd %s && npm run %s", shellQuote(wslPath), script))
 	dev.Stdin = os.Stdin
 	dev.Stdout = os.Stdout
@@ -450,20 +455,14 @@ func cmdUp(args []string) error {
 // mount path via the distro's `wslpath` utility. Trims the
 // trailing newline wslpath emits.
 //
-// wsl.exe with arguments after `--` joins them into a single
-// command line and dispatches via /bin/sh -c inside the distro
-// — even though Go's exec.Command passes them as separate argv
-// to wsl.exe itself, there's a hidden shell layer on the Linux
-// side. That shell strips unquoted backslashes, so "C:\Foo\Bar"
-// arrives at wslpath as "C:FooBar" and wslpath errors out.
-//
-// Normalizing to forward slashes (filepath.ToSlash) sidesteps it:
-// Windows APIs accept both \ and /, Linux paths use /, and the
-// shell passes / through untouched. wslpath handles both spellings
-// of the input.
+// Runs via `--exec` so wslpath receives the path as a single argv
+// element with no intervening shell. Still normalize to forward
+// slashes (filepath.ToSlash) first: Windows APIs accept both \ and
+// /, wslpath handles both, and forward slashes avoid any backslash
+// quirk in the Windows command-line encoding.
 func winPathToWSL(winPath string) (string, error) {
 	normalized := filepath.ToSlash(winPath)
-	out, err := exec.Command("wsl", "-d", distroName, "--",
+	out, err := exec.Command("wsl", "-d", distroName, "--exec",
 		"wslpath", "-a", normalized).Output()
 	if err != nil {
 		return "", fmt.Errorf("wslpath %s: %w", winPath, err)
