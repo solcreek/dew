@@ -55,9 +55,14 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	fn()
-	w.Close()
-	os.Stdout = orig
+	// Restore Stdout via defer so a t.Fatal inside fn (runtime.Goexit)
+	// can't leave later tests writing to this pipe. Close the writer in
+	// its own defer too, so ReadAll always sees EOF.
+	defer func() { os.Stdout = orig }()
+	func() {
+		defer w.Close()
+		fn()
+	}()
 	out, _ := io.ReadAll(r)
 	return string(out)
 }
