@@ -702,12 +702,13 @@ type doctorCheck struct {
 // doctorInputs are the probed facts doctor reasons about, injected so
 // the decision logic is unit-testable without a live WSL2.
 type doctorInputs struct {
-	wslInstalled bool
-	registered   bool
-	running      bool
-	nodeVersion  string // "" when node is absent or the distro isn't up
-	mirrored     bool
-	rootfsMB     int64 // -1 when the rootfs isn't cached
+	wslInstalled  bool
+	registered    bool
+	running       bool
+	nodeVersion   string // "" when node is absent or the distro isn't up
+	mirrored      bool
+	rootfsMB      int64  // -1 when the rootfs isn't cached
+	wslconfigPath string // path named in the mirrored-networking hint
 }
 
 // doctorReport turns probed facts into report lines plus an overall
@@ -748,7 +749,7 @@ func doctorReport(in doctorInputs) (checks []doctorCheck, healthy bool) {
 	if in.mirrored {
 		add("OK", "mirrored net", "enabled (dev servers reachable on localhost)")
 	} else {
-		add("WARN", "mirrored net", "off - add [wsl2] networkingMode=mirrored to "+wslConfigPath())
+		add("WARN", "mirrored net", "off - add [wsl2] networkingMode=mirrored to "+in.wslconfigPath)
 	}
 
 	if in.rootfsMB >= 0 {
@@ -782,12 +783,13 @@ func cmdDoctor() error {
 	}
 
 	checks, healthy := doctorReport(doctorInputs{
-		wslInstalled: installed,
-		registered:   registered,
-		running:      running,
-		nodeVersion:  nodeVersion,
-		mirrored:     mirroredNetworkingEnabled(),
-		rootfsMB:     rootfsMB,
+		wslInstalled:  installed,
+		registered:    registered,
+		running:       running,
+		nodeVersion:   nodeVersion,
+		mirrored:      mirroredNetworkingEnabled(),
+		rootfsMB:      rootfsMB,
+		wslconfigPath: wslConfigPath(),
 	})
 	for _, c := range checks {
 		fmt.Printf("  %-5s %-14s %s\n", c.level, c.label, c.detail)
