@@ -130,3 +130,59 @@ func TestDetectDevScript(t *testing.T) {
 		t.Errorf("detectDevScript(missing) = %q, want \"\"", got)
 	}
 }
+
+func TestStripLeadingSeparator(t *testing.T) {
+	cases := []struct {
+		in, want []string
+	}{
+		{[]string{"--", "uname", "-a"}, []string{"uname", "-a"}},
+		{[]string{"uname", "-a"}, []string{"uname", "-a"}},
+		{[]string{"--"}, []string{}},
+		{[]string{}, []string{}},
+		// Only ONE leading separator is stripped; a second "--" is an arg.
+		{[]string{"--", "--", "x"}, []string{"--", "x"}},
+	}
+	for _, c := range cases {
+		got := stripLeadingSeparator(c.in)
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("stripLeadingSeparator(%v) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestFormatVMList(t *testing.T) {
+	all := map[string]bool{"Ubuntu": true, distroName: true, "Alpine": true}
+	running := map[string]bool{distroName: true}
+	got := formatVMList(all, running)
+
+	// The dew distro sorts first and is tagged; the rest are alphabetical.
+	want := "" +
+		"  dew                  running  (dew)\n" +
+		"  Alpine               stopped\n" +
+		"  Ubuntu               stopped\n"
+	if got != want {
+		t.Errorf("formatVMList mismatch:\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestHasMirroredNetworking(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"canonical", "[wsl2]\nnetworkingMode=mirrored\n", true},
+		{"spaces around equals", "[wsl2]\nnetworkingMode = mirrored\n", true},
+		{"case insensitive", "[wsl2]\nNetworkingMode=Mirrored\n", true},
+		{"nat mode", "[wsl2]\nnetworkingMode=nat\n", false},
+		{"absent", "[wsl2]\nmemory=4GB\n", false},
+		{"empty", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := hasMirroredNetworking([]byte(c.in)); got != c.want {
+				t.Errorf("hasMirroredNetworking(%q) = %v, want %v", c.in, got, c.want)
+			}
+		})
+	}
+}

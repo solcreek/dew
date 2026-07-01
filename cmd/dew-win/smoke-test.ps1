@@ -90,6 +90,21 @@ Check "terminated distro reports stopped again" {
     (& $dew vm status) -match 'stopped'
 }
 
+# --- command surface: run / vm list / doctor / env ----------------
+Write-Host "== command surface: run / vm list / doctor / env ==" -ForegroundColor Cyan
+Check "run strips -- and execs the command" {
+    (& $dew run -- printf 'ok') -eq 'ok'
+}
+Check "vm list shows the dew distro" {
+    (& $dew vm list | Out-String) -match 'dew'
+}
+Check "env reports the distro name" {
+    (& $dew env | Out-String) -match 'distro\s+dew'
+}
+Check "doctor passes on a set-up box" {
+    & $dew doctor | Out-Null; $LASTEXITCODE -eq 0
+}
+
 # --- up: dev server reachable on Windows localhost -----------------
 Write-Host "== up: node dev server on localhost ==" -ForegroundColor Cyan
 $proj = Join-Path $env:TEMP 'dew-smoke-proj'
