@@ -637,9 +637,14 @@ func cmdUp(args []string) error {
 	}
 
 	// The dev-server half is Node-only; with --with the project is optional
-	// (services can run on their own).
+	// (services can run on their own). Only a genuine "not found" means no
+	// project — surface permission/IO stat errors instead of silently
+	// treating them as a missing package.json.
 	pkgPath := filepath.Join(absDir, "package.json")
 	_, statErr := os.Stat(pkgPath)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return fmt.Errorf("stat %s: %w", pkgPath, statErr)
+	}
 	hasProject := statErr == nil
 	if !hasProject && len(withServices) == 0 {
 		return fmt.Errorf("no package.json in %s — dew up on Windows supports Node-style projects; or use --with <service>", absDir)
