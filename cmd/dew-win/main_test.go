@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -525,6 +526,59 @@ func TestServiceFromDewfile(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("serviceFromDewfile() = %+v, want %+v", got, want)
+	}
+}
+
+func TestCmdServicesJSON(t *testing.T) {
+	dir := t.TempDir()
+	toml := `[[service]]
+  name = "pocketbase-pocketbase"
+  image = "ghcr.io/x/pocketbase:0.39.0"
+  port = 8090
+
+[[service]]
+  name = "redis"
+  image = "docker.io/library/redis:alpine"
+  port = 6379
+`
+	if err := os.WriteFile(filepath.Join(dir, "dew.toml"), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Distro not running -> every service reports stopped, and no podman probe
+	// is attempted (a status query must not start the distro).
+	var out string
+	withStubWSL(t, true, []string{distroName}, nil, func() {
+		out = captureStdout(t, func() {
+			if err := cmdServices([]string{"--json", dir}); err != nil {
+				t.Fatalf("cmdServices: %v", err)
+			}
+		})
+	})
+
+	var env struct {
+		OK            bool   `json:"ok"`
+		SchemaVersion string `json:"schema_version"`
+		Data          struct {
+			Services []struct {
+				Name      string `json:"name"`
+				Running   bool   `json:"running"`
+				HostPort  int    `json:"host_port"`
+				GuestPort int    `json:"guest_port"`
+			} `json:"services"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("parse envelope %q: %v", out, err)
+	}
+	if !env.OK || env.SchemaVersion != "1.0" {
+		t.Errorf("envelope ok=%v schema=%q, want ok=true schema=1.0", env.OK, env.SchemaVersion)
+	}
+	if len(env.Data.Services) != 2 {
+		t.Fatalf("got %d services, want 2", len(env.Data.Services))
+	}
+	pb := env.Data.Services[0]
+	if pb.Name != "pocketbase-pocketbase" || pb.Running || pb.HostPort != 8090 || pb.GuestPort != 8090 {
+		t.Errorf("service[0] = %+v, want name=pocketbase-pocketbase running=false host=guest=8090", pb)
 	}
 }
 

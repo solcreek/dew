@@ -75,6 +75,8 @@ func main() {
 		err = cmdRun(os.Args[2:])
 	case "up":
 		err = cmdUp(os.Args[2:])
+	case "services":
+		err = cmdServices(os.Args[2:])
 	case "down":
 		// alias for `dew vm stop`
 		err = cmdVM([]string{"stop"})
@@ -84,7 +86,7 @@ func main() {
 		err = cmdEnv()
 	default:
 		fmt.Fprintf(os.Stderr, "dew: %q is not implemented in the Windows wrapper yet.\n", os.Args[1])
-		fmt.Fprintf(os.Stderr, "Supported on Windows today: setup, up, run, exec, vm start|stop|status|list, down, doctor, env.\n")
+		fmt.Fprintf(os.Stderr, "Supported on Windows today: setup, up, run, exec, services, vm start|stop|status|list, down, doctor, env.\n")
 		os.Exit(1)
 	}
 	if err != nil {
@@ -665,6 +667,100 @@ func removeEngineMarker() {
 	if p, err := engineMarkerPath(); err == nil {
 		os.Remove(p)
 	}
+}
+
+// emitEnvelope prints dew's success envelope on stdout — the shape grove's
+// dewbridge parses: {"ok":true,"schema_version":"1.0","data":<data>}.
+func emitEnvelope(data any) error {
+	enc := json.NewEncoder(os.Stdout)
+	return enc.Encode(map[string]any{
+		"ok":             true,
+		"schema_version": "1.0",
+		"data":           data,
+	})
+}
+
+// runningServiceContainers returns the set of running dew-svc-* container names
+// in the distro. It probes passively: if the distro isn't running it reports an
+// empty set rather than starting it (grove polls `dew services` while the engine
+// is still booting, and a status query must not have side effects).
+func runningServiceContainers() map[string]bool {
+	set := map[string]bool{}
+	if running, err := distroRunningNow(); err != nil || !running {
+		return set
+	}
+	out, err := exec.Command("wsl", "-d", distroName, "--exec",
+		"podman", "ps", "--format", "{{.Names}}").Output()
+	if err != nil {
+		return set
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if n := strings.TrimSpace(line); n != "" {
+			set[n] = true
+		}
+	}
+	return set
+}
+
+// cmdServices reports the union dew.toml's services and their running state —
+// the contract grove's dewbridge.Services() drives (`dew services --json`). It
+// reads the dew.toml from the working dir (grove sets cwd to its engine dir),
+// then reports each service as {name, running, host_port, guest_port}. Services
+// run on the distro's host network, so host_port == guest_port == the primary
+// port. grove polls this for install health (waitServiceRunning) and reads it
+// for `grove list`/`stats`.
+func cmdServices(args []string) error {
+	jsonOut := false
+	dir := "."
+	for _, a := range args {
+		switch {
+		case a == "--json":
+			jsonOut = true
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("unknown flag %q for dew services", a)
+		default:
+			dir = a
+		}
+	}
+
+	f, err := dewfile.Load(dir)
+	if err != nil {
+		return fmt.Errorf("load dew.toml: %w", err)
+	}
+	type svcJSON struct {
+		Name      string `json:"name"`
+		Running   bool   `json:"running"`
+		HostPort  int    `json:"host_port"`
+		GuestPort int    `json:"guest_port"`
+	}
+	list := []svcJSON{}
+	if f != nil {
+		running := runningServiceContainers()
+		for _, s := range f.Services {
+			list = append(list, svcJSON{
+				Name:      s.Name,
+				Running:   running[serviceContainer(s.Name)],
+				HostPort:  s.Port,
+				GuestPort: s.Port,
+			})
+		}
+	}
+
+	if jsonOut {
+		return emitEnvelope(map[string]any{"services": list})
+	}
+	if len(list) == 0 {
+		fmt.Println("dew: no services")
+		return nil
+	}
+	for _, s := range list {
+		state := "stopped"
+		if s.Running {
+			state = "running"
+		}
+		fmt.Printf("%-24s %-8s localhost:%d\n", s.Name, state, s.HostPort)
+	}
+	return nil
 }
 
 // serviceFromDewfile maps a dew.toml [[service]] to the services.Service shape
