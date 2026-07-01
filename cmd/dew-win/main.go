@@ -98,7 +98,7 @@ func printUsage() {
 Usage:
   dew setup              Install/update WSL2 distro
   dew up [dir]           Detect a Node project + run its dev server in WSL2
-  dew up --with <svc>    Also start services (postgres,redis,mysql,mongo,minio)
+  dew up --with <svc,...> Start services too (postgres,redis,mysql,mongo,minio)
   dew run [--] <cmd>     Run a one-shot command in the WSL2 distro
   dew exec <cmd>         Run a command inside the WSL2 distro
   dew vm start           Ensure the WSL2 distro is running
