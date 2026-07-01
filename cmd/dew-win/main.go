@@ -650,6 +650,14 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve %q: %w", dir, err)
 	}
+	// Validate the dir itself so a typoed path (e.g. `dew up --with redis
+	// ./typo`) surfaces an error instead of silently falling into
+	// services-only mode. A real dir without package.json still works.
+	if fi, err := os.Stat(absDir); err != nil {
+		return fmt.Errorf("dew up %s: %w", dir, err)
+	} else if !fi.IsDir() {
+		return fmt.Errorf("dew up: %s is not a directory", dir)
+	}
 
 	// The dev-server half is Node-only; with --with the project is optional
 	// (services can run on their own). Only a genuine "not found" means no
