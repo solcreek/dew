@@ -608,7 +608,14 @@ func startWithServices(names []string) (func(), error) {
 		os.Exit(130)
 	}()
 	for _, name := range names {
-		s := *services.Lookup(name)
+		svc := services.Lookup(name)
+		if svc == nil {
+			// cmdUp validates names first, but don't panic if a future
+			// caller doesn't — this function already returns an error.
+			stop()
+			return nil, fmt.Errorf("unknown service %q", name)
+		}
+		s := *svc
 		fmt.Printf("dew: starting %s (%s)...\n", name, s.Image)
 		conn, err := startService(s)
 		if err != nil {
