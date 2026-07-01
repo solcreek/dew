@@ -172,6 +172,14 @@ jobs:
           mkdir -p /tmp/wsl-rootfs
           cd /tmp/wsl-rootfs
           gzip -dc $GITHUB_WORKSPACE/initramfs/initramfs-standard.cpio.gz | cpio -id 2>/dev/null
+          # Tailor the VM rootfs for WSL2: it supplies its own kernel + init
+          # at runtime, so the VM kernel modules and our two-stage /init are
+          # dead files here. Drop them, and add a wsl.conf so the distro has a
+          # stable identity (hostname "dew", root user) instead of inheriting
+          # the Windows host name. See cmd/dew-win.
+          rm -rf ./lib/modules ./init ./init-stage2
+          mkdir -p ./etc
+          printf '[user]\ndefault=root\n[network]\nhostname=dew\ngenerateHosts=true\n' > ./etc/wsl.conf
           tar czf $GITHUB_WORKSPACE/dew-rootfs-x86_64.tar.gz .
 
       # aarch64 initramfs is cross-built from the Linux x86_64 runner so the
@@ -205,6 +213,10 @@ jobs:
           mkdir -p /tmp/wsl-rootfs-aarch64
           cd /tmp/wsl-rootfs-aarch64
           gzip -dc $GITHUB_WORKSPACE/initramfs/initramfs-standard.cpio.gz | cpio -id 2>/dev/null
+          # Same WSL2 tailoring as the x86_64 rootfs above.
+          rm -rf ./lib/modules ./init ./init-stage2
+          mkdir -p ./etc
+          printf '[user]\ndefault=root\n[network]\nhostname=dew\ngenerateHosts=true\n' > ./etc/wsl.conf
           tar czf $GITHUB_WORKSPACE/dew-rootfs-aarch64.tar.gz .
 
       - name: Compute asset SHAs (for dew binary's embedded manifest)
