@@ -161,7 +161,10 @@ Check "service container is running" {
     (wsl -d dew -e podman ps --format '{{.Names}}' | Out-String) -match 'dew-svc-redis'
 }
 # Let the dev server self-exit so stop() removes the container, then verify.
+# If it overruns the wait, kill it so we don't leak a running dew up into
+# later checks.
 if (-not $svc.HasExited) { $svc.WaitForExit(25000) | Out-Null }
+if (-not $svc.HasExited) { $svc.Kill() }
 Start-Sleep -Seconds 2
 Check "service container removed after dev server exits" {
     -not ((wsl -d dew -e podman ps -a --format '{{.Names}}' | Out-String) -match 'dew-svc-redis')
