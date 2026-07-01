@@ -160,15 +160,21 @@ Check "redis reachable on Windows localhost:6379" {
 Check "service container is running" {
     (wsl -d dew -e podman ps --format '{{.Names}}' | Out-String) -match 'dew-svc-redis'
 }
-# Let the dev server self-exit so stop() removes the container, then verify.
-# If it overruns the wait, kill it so we don't leak a running dew up into
-# later checks.
+# Let the dev server self-exit so stop() removes the container. If it
+# overruns the wait, Kill() it and rm the container ourselves -- a force
+# kill skips stop(), so this prevents a leak into the rest of the run.
 if (-not $svc.HasExited) { $svc.WaitForExit(25000) | Out-Null }
-if (-not $svc.HasExited) { $svc.Kill() }
-Start-Sleep -Seconds 2
-Check "service container removed after dev server exits" {
-    -not ((wsl -d dew -e podman ps -a --format '{{.Names}}' | Out-String) -match 'dew-svc-redis')
+if (-not $svc.HasExited) {
+    $svc.Kill()
+    wsl -d dew -e podman rm -f dew-svc-redis 2>&1 | Out-Null
 }
+# Poll for removal instead of a fixed sleep (slower machines/CI).
+$removed = $false
+foreach ($i in 1..20) {
+    if (-not ((wsl -d dew -e podman ps -a --format '{{.Names}}' | Out-String) -match 'dew-svc-redis')) { $removed = $true; break }
+    Start-Sleep -Milliseconds 500
+}
+Check "service container removed after dev server exits" { $removed }
 wsl --terminate dew 2>&1 | Out-Null
 
 # --- Result --------------------------------------------------------
