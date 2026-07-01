@@ -133,6 +133,17 @@ func wslInstalled() bool {
 	return err == nil
 }
 
+// withWSLStderr enriches a wslQuery error with wsl.exe's captured stderr
+// (cmd.Output stashes it in ExitError.Stderr), so a failed control
+// command surfaces the actual wsl message rather than a bare exit code.
+func withWSLStderr(err error) error {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(ee.Stderr)))
+	}
+	return err
+}
+
 // distroExists checks if the dew distro is already imported.
 //
 // Probes the distro directly with `wsl -d dew -- true` instead of
@@ -341,9 +352,11 @@ func cmdVM(args []string) error {
 		if !wslInstalled() {
 			return fmt.Errorf("WSL2 not installed")
 		}
-		// Idempotent: terminating a non-running distro exits 0.
+		// Idempotent: terminating a non-running distro exits 0. On real
+		// failure, surface wsl.exe's own stderr so the message is
+		// diagnosable instead of a bare "exit status N".
 		if _, err := wslQuery("--terminate", distroName); err != nil {
-			return fmt.Errorf("wsl --terminate %s: %w", distroName, err)
+			return fmt.Errorf("wsl --terminate %s: %w", distroName, withWSLStderr(err))
 		}
 		fmt.Println("dew: stopped")
 		return nil
