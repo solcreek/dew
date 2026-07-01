@@ -649,8 +649,14 @@ func formatVMList(all, running map[string]bool) string {
 }
 
 // wslConfigPath returns the per-user .wslconfig path (global WSL2 tuning).
+// If the home dir can't be resolved, fall back to %USERPROFILE% rather
+// than a bare relative ".wslconfig", which would read the wrong file and
+// print a misleading path in dew env / doctor.
 func wslConfigPath() string {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = os.Getenv("USERPROFILE")
+	}
 	return filepath.Join(home, ".wslconfig")
 }
 
@@ -840,13 +846,18 @@ func cmdDoctor() error {
 		} else {
 			registered = reg
 			if registered {
-				if run, err := distroRunningNow(); err == nil {
+				run, err := distroRunningNow()
+				if err != nil {
+					// Same list subsystem failed; report it via listErr and
+					// skip the node probe rather than misreport "stopped".
+					listErr = err.Error()
+				} else {
 					running = run
-				}
-				// Probing node starts the distro — acceptable for an active
-				// diagnostic. Only meaningful once imported.
-				if out, err := wslQuery("-d", distroName, "--exec", "node", "--version"); err == nil {
-					nodeVersion = strings.TrimSpace(string(out))
+					// Probing node starts the distro — acceptable for an active
+					// diagnostic. Only meaningful once imported.
+					if out, err := wslQuery("-d", distroName, "--exec", "node", "--version"); err == nil {
+						nodeVersion = strings.TrimSpace(string(out))
+					}
 				}
 			}
 		}
