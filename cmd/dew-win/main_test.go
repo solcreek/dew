@@ -582,6 +582,23 @@ func TestCmdServicesJSON(t *testing.T) {
 	}
 }
 
+func TestCmdServicesPropagatesProbeError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "dew.toml"),
+		[]byte("[[service]]\n  name = \"redis\"\n  image = \"redis\"\n  port = 6379\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// wsl not installed -> the running-state probe fails. cmdServices must
+	// surface that error rather than report every service stopped.
+	var got error
+	withStubWSL(t, false, nil, nil, func() {
+		got = cmdServices([]string{"--json", dir})
+	})
+	if got == nil {
+		t.Fatal("cmdServices with a failing probe = nil, want an error")
+	}
+}
+
 func TestSplitExecJSONFlag(t *testing.T) {
 	cases := []struct {
 		name     string
