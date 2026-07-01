@@ -578,6 +578,10 @@ func startWithServices(names []string) (func(), error) {
 		<-sig
 		fmt.Println("\ndew: stopping services...")
 		stop()
+		// The dev server runs as a child wsl.exe; on Windows, exiting dew
+		// doesn't reliably kill it, so terminate the distro to bring down
+		// the dev server (and anything else) before we exit.
+		exec.Command("wsl", "--terminate", distroName).Run()
 		os.Exit(130)
 	}()
 	for _, name := range names {
@@ -638,6 +642,11 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Guarantee cleanup on every early error return below (winPathToWSL,
+	// npm install, missing script). The dev-server path calls stop()
+	// explicitly before its os.Exit (which would skip this defer), and the
+	// Ctrl+C handler stops them too; stopServices is idempotent.
+	defer stop()
 
 	// Services-only: no project to run, so hold the distro open (which keeps
 	// the containers alive) until Ctrl+C, handled by startWithServices.
@@ -691,13 +700,13 @@ func cmdUp(args []string) error {
 	dev.Stdout = os.Stdout
 	dev.Stderr = os.Stderr
 	runErr := dev.Run()
-	// Stop services after the dev server exits. runPassthrough's os.Exit
-	// can't be used here — it would skip this cleanup.
-	stop()
 	var ee *exec.ExitError
 	if errors.As(runErr, &ee) {
+		// os.Exit skips the deferred stop(), so clean up explicitly first.
+		stop()
 		os.Exit(ee.ExitCode())
 	}
+	// Non-exit-code paths fall through to the deferred stop().
 	return runErr
 }
 
