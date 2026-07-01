@@ -24,6 +24,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -444,17 +445,55 @@ func execWSLArgs(args []string) []string {
 // arrives byte-for-byte. Stdin/stdout/stderr connect straight through
 // so interactive commands work and the exit code propagates.
 func cmdExec(args []string) error {
+	// grove drives `dew exec --json sh -c CMD`, placing --json right after exec
+	// (a trailing --json would be handed to the guest sh). So only a LEADING
+	// --json is dew's own flag; strip it and switch to the captured-envelope
+	// path. Any later --json stays part of the guest argv.
+	jsonOut := false
+	if len(args) > 0 && args[0] == "--json" {
+		jsonOut = true
+		args = args[1:]
+	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: dew exec <cmd> [args...]")
+		return fmt.Errorf("usage: dew exec [--json] <cmd> [args...]")
 	}
 	if err := ensureDistro(); err != nil {
 		return err
+	}
+	if jsonOut {
+		return cmdExecJSON(args)
 	}
 	cmd := exec.Command("wsl", execWSLArgs(args)...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return runPassthrough(cmd)
+}
+
+// cmdExecJSON runs the guest command capturing stdout/stderr and the guest exit
+// code, then emits the ok-envelope grove's dewbridge parses. dew "succeeded"
+// (ok:true) whenever it dispatched the command — a non-zero guest exit is
+// carried in guest_exit_code, which grove turns into a GuestExitError. So this
+// exits 0 even when the guest command failed; the envelope holds the real code.
+// Only a genuine dispatch failure (wsl missing, etc.) is returned as an error.
+func cmdExecJSON(args []string) error {
+	cmd := exec.Command("wsl", execWSLArgs(args)...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	code := 0
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) {
+			return err
+		}
+		code = ee.ExitCode()
+	}
+	return emitEnvelope(map[string]any{
+		"guest_exit_code": code,
+		"stdout":          stdout.String(),
+		"stderr":          stderr.String(),
+	})
 }
 
 // parseUpArgs extracts the project dir and any `--with <csv>` /
