@@ -25,6 +25,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -344,6 +345,25 @@ func cmdVM(args []string) error {
 	}
 }
 
+// runPassthrough runs an already-wired exec.Cmd and, when the command
+// ran but exited non-zero, exits the dew process with that same code
+// and stays silent — the command's own stderr already explained the
+// failure, so a wrapping "dew: exit status N" line would just be noise
+// that also flattens every failure to exit 1. Errors that mean the
+// command never ran (wsl.exe missing, distro gone) are returned so the
+// caller can surface them. Returns nil only on success.
+func runPassthrough(cmd *exec.Cmd) error {
+	err := cmd.Run()
+	if err == nil {
+		return nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		os.Exit(exitErr.ExitCode())
+	}
+	return err
+}
+
 // cmdExec runs a command inside the WSL2 distro, passing the caller's
 // argv through unchanged (docker-exec semantics: no shell unless the
 // caller asks for one via `dew exec sh -c '...'`).
@@ -367,7 +387,7 @@ func cmdExec(args []string) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return runPassthrough(cmd)
 }
 
 // cmdUp detects a Node-style project in dir (or cwd) and runs its
@@ -448,7 +468,7 @@ func cmdUp(args []string) error {
 	dev.Stdin = os.Stdin
 	dev.Stdout = os.Stdout
 	dev.Stderr = os.Stderr
-	return dev.Run()
+	return runPassthrough(dev)
 }
 
 // winPathToWSL converts a Windows absolute path into its WSL2
