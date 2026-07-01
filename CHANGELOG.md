@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **WSL2 rootfs is now tailored for WSL** instead of the `standard` VM
+  initramfs repackaged verbatim. WSL2 supplies its own kernel and init at
+  runtime, so the Alpine VM kernel modules and the two-stage `/init` are
+  dropped, and `/etc/wsl.conf` is added so the `dew` distro has a stable
+  identity (hostname `dew`, root default user, generated hosts) rather than
+  inheriting the Windows host name. Verified on real Windows 11: the tailored
+  rootfs imports cleanly, Node still works, and `wsl -d dew hostname` returns
+  `dew`.
+
 ## [0.8.5] - 2026-06-29
 
 ### Added
