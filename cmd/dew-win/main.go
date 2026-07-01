@@ -445,15 +445,7 @@ func execWSLArgs(args []string) []string {
 // arrives byte-for-byte. Stdin/stdout/stderr connect straight through
 // so interactive commands work and the exit code propagates.
 func cmdExec(args []string) error {
-	// grove drives `dew exec --json sh -c CMD`, placing --json right after exec
-	// (a trailing --json would be handed to the guest sh). So only a LEADING
-	// --json is dew's own flag; strip it and switch to the captured-envelope
-	// path. Any later --json stays part of the guest argv.
-	jsonOut := false
-	if len(args) > 0 && args[0] == "--json" {
-		jsonOut = true
-		args = args[1:]
-	}
+	jsonOut, args := splitExecJSONFlag(args)
 	if len(args) == 0 {
 		return fmt.Errorf("usage: dew exec [--json] <cmd> [args...]")
 	}
@@ -468,6 +460,18 @@ func cmdExec(args []string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return runPassthrough(cmd)
+}
+
+// splitExecJSONFlag separates dew's own --json flag from the guest argv. grove
+// drives `dew exec --json sh -c CMD`, placing --json right after exec, because
+// a trailing --json would be handed to the guest sh. So ONLY a leading --json
+// is dew's flag; it is stripped and the rest is the guest command. Any later
+// --json stays part of the guest argv, untouched.
+func splitExecJSONFlag(args []string) (jsonOut bool, rest []string) {
+	if len(args) > 0 && args[0] == "--json" {
+		return true, args[1:]
+	}
+	return false, args
 }
 
 // cmdExecJSON runs the guest command capturing stdout/stderr and the guest exit
@@ -689,7 +693,9 @@ func engineMarkerPath() (string, error) {
 	return filepath.Join(home, ".local", "state", "dew", "default.sock"), nil
 }
 
-// writeEngineMarker creates the readiness marker after services are up.
+// writeEngineMarker creates the readiness marker. It is written as soon as the
+// distro is up (before services are pulled/started), so grove's readiness poll
+// doesn't wait out a slow first image pull — see cmdUpServicesEngine.
 func writeEngineMarker() error {
 	p, err := engineMarkerPath()
 	if err != nil {
@@ -751,6 +757,7 @@ func runningServiceContainers() map[string]bool {
 func cmdServices(args []string) error {
 	jsonOut := false
 	dir := "."
+	dirSet := false
 	for _, a := range args {
 		switch {
 		case a == "--json":
@@ -758,7 +765,12 @@ func cmdServices(args []string) error {
 		case strings.HasPrefix(a, "-"):
 			return fmt.Errorf("unknown flag %q for dew services", a)
 		default:
-			dir = a
+			// Reject a second positional rather than silently taking the last,
+			// matching dew up (a typoed extra path is a user error, not the dir).
+			if dirSet {
+				return fmt.Errorf("dew services takes at most one dir, got %q and %q", dir, a)
+			}
+			dir, dirSet = a, true
 		}
 	}
 

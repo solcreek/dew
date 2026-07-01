@@ -582,6 +582,42 @@ func TestCmdServicesJSON(t *testing.T) {
 	}
 }
 
+func TestSplitExecJSONFlag(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		wantJSON bool
+		wantRest []string
+	}{
+		{"leading --json triggers envelope", []string{"--json", "sh", "-c", "echo hi"}, true, []string{"sh", "-c", "echo hi"}},
+		{"no --json is passthrough", []string{"sh", "-c", "echo hi"}, false, []string{"sh", "-c", "echo hi"}},
+		{"non-leading --json stays guest argv", []string{"sh", "-c", "printf --json"}, false, []string{"sh", "-c", "printf --json"}},
+		{"only --json", []string{"--json"}, true, []string{}},
+		{"empty", nil, false, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotJSON, gotRest := splitExecJSONFlag(c.args)
+			if gotJSON != c.wantJSON {
+				t.Errorf("jsonOut = %v, want %v", gotJSON, c.wantJSON)
+			}
+			if !reflect.DeepEqual(gotRest, c.wantRest) {
+				t.Errorf("rest = %v, want %v", gotRest, c.wantRest)
+			}
+		})
+	}
+}
+
+func TestCmdServicesRejectsMultipleDirs(t *testing.T) {
+	err := cmdServices([]string{"./a", "./b"})
+	if err == nil {
+		t.Fatal("cmdServices(./a ./b) = nil, want an error rejecting the second dir")
+	}
+	if !strings.Contains(err.Error(), "at most one dir") {
+		t.Errorf("error = %q, want it to mention 'at most one dir'", err)
+	}
+}
+
 func TestSplitCSV(t *testing.T) {
 	cases := []struct {
 		in   string
