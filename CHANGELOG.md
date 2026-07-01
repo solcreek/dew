@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **WSL2 rootfs is now tailored for WSL** instead of the `standard` VM
+- **The WSL2 rootfs is now purpose-built** instead of the `standard` VM
   initramfs repackaged verbatim. WSL2 supplies its own kernel and init at
   runtime, so the Alpine VM kernel modules and the two-stage `/init` are
   dropped, and `/etc/wsl.conf` is added so the `dew` distro has a stable
