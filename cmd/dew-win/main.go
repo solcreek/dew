@@ -686,22 +686,44 @@ func serviceFromDewfile(s dewfile.Service) services.Service {
 // cmdUpServicesEngine runs dew-win as grove's services engine. grove renders a
 // union dew.toml (one [[service]] per installed app), sets cwd to that dir, and
 // spawns `dew up --services-only` DETACHED; it then polls the readiness marker
-// to decide the engine is up. So we load the dew.toml from dir, start each
-// service via podman on the distro's host network, drop the marker, and stay
-// foreground holding the distro (and its containers) alive until `dew vm stop`
-// terminates it or Ctrl+C. An empty union still boots the distro + marker, so
-// grove's bare-VM path (no apps) is satisfied too.
+// to decide the engine is up. So we boot the distro, drop the marker, load the
+// dew.toml from dir, start each service via podman on the distro's host
+// network, and stay foreground holding the distro (and its containers) alive
+// until `dew vm stop` terminates it or Ctrl+C. An empty union still boots the
+// distro + marker, so grove's bare-VM path (no apps) is satisfied too.
 func cmdUpServicesEngine(dir string) error {
 	if err := ensureDistro(); err != nil {
 		return err
 	}
+	// Drop the readiness marker as soon as the distro is up — matching macOS
+	// dew, where the daemon socket appears when the VM boots, before images
+	// are pulled. grove health-checks each app separately (with its own
+	// generous timeout), so a slow first image pull can't blow the engine's
+	// much shorter readiness window.
+	if err := writeEngineMarker(); err != nil {
+		return fmt.Errorf("write engine marker: %w", err)
+	}
+	// The engine is a detached daemon under grove, so Ctrl+C must clean up
+	// itself: clear the marker and terminate the distro (which kills the
+	// host-network containers) before exiting.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	go func() {
+		<-sig
+		removeEngineMarker()
+		exec.Command("wsl", "--terminate", distroName).Run()
+		os.Exit(130)
+	}()
+
 	f, err := dewfile.Load(dir)
 	if err != nil {
+		removeEngineMarker()
 		return fmt.Errorf("load dew.toml: %w", err)
 	}
 	var started []string
 	if f != nil && len(f.Services) > 0 {
 		if err := ensurePodman(); err != nil {
+			removeEngineMarker()
 			return err
 		}
 		for _, ds := range f.Services {
@@ -709,37 +731,19 @@ func cmdUpServicesEngine(dir string) error {
 			fmt.Printf("dew: starting %s (%s)...\n", s.Name, s.Image)
 			if _, err := startService(s); err != nil {
 				stopServices(started)
+				removeEngineMarker()
 				return err
 			}
 			started = append(started, s.Name)
 			fmt.Printf("dew:   %s ready\n", s.Name)
 		}
 	}
-
-	if err := writeEngineMarker(); err != nil {
-		stopServices(started)
-		return fmt.Errorf("write engine marker: %w", err)
-	}
-	cleanup := func() {
-		removeEngineMarker()
-		stopServices(started)
-	}
-	// The engine is a detached daemon under grove; the dev server's os.Exit
-	// path doesn't apply, so Ctrl+C must clean up itself.
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
-	go func() {
-		<-sig
-		cleanup()
-		exec.Command("wsl", "--terminate", distroName).Run()
-		os.Exit(130)
-	}()
 	fmt.Println("dew: services engine ready")
 	// Hold the distro open — an active wsl session keeps WSL2 (and the
 	// host-network containers) alive. Returns when `dew vm stop` runs
 	// `wsl --terminate`, at which point we clear the marker and exit.
 	exec.Command("wsl", "-d", distroName, "--exec", "sh", "-c", "while true; do sleep 86400; done").Run()
-	cleanup()
+	removeEngineMarker()
 	return nil
 }
 
