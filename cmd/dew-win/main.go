@@ -684,8 +684,15 @@ func cmdEnv() error {
 	if mirroredNetworkingEnabled() {
 		mirrored = "on"
 	}
+	// distroState() reports "not installed" both when WSL2 is absent and
+	// when the distro just isn't imported. Distinguish the former so
+	// `dew env` doesn't blame the distro for a missing WSL2.
+	state := distroState()
+	if !wslInstalled() {
+		state = "WSL2 not installed"
+	}
 	fmt.Printf("distro         %s\n", distroName)
-	fmt.Printf("state          %s\n", distroState())
+	fmt.Printf("state          %s\n", state)
 	fmt.Printf("data dir       %s\n", dataDir)
 	fmt.Printf("rootfs         %s (%s)\n", rootfs, rootfsState)
 	fmt.Printf("wslconfig      %s\n", wslConfigPath())
