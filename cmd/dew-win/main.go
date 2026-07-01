@@ -485,7 +485,22 @@ func parseUpArgs(args []string) (dir string, with []string, err error) {
 			dir, dirSet = a, true
 		}
 	}
-	return dir, with, nil
+	return dir, dedupPreserveOrder(with), nil
+}
+
+// dedupPreserveOrder removes duplicate names, keeping first-seen order, so
+// `--with redis,redis` (or repeated --with flags) doesn't start the same
+// container twice.
+func dedupPreserveOrder(names []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, n := range names {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // splitCSV splits a comma-separated list, dropping blanks.

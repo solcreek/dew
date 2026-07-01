@@ -472,6 +472,7 @@ func TestParseUpArgs(t *testing.T) {
 		{"dir and with", []string{"./app", "--with", "redis"}, "./app", []string{"redis"}, false},
 		{"with then dir (PR example)", []string{"--with", "redis", "./app"}, "./app", []string{"redis"}, false},
 		{"csv trims blanks", []string{"--with", "a, b ,,c"}, ".", []string{"a", "b", "c"}, false},
+		{"dedup preserves order", []string{"--with", "redis,redis,postgres,redis"}, ".", []string{"redis", "postgres"}, false},
 		{"with needs arg", []string{"--with"}, "", nil, true},
 		{"with empty equals rejected", []string{"--with="}, "", nil, true},
 		{"with blank value rejected", []string{"--with", "  ,  "}, "", nil, true},
