@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/solcreek/dew/internal/services"
 )
 
 // withStubWSL replaces the wslQuery seam with a fake that answers the
@@ -452,6 +454,96 @@ func TestCmdRun(t *testing.T) {
 func TestDewDataDir(t *testing.T) {
 	if got := dewDataDir(); !strings.HasSuffix(got, ".dew") {
 		t.Errorf("dewDataDir() = %q, want a path ending in .dew", got)
+	}
+}
+
+func TestParseUpArgs(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		dir     string
+		with    []string
+		wantErr bool
+	}{
+		{"empty", nil, ".", nil, false},
+		{"dir only", []string{"./app"}, "./app", nil, false},
+		{"with space form", []string{"--with", "postgres,redis"}, ".", []string{"postgres", "redis"}, false},
+		{"with equals form", []string{"--with=postgres"}, ".", []string{"postgres"}, false},
+		{"dir and with", []string{"./app", "--with", "redis"}, "./app", []string{"redis"}, false},
+		{"csv trims blanks", []string{"--with", "a, b ,,c"}, ".", []string{"a", "b", "c"}, false},
+		{"with needs arg", []string{"--with"}, "", nil, true},
+		{"unknown flag", []string{"--bogus"}, "", nil, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir, with, err := parseUpArgs(c.args)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, c.wantErr)
+			}
+			if c.wantErr {
+				return
+			}
+			if dir != c.dir {
+				t.Errorf("dir = %q, want %q", dir, c.dir)
+			}
+			if !reflect.DeepEqual(with, c.with) {
+				t.Errorf("with = %v, want %v", with, c.with)
+			}
+		})
+	}
+}
+
+func TestSplitCSV(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"a,b,c", []string{"a", "b", "c"}},
+		{"a, b ,,c", []string{"a", "b", "c"}},
+		{"", nil},
+		{"   ", nil},
+		{"solo", []string{"solo"}},
+	}
+	for _, c := range cases {
+		if got := splitCSV(c.in); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("splitCSV(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestServiceContainer(t *testing.T) {
+	if got := serviceContainer("redis"); got != "dew-svc-redis" {
+		t.Errorf("serviceContainer(redis) = %q, want dew-svc-redis", got)
+	}
+}
+
+func TestPodmanRunArgs(t *testing.T) {
+	// No env, no server args: exact argv.
+	redis := services.Service{Name: "redis", Image: "docker.io/library/redis:7-alpine", Port: 6379}
+	want := []string{"-d", "dew", "--exec", "podman", "run", "-d",
+		"--name", "dew-svc-redis", "--network=host", "docker.io/library/redis:7-alpine"}
+	if got := podmanRunArgs(redis); !reflect.DeepEqual(got, want) {
+		t.Errorf("redis: got %v, want %v", got, want)
+	}
+
+	// Env pairs must precede the image; server args must follow it.
+	mysql := services.Service{
+		Name: "mysql", Image: "docker.io/library/mysql:8-oracle", Port: 3306,
+		Env:  []string{"MYSQL_ROOT_PASSWORD=dew"},
+		Args: []string{"--bind-address=0.0.0.0"},
+	}
+	got := podmanRunArgs(mysql)
+	if !slices.Contains(got, "--network=host") {
+		t.Errorf("mysql: --network=host missing in %v", got)
+	}
+	env := slices.Index(got, "MYSQL_ROOT_PASSWORD=dew")
+	img := slices.Index(got, mysql.Image)
+	arg := slices.Index(got, "--bind-address=0.0.0.0")
+	if env < 0 || img < 0 || arg < 0 {
+		t.Fatalf("mysql: missing element in %v", got)
+	}
+	if !(env < img && img < arg) {
+		t.Errorf("mysql: order wrong (env=%d img=%d arg=%d) in %v", env, img, arg, got)
 	}
 }
 
