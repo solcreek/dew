@@ -174,12 +174,17 @@ func distroExists() bool {
 // stripping stray NUL bytes recovers ASCII names even if a legacy
 // build still emits UTF-16LE, sidestepping the encoding trap that made
 // earlier `wsl -l` parsing unreliable.
-func distroListNames(extra ...string) map[string]bool {
+//
+// A non-nil error means wsl.exe itself failed (e.g. a transient WSL
+// service issue). Callers that report status must surface it rather
+// than treat a failure as "no distros" — otherwise `dew vm status`
+// would misreport a live-but-unlistable WSL as "not installed".
+func distroListNames(extra ...string) (map[string]bool, error) {
 	out, err := wslQuery(append([]string{"--list", "--quiet"}, extra...)...)
 	if err != nil {
-		return map[string]bool{}
+		return nil, withWSLStderr(err)
 	}
-	return parseDistroNames(out)
+	return parseDistroNames(out), nil
 }
 
 // parseDistroNames extracts the set of distro names from `wsl --list
@@ -197,14 +202,20 @@ func parseDistroNames(out []byte) map[string]bool {
 
 // distroRegistered reports whether the dew distro is imported, without
 // starting it — contrast distroExists, whose `true` probe starts the
-// distro as a side effect.
-func distroRegistered() bool { return distroListNames()[distroName] }
+// distro as a side effect. Propagates a wsl --list failure.
+func distroRegistered() (bool, error) {
+	names, err := distroListNames()
+	return names[distroName], err
+}
 
 // distroRunningNow reports whether the dew distro is currently running,
 // without starting it. `wsl --list --running` lists only running
 // distros, so this is a name lookup — immune to STATE-column
-// localization on non-English Windows.
-func distroRunningNow() bool { return distroListNames("--running")[distroName] }
+// localization on non-English Windows. Propagates a wsl --list failure.
+func distroRunningNow() (bool, error) {
+	names, err := distroListNames("--running")
+	return names[distroName], err
+}
 
 // dewDataDir returns the Windows data directory for Dew.
 func dewDataDir() string {
@@ -365,7 +376,11 @@ func cmdVM(args []string) error {
 			fmt.Println("dew: WSL2 not installed")
 			return nil
 		}
-		fmt.Println(vmStatusLine())
+		line, err := vmStatusLine()
+		if err != nil {
+			return fmt.Errorf("wsl --list: %w", err)
+		}
+		fmt.Println(line)
 		return nil
 	case "list":
 		if !wslInstalled() {
@@ -588,12 +603,19 @@ func stripLeadingSeparator(args []string) []string {
 // vmList prints every registered WSL2 distro and its run state, marking
 // the dew-managed one. Passive: it never starts a distro.
 func vmList() error {
-	all := distroListNames()
+	all, err := distroListNames()
+	if err != nil {
+		return fmt.Errorf("wsl --list: %w", err)
+	}
 	if len(all) == 0 {
 		fmt.Println("dew: no WSL2 distros registered")
 		return nil
 	}
-	fmt.Print(formatVMList(all, distroListNames("--running")))
+	running, err := distroListNames("--running")
+	if err != nil {
+		return fmt.Errorf("wsl --list --running: %w", err)
+	}
+	fmt.Print(formatVMList(all, running))
 	return nil
 }
 
@@ -660,27 +682,40 @@ func hasMirroredNetworking(data []byte) bool {
 }
 
 // distroState returns "not installed" / "stopped" / "running" for the
-// dew distro without starting it.
-func distroState() string {
-	if !distroRegistered() {
-		return "not installed"
+// dew distro without starting it. A non-nil error means `wsl --list`
+// failed, so the state is genuinely unknown (not "not installed").
+func distroState() (string, error) {
+	registered, err := distroRegistered()
+	if err != nil {
+		return "", err
 	}
-	if distroRunningNow() {
-		return "running"
+	if !registered {
+		return "not installed", nil
 	}
-	return "stopped"
+	running, err := distroRunningNow()
+	if err != nil {
+		return "", err
+	}
+	if running {
+		return "running", nil
+	}
+	return "stopped", nil
 }
 
 // vmStatusLine is the human line printed by `dew vm status`, derived
 // passively from distroState (never starts the distro).
-func vmStatusLine() string {
-	switch distroState() {
+func vmStatusLine() (string, error) {
+	state, err := distroState()
+	if err != nil {
+		return "", err
+	}
+	switch state {
 	case "not installed":
-		return "dew: not installed (run: dew setup)"
+		return "dew: not installed (run: dew setup)", nil
 	case "running":
-		return "dew: running"
+		return "dew: running", nil
 	default:
-		return "dew: stopped"
+		return "dew: stopped", nil
 	}
 }
 
@@ -697,12 +732,16 @@ func cmdEnv() error {
 	if mirroredNetworkingEnabled() {
 		mirrored = "on"
 	}
-	// distroState() reports "not installed" both when WSL2 is absent and
-	// when the distro just isn't imported. Distinguish the former so
-	// `dew env` doesn't blame the distro for a missing WSL2.
-	state := distroState()
-	if !wslInstalled() {
-		state = "WSL2 not installed"
+	// Report a missing WSL2 distinctly from an un-imported distro, and a
+	// failed `wsl --list` distinctly from both, so `dew env` never blames
+	// the distro for a WSL-level problem.
+	state := "WSL2 not installed"
+	if wslInstalled() {
+		if s, err := distroState(); err != nil {
+			state = "unknown (wsl --list failed)"
+		} else {
+			state = s
+		}
 	}
 	fmt.Printf("distro         %s\n", distroName)
 	fmt.Printf("state          %s\n", state)
@@ -724,6 +763,7 @@ type doctorCheck struct {
 // the decision logic is unit-testable without a live WSL2.
 type doctorInputs struct {
 	wslInstalled  bool
+	listErr       string // non-empty if `wsl --list` failed despite WSL present
 	registered    bool
 	running       bool
 	nodeVersion   string // "" when node is absent or the distro isn't up
@@ -750,20 +790,26 @@ func doctorReport(in doctorInputs) (checks []doctorCheck, healthy bool) {
 	}
 	add("OK", "wsl2", "installed")
 
-	switch {
-	case !in.registered:
-		add("FAIL", "distro", fmt.Sprintf("%q not imported - run: dew setup", distroName))
-	case in.running:
-		add("OK", "distro", fmt.Sprintf("%q running", distroName))
-	default:
-		add("OK", "distro", fmt.Sprintf("%q registered (stopped)", distroName))
-	}
+	// A wsl --list failure means we can't tell registered/running apart;
+	// report it instead of misclaiming the distro isn't imported.
+	if in.listErr != "" {
+		add("FAIL", "distro", "cannot list distros: "+in.listErr)
+	} else {
+		switch {
+		case !in.registered:
+			add("FAIL", "distro", fmt.Sprintf("%q not imported - run: dew setup", distroName))
+		case in.running:
+			add("OK", "distro", fmt.Sprintf("%q running", distroName))
+		default:
+			add("OK", "distro", fmt.Sprintf("%q registered (stopped)", distroName))
+		}
 
-	if in.registered {
-		if in.nodeVersion != "" {
-			add("OK", "node", in.nodeVersion)
-		} else {
-			add("WARN", "node", "not found in distro (dew up needs it)")
+		if in.registered {
+			if in.nodeVersion != "" {
+				add("OK", "node", in.nodeVersion)
+			} else {
+				add("WARN", "node", "not found in distro (dew up needs it)")
+			}
 		}
 	}
 
@@ -786,15 +832,22 @@ func doctorReport(in doctorInputs) (checks []doctorCheck, healthy bool) {
 // on `dew doctor`. The decision logic lives in doctorReport.
 func cmdDoctor() error {
 	installed := wslInstalled()
-	registered, running, nodeVersion := false, false, ""
+	registered, running, nodeVersion, listErr := false, false, "", ""
 	if installed {
-		registered = distroRegistered()
-		if registered {
-			running = distroRunningNow()
-			// Probing node starts the distro — acceptable for an active
-			// diagnostic. Only meaningful once imported.
-			if out, err := wslQuery("-d", distroName, "--exec", "node", "--version"); err == nil {
-				nodeVersion = strings.TrimSpace(string(out))
+		reg, err := distroRegistered()
+		if err != nil {
+			listErr = err.Error()
+		} else {
+			registered = reg
+			if registered {
+				if run, err := distroRunningNow(); err == nil {
+					running = run
+				}
+				// Probing node starts the distro — acceptable for an active
+				// diagnostic. Only meaningful once imported.
+				if out, err := wslQuery("-d", distroName, "--exec", "node", "--version"); err == nil {
+					nodeVersion = strings.TrimSpace(string(out))
+				}
 			}
 		}
 	}
@@ -805,6 +858,7 @@ func cmdDoctor() error {
 
 	checks, healthy := doctorReport(doctorInputs{
 		wslInstalled:  installed,
+		listErr:       listErr,
 		registered:    registered,
 		running:       running,
 		nodeVersion:   nodeVersion,

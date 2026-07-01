@@ -242,36 +242,37 @@ func TestWslInstalled(t *testing.T) {
 
 func TestDistroHelpersAndState(t *testing.T) {
 	withStubWSL(t, true, []string{"Ubuntu", "dew"}, []string{"dew"}, func() {
-		if !distroRegistered() {
-			t.Error("distroRegistered() = false, want true")
+		if reg, err := distroRegistered(); err != nil || !reg {
+			t.Errorf("distroRegistered() = %v, %v; want true, nil", reg, err)
 		}
-		if !distroRunningNow() {
-			t.Error("distroRunningNow() = false, want true")
+		if run, err := distroRunningNow(); err != nil || !run {
+			t.Errorf("distroRunningNow() = %v, %v; want true, nil", run, err)
 		}
-		if got := distroState(); got != "running" {
-			t.Errorf("distroState() = %q, want running", got)
+		if got, err := distroState(); err != nil || got != "running" {
+			t.Errorf("distroState() = %q, %v; want running, nil", got, err)
 		}
 	})
 	withStubWSL(t, true, []string{"Ubuntu", "dew"}, nil, func() {
-		if got := distroState(); got != "stopped" {
-			t.Errorf("distroState() = %q, want stopped", got)
+		if got, err := distroState(); err != nil || got != "stopped" {
+			t.Errorf("distroState() = %q, %v; want stopped, nil", got, err)
 		}
 	})
 	withStubWSL(t, true, []string{"Ubuntu"}, nil, func() {
-		if distroRegistered() {
-			t.Error("distroRegistered() = true, want false")
+		if reg, err := distroRegistered(); err != nil || reg {
+			t.Errorf("distroRegistered() = %v, %v; want false, nil", reg, err)
 		}
-		if got := distroState(); got != "not installed" {
-			t.Errorf("distroState() = %q, want not installed", got)
+		if got, err := distroState(); err != nil || got != "not installed" {
+			t.Errorf("distroState() = %q, %v; want not installed, nil", got, err)
 		}
 	})
-	// When wsl.exe errors (not installed), the list is empty, not a panic.
+	// When wsl.exe errors, the helpers return an error (not a silent empty
+	// set), so callers can surface it instead of misreporting "not installed".
 	withStubWSL(t, false, nil, nil, func() {
-		if distroRegistered() {
-			t.Error("distroRegistered() = true with wsl absent, want false")
+		if _, err := distroRegistered(); err == nil {
+			t.Error("distroRegistered() err = nil with wsl absent, want error")
 		}
-		if got := distroState(); got != "not installed" {
-			t.Errorf("distroState() = %q, want not installed", got)
+		if _, err := distroState(); err == nil {
+			t.Error("distroState() err = nil with wsl absent, want error")
 		}
 	})
 }
@@ -352,12 +353,20 @@ func TestVmStatusLine(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			withStubWSL(t, true, c.all, c.running, func() {
-				if got := vmStatusLine(); got != c.want {
-					t.Errorf("vmStatusLine() = %q, want %q", got, c.want)
+				if got, err := vmStatusLine(); err != nil || got != c.want {
+					t.Errorf("vmStatusLine() = %q, %v; want %q, nil", got, err, c.want)
 				}
 			})
 		})
 	}
+	// A wsl --list failure must surface as an error, not a bogus status.
+	t.Run("list error", func(t *testing.T) {
+		withStubWSL(t, false, nil, nil, func() {
+			if _, err := vmStatusLine(); err == nil {
+				t.Error("vmStatusLine() err = nil on wsl failure, want error")
+			}
+		})
+	})
 }
 
 func TestDoctorReport(t *testing.T) {
@@ -403,6 +412,17 @@ func TestDoctorReport(t *testing.T) {
 			},
 			healthy: true,
 			want:    []string{"OK wsl2", "OK distro", "WARN node", "WARN mirrored net", "WARN rootfs"},
+		},
+		{
+			// wsl --list failed: report it, skip the node check, don't
+			// misclaim the distro is un-imported.
+			name: "list failure fails and skips node",
+			in: doctorInputs{
+				wslInstalled: true, listErr: "exit status 1",
+				mirrored: true, rootfsMB: 35,
+			},
+			healthy: false,
+			want:    []string{"OK wsl2", "FAIL distro", "OK mirrored net", "OK rootfs"},
 		},
 	}
 	for _, c := range cases {
