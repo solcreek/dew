@@ -462,10 +462,18 @@ func parseUpArgs(args []string) (dir string, with []string, err error) {
 			if i+1 >= len(args) {
 				return "", nil, fmt.Errorf("--with needs a comma-separated service list")
 			}
-			with = append(with, splitCSV(args[i+1])...)
+			svcs := splitCSV(args[i+1])
+			if len(svcs) == 0 {
+				return "", nil, fmt.Errorf("--with needs a comma-separated service list")
+			}
+			with = append(with, svcs...)
 			i++
 		case strings.HasPrefix(a, "--with="):
-			with = append(with, splitCSV(strings.TrimPrefix(a, "--with="))...)
+			svcs := splitCSV(strings.TrimPrefix(a, "--with="))
+			if len(svcs) == 0 {
+				return "", nil, fmt.Errorf("--with needs a comma-separated service list")
+			}
+			with = append(with, svcs...)
 		case strings.HasPrefix(a, "--"):
 			return "", nil, fmt.Errorf("unknown flag %q for dew up", a)
 		default:
@@ -617,7 +625,10 @@ func cmdUp(args []string) error {
 	}
 	for _, name := range withServices {
 		if services.Lookup(name) == nil {
-			return fmt.Errorf("unknown service %q (available: %s)", name, strings.Join(services.Names(), ", "))
+			// services.Names() iterates a map; sort for a stable message.
+			avail := services.Names()
+			sort.Strings(avail)
+			return fmt.Errorf("unknown service %q (available: %s)", name, strings.Join(avail, ", "))
 		}
 	}
 	absDir, err := filepath.Abs(dir)

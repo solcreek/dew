@@ -473,6 +473,8 @@ func TestParseUpArgs(t *testing.T) {
 		{"with then dir (PR example)", []string{"--with", "redis", "./app"}, "./app", []string{"redis"}, false},
 		{"csv trims blanks", []string{"--with", "a, b ,,c"}, ".", []string{"a", "b", "c"}, false},
 		{"with needs arg", []string{"--with"}, "", nil, true},
+		{"with empty equals rejected", []string{"--with="}, "", nil, true},
+		{"with blank value rejected", []string{"--with", "  ,  "}, "", nil, true},
 		{"unknown flag", []string{"--bogus"}, "", nil, true},
 		{"multiple dirs rejected", []string{"./a", "./b"}, "", nil, true},
 	}
