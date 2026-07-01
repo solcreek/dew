@@ -630,10 +630,14 @@ func mirroredNetworkingEnabled() bool {
 }
 
 // hasMirroredNetworking scans .wslconfig text for networkingMode=mirrored,
-// tolerating surrounding whitespace and case. Split out for testing.
+// tolerating any surrounding whitespace (spaces or tabs, e.g. a
+// tab-indented `networkingMode\t=\tmirrored`) and case. Split out for
+// testing.
 func hasMirroredNetworking(data []byte) bool {
 	for _, line := range strings.Split(string(data), "\n") {
-		compact := strings.ReplaceAll(strings.TrimSpace(line), " ", "")
+		// strings.Fields splits on any whitespace run, so joining with ""
+		// removes every space/tab (leading, trailing, and around the =).
+		compact := strings.Join(strings.Fields(line), "")
 		if strings.EqualFold(compact, "networkingMode=mirrored") {
 			return true
 		}

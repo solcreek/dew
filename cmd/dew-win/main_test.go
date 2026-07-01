@@ -434,6 +434,8 @@ func TestHasMirroredNetworking(t *testing.T) {
 	}{
 		{"canonical", "[wsl2]\nnetworkingMode=mirrored\n", true},
 		{"spaces around equals", "[wsl2]\nnetworkingMode = mirrored\n", true},
+		{"tabs around equals", "[wsl2]\nnetworkingMode\t=\tmirrored\n", true},
+		{"tab indented", "[wsl2]\n\tnetworkingMode=mirrored\n", true},
 		{"case insensitive", "[wsl2]\nNetworkingMode=Mirrored\n", true},
 		{"nat mode", "[wsl2]\nnetworkingMode=nat\n", false},
 		{"absent", "[wsl2]\nmemory=4GB\n", false},
