@@ -179,7 +179,13 @@ jobs:
           # the Windows host name. See cmd/dew-win.
           rm -rf ./lib/modules ./init ./init-stage2
           mkdir -p ./etc
-          printf '[user]\ndefault=root\n[network]\nhostname=dew\ngenerateHosts=true\n' > ./etc/wsl.conf
+          cat > ./etc/wsl.conf <<'WSLCONF'
+          [user]
+          default=root
+          [network]
+          hostname=dew
+          generateHosts=true
+          WSLCONF
           tar czf $GITHUB_WORKSPACE/dew-rootfs-x86_64.tar.gz .
 
       # aarch64 initramfs is cross-built from the Linux x86_64 runner so the
@@ -216,7 +222,13 @@ jobs:
           # Same WSL2 tailoring as the x86_64 rootfs above.
           rm -rf ./lib/modules ./init ./init-stage2
           mkdir -p ./etc
-          printf '[user]\ndefault=root\n[network]\nhostname=dew\ngenerateHosts=true\n' > ./etc/wsl.conf
+          cat > ./etc/wsl.conf <<'WSLCONF'
+          [user]
+          default=root
+          [network]
+          hostname=dew
+          generateHosts=true
+          WSLCONF
           tar czf $GITHUB_WORKSPACE/dew-rootfs-aarch64.tar.gz .
 
       - name: Compute asset SHAs (for dew binary's embedded manifest)
