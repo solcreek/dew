@@ -103,8 +103,10 @@ Usage:
   dew setup              Install/update WSL2 distro
   dew up [dir]           Detect a Node project + run its dev server in WSL2
   dew up --with <svc,...> Start services too (postgres,redis,mysql,mongo,minio)
+  dew up --services-only Run the dew.toml's services as an engine (used by grove)
+  dew services [--json]  List the dew.toml's services and their running state
   dew run [--] <cmd>     Run a one-shot command in the WSL2 distro
-  dew exec <cmd>         Run a command inside the WSL2 distro
+  dew exec [--json] <cmd> Run a command inside the WSL2 distro
   dew vm start           Ensure the WSL2 distro is running
   dew vm stop            Terminate the WSL2 distro (alias: dew down)
   dew vm status          Show whether the WSL2 distro is running
@@ -726,25 +728,32 @@ func emitEnvelope(data any) error {
 }
 
 // runningServiceContainers returns the set of running dew-svc-* container names
-// in the distro. It probes passively: if the distro isn't running it reports an
-// empty set rather than starting it (grove polls `dew services` while the engine
-// is still booting, and a status query must not have side effects).
-func runningServiceContainers() map[string]bool {
+// in the distro. It probes passively: a stopped distro is a normal state (grove
+// polls `dew services` while the engine is still booting), so that yields an
+// empty set and no error, and never starts the distro. A genuine probe failure
+// — the running-state check or `podman ps` erroring — is returned so callers can
+// distinguish "stopped" from "couldn't determine" instead of misreporting every
+// service as stopped.
+func runningServiceContainers() (map[string]bool, error) {
 	set := map[string]bool{}
-	if running, err := distroRunningNow(); err != nil || !running {
-		return set
+	running, err := distroRunningNow()
+	if err != nil {
+		return nil, fmt.Errorf("check distro running: %w", err)
+	}
+	if !running {
+		return set, nil
 	}
 	out, err := exec.Command("wsl", "-d", distroName, "--exec",
-		"podman", "ps", "--format", "{{.Names}}").Output()
+		"podman", "ps", "--format", "{{.Names}}").CombinedOutput()
 	if err != nil {
-		return set
+		return nil, fmt.Errorf("podman ps: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		if n := strings.TrimSpace(line); n != "" {
 			set[n] = true
 		}
 	}
-	return set
+	return set, nil
 }
 
 // cmdServices reports the union dew.toml's services and their running state —
@@ -786,7 +795,10 @@ func cmdServices(args []string) error {
 	}
 	list := []svcJSON{}
 	if f != nil {
-		running := runningServiceContainers()
+		running, err := runningServiceContainers()
+		if err != nil {
+			return err
+		}
 		for _, s := range f.Services {
 			list = append(list, svcJSON{
 				Name:      s.Name,
@@ -887,10 +899,17 @@ func cmdUpServicesEngine(dir string) error {
 	}
 	fmt.Println("dew: services engine ready")
 	// Hold the distro open — an active wsl session keeps WSL2 (and the
-	// host-network containers) alive. Returns when `dew vm stop` runs
-	// `wsl --terminate`, at which point we clear the marker and exit.
-	exec.Command("wsl", "-d", distroName, "--exec", "sh", "-c", "while true; do sleep 86400; done").Run()
+	// host-network containers) alive. The normal way out is `dew vm stop`
+	// running `wsl --terminate`, which kills this session — an ExitError we
+	// treat as the expected stop. A non-ExitError means wsl couldn't run the
+	// session at all (so the distro was never actually held); surface that so
+	// the failure isn't hidden behind "services engine ready".
+	err = exec.Command("wsl", "-d", distroName, "--exec", "sh", "-c", "while true; do sleep 86400; done").Run()
 	removeEngineMarker()
+	var ee *exec.ExitError
+	if err != nil && !errors.As(err, &ee) {
+		return fmt.Errorf("hold distro open: %w", err)
+	}
 	return nil
 }
 
