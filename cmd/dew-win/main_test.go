@@ -470,9 +470,11 @@ func TestParseUpArgs(t *testing.T) {
 		{"with space form", []string{"--with", "postgres,redis"}, ".", []string{"postgres", "redis"}, false},
 		{"with equals form", []string{"--with=postgres"}, ".", []string{"postgres"}, false},
 		{"dir and with", []string{"./app", "--with", "redis"}, "./app", []string{"redis"}, false},
+		{"with then dir (PR example)", []string{"--with", "redis", "./app"}, "./app", []string{"redis"}, false},
 		{"csv trims blanks", []string{"--with", "a, b ,,c"}, ".", []string{"a", "b", "c"}, false},
 		{"with needs arg", []string{"--with"}, "", nil, true},
 		{"unknown flag", []string{"--bogus"}, "", nil, true},
+		{"multiple dirs rejected", []string{"./a", "./b"}, "", nil, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

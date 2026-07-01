@@ -454,6 +454,7 @@ func cmdExec(args []string) error {
 // `--with=<csv>` services from `dew up` arguments.
 func parseUpArgs(args []string) (dir string, with []string, err error) {
 	dir = "."
+	dirSet := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -468,7 +469,12 @@ func parseUpArgs(args []string) (dir string, with []string, err error) {
 		case strings.HasPrefix(a, "--"):
 			return "", nil, fmt.Errorf("unknown flag %q for dew up", a)
 		default:
-			dir = a
+			// Reject a second positional rather than silently taking the
+			// last one (e.g. `dew up ./a ./b` is a user error, not "./b").
+			if dirSet {
+				return "", nil, fmt.Errorf("dew up takes at most one project dir, got %q and %q", dir, a)
+			}
+			dir, dirSet = a, true
 		}
 	}
 	return dir, with, nil
