@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/solcreek/dew/internal/dewfile"
 	"github.com/solcreek/dew/internal/services"
 )
 
@@ -459,29 +460,32 @@ func TestDewDataDir(t *testing.T) {
 
 func TestParseUpArgs(t *testing.T) {
 	cases := []struct {
-		name    string
-		args    []string
-		dir     string
-		with    []string
-		wantErr bool
+		name         string
+		args         []string
+		dir          string
+		with         []string
+		servicesOnly bool
+		wantErr      bool
 	}{
-		{"empty", nil, ".", nil, false},
-		{"dir only", []string{"./app"}, "./app", nil, false},
-		{"with space form", []string{"--with", "postgres,redis"}, ".", []string{"postgres", "redis"}, false},
-		{"with equals form", []string{"--with=postgres"}, ".", []string{"postgres"}, false},
-		{"dir and with", []string{"./app", "--with", "redis"}, "./app", []string{"redis"}, false},
-		{"with then dir (PR example)", []string{"--with", "redis", "./app"}, "./app", []string{"redis"}, false},
-		{"csv trims blanks", []string{"--with", "a, b ,,c"}, ".", []string{"a", "b", "c"}, false},
-		{"dedup preserves order", []string{"--with", "redis,redis,postgres,redis"}, ".", []string{"redis", "postgres"}, false},
-		{"with needs arg", []string{"--with"}, "", nil, true},
-		{"with empty equals rejected", []string{"--with="}, "", nil, true},
-		{"with blank value rejected", []string{"--with", "  ,  "}, "", nil, true},
-		{"unknown flag", []string{"--bogus"}, "", nil, true},
-		{"multiple dirs rejected", []string{"./a", "./b"}, "", nil, true},
+		{"empty", nil, ".", nil, false, false},
+		{"dir only", []string{"./app"}, "./app", nil, false, false},
+		{"with space form", []string{"--with", "postgres,redis"}, ".", []string{"postgres", "redis"}, false, false},
+		{"with equals form", []string{"--with=postgres"}, ".", []string{"postgres"}, false, false},
+		{"dir and with", []string{"./app", "--with", "redis"}, "./app", []string{"redis"}, false, false},
+		{"with then dir (PR example)", []string{"--with", "redis", "./app"}, "./app", []string{"redis"}, false, false},
+		{"csv trims blanks", []string{"--with", "a, b ,,c"}, ".", []string{"a", "b", "c"}, false, false},
+		{"dedup preserves order", []string{"--with", "redis,redis,postgres,redis"}, ".", []string{"redis", "postgres"}, false, false},
+		{"services-only flag", []string{"--services-only"}, ".", nil, true, false},
+		{"services-only with dir", []string{"--services-only", "./eng"}, "./eng", nil, true, false},
+		{"with needs arg", []string{"--with"}, "", nil, false, true},
+		{"with empty equals rejected", []string{"--with="}, "", nil, false, true},
+		{"with blank value rejected", []string{"--with", "  ,  "}, "", nil, false, true},
+		{"unknown flag", []string{"--bogus"}, "", nil, false, true},
+		{"multiple dirs rejected", []string{"./a", "./b"}, "", nil, false, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			dir, with, err := parseUpArgs(c.args)
+			dir, with, servicesOnly, err := parseUpArgs(c.args)
 			if (err != nil) != c.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, c.wantErr)
 			}
@@ -494,7 +498,33 @@ func TestParseUpArgs(t *testing.T) {
 			if !reflect.DeepEqual(with, c.with) {
 				t.Errorf("with = %v, want %v", with, c.with)
 			}
+			if servicesOnly != c.servicesOnly {
+				t.Errorf("servicesOnly = %v, want %v", servicesOnly, c.servicesOnly)
+			}
 		})
+	}
+}
+
+func TestServiceFromDewfile(t *testing.T) {
+	ds := dewfile.Service{
+		Name:  "pocketbase",
+		Image: "ghcr.io/pocketbase/pocketbase:latest",
+		Port:  8090,
+		Ports: []string{"9000:9000"}, // extra forwards: not yet mapped
+		Env:   []string{"FOO=bar"},
+		Data:  "/pb_data", // volume persistence: not yet mapped
+		Args:  []string{"serve", "--http=0.0.0.0:8090"},
+	}
+	got := serviceFromDewfile(ds)
+	want := services.Service{
+		Name:  "pocketbase",
+		Image: "ghcr.io/pocketbase/pocketbase:latest",
+		Port:  8090,
+		Env:   []string{"FOO=bar"},
+		Args:  []string{"serve", "--http=0.0.0.0:8090"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("serviceFromDewfile() = %+v, want %+v", got, want)
 	}
 }
 
