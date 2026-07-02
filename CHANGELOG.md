@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-01
+
+### Added
+
+- **`dew-win` matures into a WSL2 engine for Windows.** The `dew.exe` Windows
+  build (a `wsl.exe` wrapper — no Apple Virtualization) gains a full command
+  surface: `run`, `vm list`, `doctor`, `env`, and a passive `vm status` that no
+  longer starts the distro, plus argv-faithful `exec`/`up` via `wsl --exec` and
+  correct child exit-code propagation.
+- **`dew up --with <service>`** runs predefined OCI services (postgres, redis,
+  mysql, mongo, minio) as podman containers on the WSL2 distro's host network,
+  readiness-gated and cleaned up on every exit path — reachable from the Windows
+  host via mirrored networking.
+- **`dew-win` as grove's services engine.** `dew up --services-only` loads a
+  grove-rendered union `dew.toml` (via the platform-neutral `internal/dewfile`)
+  and starts each service via podman, dropping the readiness marker
+  `~/.local/state/dew/default.sock` before pulling images so a slow first pull
+  can't blow grove's readiness window. `dew services --json` and `dew exec
+  --json` provide the structured envelope grove's dewbridge parses (guest exit
+  code included).
+
 ### Changed
 
 - **The WSL2 rootfs is now purpose-built** instead of the `standard` VM
