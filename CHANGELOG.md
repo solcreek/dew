@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-07-09
+
+### Fixed
+
+- **`dew run --network` now waits for the guest's DHCP lease before running your
+  command.** init-stage2 backgrounds the lease so the vsock agent answers
+  ~0.5-2s sooner, which meant a command that touched the network immediately
+  (`apk add`, `npm install`, `curl`) could run before the guest had an IP/route
+  and fail with "Network unreachable" / "bad address" — easily mistaken for the
+  macOS 26 Apple VZ NAT regression. A host-side barrier now blocks on the
+  `/run/dew-net-pending` marker (the same one `dew-oci-run` gates container
+  launches on), bounded by `--timeout`, closing the race. The default
+  networkless `dew run` is unaffected and stays fast.
+- **The macOS 26 NAT heads-up no longer over-claims.** It was worded as if
+  outbound was broken on every 26.x build, which led users to blame the VZ NAT
+  regression for what was actually the boot-time lease race. It now notes later
+  builds repaired it and that dew waits for the lease, so a fast failure at boot
+  is usually not the NAT.
+
 ## [0.9.0] - 2026-07-01
 
 ### Added
