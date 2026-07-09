@@ -64,10 +64,11 @@ func TestGuestNetReadyCmd(t *testing.T) {
 	}
 }
 
-// netLeasePending drives the warn/proceed decision. Only a clean exec that
-// came back non-zero (lease never cleared within the cap) warrants the warning;
-// a healthy exec (exit 0), a connect/exec error, or a nil result must not warn
-// — we couldn't prove the lease is stuck, so we stay quiet and proceed.
+// netLeasePending drives the warn/proceed decision. Any clean exec that came
+// back non-zero (the cap-hit exit 1, or an agent-timeout kill with some other
+// code) means "could not confirm the lease landed" and warrants the warning; a
+// healthy exec (exit 0), a connect/exec error, or a nil result must not warn —
+// we couldn't prove the lease is stuck, so we stay quiet and proceed.
 func TestNetLeasePending(t *testing.T) {
 	cases := []struct {
 		name string
@@ -77,6 +78,9 @@ func TestNetLeasePending(t *testing.T) {
 	}{
 		{"ready", &RunResult{ExitCode: 0}, nil, false},
 		{"timed out", &RunResult{ExitCode: 1}, nil, true},
+		// Any clean non-zero (e.g. an agent-timeout kill) is "not confirmed
+		// ready" — the warning is intentionally broad, not pinned to exit 1.
+		{"other nonzero clean", &RunResult{ExitCode: 127}, nil, true},
 		{"exec error", &RunResult{ExitCode: 1}, errors.New("vsock closed"), false},
 		{"nil result", nil, nil, false},
 		{"nonzero but errored", &RunResult{ExitCode: 42}, errors.New("boom"), false},

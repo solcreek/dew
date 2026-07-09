@@ -181,7 +181,7 @@ func (d *DarwinVM) configureNetwork(config *vz.VirtualMachineConfiguration) erro
 	// likely a real regressed build; don't over-claim it as certain.
 	if host := readHostInfo(); strings.HasPrefix(host.OSVersion, "26.") {
 		fmt.Fprintln(os.Stderr,
-			"  ⚠ some early macOS 26 builds had an Apple VZ NAT regression (guest gets a 192.168.64.x address but outbound times out). Current builds are fine.")
+			"  ⚠ some early macOS 26 builds had an Apple VZ NAT regression (guest gets a 192.168.64.x address but outbound times out); later builds repaired it.")
 		fmt.Fprintln(os.Stderr,
 			"    dew waits for the guest's DHCP lease before running your command, so a fast failure at boot is usually not this.")
 		fmt.Fprintln(os.Stderr,

@@ -1546,11 +1546,14 @@ func guestNetReadyCmd(maxDeciseconds int) string {
 		guestNetPendingMarker, maxDeciseconds)
 }
 
-// netLeasePending reports whether the network barrier's exec came back saying
-// the lease never landed (exit 1 within a clean exec). Extracted so the
-// warn/proceed decision is unit-testable without a VM: a connect/exec error or
-// a nil result means we couldn't tell, so we don't warn (and the caller
-// proceeds — the command may not need the network at all).
+// netLeasePending reports whether the barrier's exec ran to completion but
+// could not confirm the lease landed. guestNetReadyCmd exits 1 on timeout and 0
+// when ready, but we intentionally treat ANY clean non-zero as "not confirmed
+// ready": if the agent kills the barrier at its own default timeout the exit
+// code isn't 1, yet the lease genuinely hasn't landed, so warning is still
+// correct. A connect/exec error (err != nil) or a nil result means we couldn't
+// tell at all — stay quiet and proceed, since the command may not need the
+// network. Extracted so this decision is unit-testable without a VM.
 func netLeasePending(res *RunResult, err error) bool {
 	return err == nil && res != nil && res.ExitCode != 0
 }
@@ -1962,7 +1965,13 @@ func cmdRun(args []string) error {
 	// "bad address" through no fault of the caller's. The default networkless
 	// run skips this and stays fast. --image / --with go through dew-oci-run,
 	// which gates on the same marker; this covers the plain-command path.
-	if tokenSent && cfg.Network {
+	//
+	// Gate on !budget.expired() so a run that already blew its --timeout skips
+	// the barrier (the foreground exec below returns timeoutErr anyway) — and,
+	// crucially, so budget.window returns a POSITIVE window: a non-positive one
+	// would leave req.TimeoutMs unset and let the barrier run for the agent
+	// default (~30s) past an already-expired deadline.
+	if tokenSent && cfg.Network && !budget.expired() {
 		waitGuestNetwork(d, cfg.VsockPort, token, budget.window(netReadyWait))
 	}
 
