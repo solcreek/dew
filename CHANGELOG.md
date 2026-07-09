@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regression for what was actually the boot-time lease race. It now notes later
   builds repaired it and that dew waits for the lease, so a fast failure at boot
   is usually not the NAT.
+- **Build:** bumped the pinned Alpine `linux-virt` kernel to `6.12.95-r0`; the
+  previously pinned `6.12.94-r0` was rotated off the Alpine CDN.
 
 ## [0.9.0] - 2026-07-01
 

@@ -61,8 +61,8 @@ ROOTFS_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/${
 #       && echo "$arch: ok"
 #   done
 case "$ALPINE_ARCH" in
-    x86_64)  KERNEL_PKG_VER="6.12.94-r0"; KERNEL_VER="6.12.94-0-virt" ;;
-    aarch64) KERNEL_PKG_VER="6.12.94-r0"; KERNEL_VER="6.12.94-0-virt" ;;
+    x86_64)  KERNEL_PKG_VER="6.12.95-r0"; KERNEL_VER="6.12.95-0-virt" ;;
+    aarch64) KERNEL_PKG_VER="6.12.95-r0"; KERNEL_VER="6.12.95-0-virt" ;;
 esac
 KERNEL_APK_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${ALPINE_ARCH}/linux-virt-${KERNEL_PKG_VER}.apk"
 
