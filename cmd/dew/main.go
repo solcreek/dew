@@ -1547,7 +1547,7 @@ const netReadyMinBudget = time.Second
 // netReadyWindow returns the barrier's connect/exec window and whether to run it
 // at all. It runs when the full netReadyWait fits (no --timeout) or at least
 // netReadyMinBudget remains; a nearly- or already-exhausted budget (window below
-// the floor, including the negative window window() yields past the deadline)
+// the floor, including the negative value window() yields past the deadline)
 // skips the barrier. Subsumes the plain !expired() guard: whenever it says run,
 // the window is ≥ netReadyMinBudget.
 func (b runBudget) netReadyWindow() (time.Duration, bool) {
@@ -1598,7 +1598,7 @@ func netLeasePending(res *RunResult, err error) bool {
 // never drains the write or never replies) would otherwise hang the run well
 // past its deadline. netReadyWindow guarantees window ≥ netReadyMinBudget, so
 // the guest's own ~30s loop still self-terminates first in the common
-// no---timeout case (window 35s > 30s) — the conn deadline only fires on a real
+// case without --timeout (window 35s > 30s) — the conn deadline only fires on a real
 // stall. SetDeadline is best-effort (ignored error): a conn that can't take one
 // falls back to execVsockConnArgv's internal budget.
 func waitGuestNetwork(d vm.VM, port uint32, token string, window time.Duration) {
