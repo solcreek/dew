@@ -1589,18 +1589,32 @@ func netLeasePending(res *RunResult, err error) bool {
 // the network up synchronously). Best-effort: on a connect failure it returns
 // and the caller proceeds.
 //
-// Both the connect and the exec are bounded by the same window (the caller
-// passes a positive one via netReadyWindow) so the barrier can't overrun the
-// --timeout budget — connectVsock's own default is a fixed 5s, which would
-// otherwise let a dead agent stall the run past its deadline.
+// The whole barrier — connect, request write, and response read — is bounded by
+// ONE absolute deadline (now+window) so it can never overrun the remaining
+// --timeout budget. connectVsockDeadline caps the connect; a conn deadline then
+// caps the exec I/O on the same conn. Both are needed: execVsockConnArgv's
+// WriteJSON has no timeout of its own and its ReadJSONTimeout budget is guest
+// timeout + hostReadGrace (~15s), so a stalled agent (accepts the connect, then
+// never drains the write or never replies) would otherwise hang the run well
+// past its deadline. netReadyWindow guarantees window ≥ netReadyMinBudget, so
+// the guest's own ~30s loop still self-terminates first in the common
+// no---timeout case (window 35s > 30s) — the conn deadline only fires on a real
+// stall. SetDeadline is best-effort (ignored error): a conn that can't take one
+// falls back to execVsockConnArgv's internal budget.
 func waitGuestNetwork(d vm.VM, port uint32, token string, window time.Duration) {
+	deadline := time.Now().Add(window)
 	conn, err := connectVsockDeadline(d, port, window)
 	if err != nil {
 		return
 	}
 	defer conn.Close()
+	_ = conn.SetDeadline(deadline)
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return // connect ate the whole window; nothing left to wait on
+	}
 	ec, ea := argvOrShellWrap([]string{guestNetReadyCmd(netReadyDeciseconds)})
-	res, err := execVsockConnArgv(conn, token, ec, ea, window)
+	res, err := execVsockConnArgv(conn, token, ec, ea, remaining)
 	if netLeasePending(res, err) {
 		fmt.Fprintln(os.Stderr, "dew: guest network lease still pending; running command anyway (outbound may fail)")
 	}

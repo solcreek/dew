@@ -4,8 +4,10 @@ package main
 
 import (
 	"errors"
+	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The network barrier keys off the same /run/dew-net-pending marker init-stage2
@@ -61,6 +63,38 @@ func TestGuestNetReadyCmd(t *testing.T) {
 	// the container path's matching bound if someone bumps deciseconds by accident.
 	if netReadyDeciseconds != 300 {
 		t.Errorf("netReadyDeciseconds = %d; expected 300 (~30s, matching dew-oci-run). Update this test deliberately if changing.", netReadyDeciseconds)
+	}
+}
+
+// A stalled agent — one that accepts the vsock connect but then never drains
+// the request write or never replies — must not hang the run past its window.
+// execVsockConnArgv's WriteJSON has no timeout and its read budget is guest
+// timeout + hostReadGrace (~15s), so the barrier's own absolute conn deadline
+// is the only thing that bounds it. net.Pipe is unbuffered, so WriteJSON blocks
+// until the peer reads; a peer that never reads models the stall.
+func TestWaitGuestNetwork_HardBoundedByWindow(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close() // the "agent" end: never reads, never replies
+
+	v := &fakeVM{connect: func(uint32) (net.Conn, error) { return client, nil }}
+
+	const window = 200 * time.Millisecond
+	done := make(chan time.Duration, 1)
+	go func() {
+		start := time.Now()
+		waitGuestNetwork(v, 1024, "tok", window)
+		done <- time.Since(start)
+	}()
+
+	select {
+	case elapsed := <-done:
+		// Must return at ~window, not window + hostReadGrace (~15s) and not
+		// hang forever on the untimed write.
+		if elapsed > 5*time.Second {
+			t.Errorf("waitGuestNetwork ran %s; the absolute conn deadline is not bounding a stalled agent", elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("waitGuestNetwork did not return: the barrier is unbounded against a stalled agent")
 	}
 }
 
