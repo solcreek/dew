@@ -1515,6 +1515,111 @@ func cmdStart(args []string) error {
 	return d.Stop(context.Background())
 }
 
+// guestNetPendingMarker is the file init-stage2 creates while the DHCP lease is
+// in flight and bring_up_network removes once the lease (plus host.internal and
+// any egress policy) has landed — see initramfs/build.sh. dew-oci-run gates
+// container /etc/hosts snapshots on it, and dew run's network barrier below
+// waits on it too. Keep this in sync with build.sh; the drift guard in
+// run_network_wait_test.go pins both sides.
+const guestNetPendingMarker = "/run/dew-net-pending"
+
+// netReadyDeciseconds caps how long the guest-side barrier blocks on a pending
+// lease: 300 × 0.1s ≈ 30s, matching dew-oci-run's cap. The healthy case clears
+// in well under a second; the cap only bounds a pathologically slow (or
+// genuinely regressed, e.g. an affected macOS 26 VZ build) lease so the run
+// proceeds with a warning instead of hanging forever.
+const netReadyDeciseconds = 300
+
+// netReadyWait is the host-side window for the barrier exec: slightly above the
+// guest loop's ~30s cap so the host lets the guest self-terminate the loop
+// (exit 1 = still pending) rather than abandoning it first. Shrunk to whatever
+// --timeout leaves via budget.window.
+const netReadyWait = 35 * time.Second
+
+// netReadyMinBudget is the smallest remaining --timeout budget worth spending on
+// the lease barrier. A lease normally lands in ~1-2s, so with less than this
+// left the wait can't finish before the deadline and the run is about to time
+// out anyway — skip it. The floor also keeps the window ≥ 1ms, so the exec's
+// TimeoutMs is always set (never truncated to 0 and omitted into the agent's
+// ~30s default) and the connect below is bounded well under the remaining budget.
+const netReadyMinBudget = time.Second
+
+// netReadyWindow returns the barrier's connect/exec window and whether to run it
+// at all. It runs when the full netReadyWait fits (no --timeout) or at least
+// netReadyMinBudget remains; a nearly- or already-exhausted budget (window below
+// the floor, including the negative value window() yields past the deadline)
+// skips the barrier. Subsumes the plain !expired() guard: whenever it says run,
+// the window is ≥ netReadyMinBudget.
+func (b runBudget) netReadyWindow() (time.Duration, bool) {
+	if w := b.window(netReadyWait); w >= netReadyMinBudget {
+		return w, true
+	}
+	return 0, false
+}
+
+// guestNetReadyCmd returns a POSIX-sh snippet that blocks until the guest DHCP
+// lease has landed (the marker cleared) or ~maxDeciseconds×0.1s elapse. It
+// exits 0 when the network is ready and 1 on timeout, so the host can warn
+// without aborting the run. Mirrors dew-oci-run's guest-side wait loop.
+func guestNetReadyCmd(maxDeciseconds int) string {
+	return fmt.Sprintf(
+		`i=0; while [ -e %[1]s ] && [ "$i" -lt %[2]d ]; do sleep 0.1; i=$((i+1)); done; [ -e %[1]s ] && exit 1 || exit 0`,
+		guestNetPendingMarker, maxDeciseconds)
+}
+
+// netLeasePending reports whether the barrier's exec ran to completion but
+// could not confirm the lease landed. guestNetReadyCmd exits 1 on timeout and 0
+// when ready, but we intentionally treat ANY clean non-zero as "not confirmed
+// ready": if the agent kills the barrier at its own default timeout the exit
+// code isn't 1, yet the lease genuinely hasn't landed, so warning is still
+// correct. A connect/exec error (err != nil) or a nil result means we couldn't
+// tell at all — stay quiet and proceed, since the command may not need the
+// network. Extracted so this decision is unit-testable without a VM.
+func netLeasePending(res *RunResult, err error) bool {
+	return err == nil && res != nil && res.ExitCode != 0
+}
+
+// waitGuestNetwork blocks until the guest's backgrounded DHCP lease has landed,
+// so a `dew run --network <cmd>` never starts the user's command before the
+// guest has an IP/route — which would fail apk/npm/curl with "Network
+// unreachable" / "bad address". init-stage2 deliberately backgrounds the lease
+// so the vsock agent answers ~0.5-2s sooner, which is exactly why the agent is
+// reachable (and this barrier runs) before the NIC is up. A no-op when the
+// marker is already gone (healthy lease, or a restricted policy that brought
+// the network up synchronously). Best-effort: on a connect failure it returns
+// and the caller proceeds.
+//
+// The whole barrier — connect, request write, and response read — is bounded by
+// ONE absolute deadline (now+window) so it can never overrun the remaining
+// --timeout budget. connectVsockDeadline caps the connect; a conn deadline then
+// caps the exec I/O on the same conn. Both are needed: execVsockConnArgv's
+// WriteJSON has no timeout of its own and its ReadJSONTimeout budget is guest
+// timeout + hostReadGrace (~15s), so a stalled agent (accepts the connect, then
+// never drains the write or never replies) would otherwise hang the run well
+// past its deadline. netReadyWindow guarantees window ≥ netReadyMinBudget, so
+// the guest's own ~30s loop still self-terminates first in the common
+// case without --timeout (window 35s > 30s) — the conn deadline only fires on a real
+// stall. SetDeadline is best-effort (ignored error): a conn that can't take one
+// falls back to execVsockConnArgv's internal budget.
+func waitGuestNetwork(d vm.VM, port uint32, token string, window time.Duration) {
+	deadline := time.Now().Add(window)
+	conn, err := connectVsockDeadline(d, port, window)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(deadline)
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return // connect ate the whole window; nothing left to wait on
+	}
+	ec, ea := argvOrShellWrap([]string{guestNetReadyCmd(netReadyDeciseconds)})
+	res, err := execVsockConnArgv(conn, token, ec, ea, remaining)
+	if netLeasePending(res, err) {
+		fmt.Fprintln(os.Stderr, "dew: guest network lease still pending; running command anyway (outbound may fail)")
+	}
+}
+
 func cmdRun(args []string) error {
 	cfg, cmdArgs, err := parseFlags(args)
 	if err != nil {
@@ -1890,6 +1995,27 @@ func cmdRun(args []string) error {
 		hostReader.Close()
 		hostWriter.Close()
 		return err
+	}
+
+	// Ensure the guest network is actually up before running a command that
+	// asked for it. init-stage2 backgrounds the DHCP lease (so the vsock agent
+	// answers ~0.5-2s sooner), which means without this barrier a `dew run
+	// --network <cmd>` can reach the agent and start executing before the guest
+	// has an IP/route — apk/npm/curl then fail with "Network unreachable" /
+	// "bad address" through no fault of the caller's. The default networkless
+	// run skips this and stays fast. --image / --with go through dew-oci-run,
+	// which gates on the same marker; this covers the plain-command path.
+	//
+	// netReadyWindow gates on the remaining --timeout budget: it returns a
+	// positive window (≥ netReadyMinBudget) only when the wait can still finish
+	// before the deadline, so the barrier never runs past — or overruns — an
+	// exhausted budget (the foreground exec below returns timeoutErr in that
+	// state), and the window it hands down is always large enough that the
+	// exec's TimeoutMs is set rather than truncated into the agent's default.
+	if tokenSent && cfg.Network {
+		if window, ok := budget.netReadyWindow(); ok {
+			waitGuestNetwork(d, cfg.VsockPort, token, window)
+		}
 	}
 
 	// argv-or-shell decision: 2+ args → exec argv directly (no

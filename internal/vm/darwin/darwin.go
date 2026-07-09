@@ -172,13 +172,20 @@ func (d *DarwinVM) configureNetwork(config *vz.VirtualMachineConfiguration) erro
 	// a per-run exec round-trip and would itself false-positive under
 	// --network-policy=restricted, on an offline host, or when the probe
 	// target is down.
+	//
+	// The wording is deliberately hedged: the most common "network broken
+	// right at boot" symptom was NOT the NAT but a boot-time race — the guest
+	// command running before the backgrounded DHCP lease landed — which
+	// `dew run` now closes with a lease barrier (see waitGuestNetwork in
+	// cmd/dew). So a failure that survives the barrier is genuinely more
+	// likely a real regressed build; don't over-claim it as certain.
 	if host := readHostInfo(); strings.HasPrefix(host.OSVersion, "26.") {
 		fmt.Fprintln(os.Stderr,
-			"  ⚠ macOS 26 had an Apple VZ NAT regression; guest outbound may be unreliable on some 26.x builds.")
+			"  ⚠ some early macOS 26 builds had an Apple VZ NAT regression (guest gets a 192.168.64.x address but outbound times out); later builds repaired it.")
 		fmt.Fprintln(os.Stderr,
-			"    If outbound times out (curl/apk/npm hang), it's likely this — see Code-Hex/vz#218 (VZVmnetNetworkDeviceAttachment).")
+			"    dew waits for the guest's DHCP lease before running your command, so a fast failure at boot is usually not this.")
 		fmt.Fprintln(os.Stderr,
-			"    Workarounds: --share <hostdir> for host files, vsock for host services.")
+			"    If outbound still times out (curl/apk/npm hang) it may be the VZ issue — see Code-Hex/vz#218. Workarounds: --share <hostdir> for host files, vsock for host services.")
 	}
 	natAttach, err := vz.NewNATNetworkDeviceAttachment()
 	if err != nil {
