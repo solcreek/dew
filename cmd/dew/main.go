@@ -1536,6 +1536,27 @@ const netReadyDeciseconds = 300
 // --timeout leaves via budget.window.
 const netReadyWait = 35 * time.Second
 
+// netReadyMinBudget is the smallest remaining --timeout budget worth spending on
+// the lease barrier. A lease normally lands in ~1-2s, so with less than this
+// left the wait can't finish before the deadline and the run is about to time
+// out anyway — skip it. The floor also keeps the window ≥ 1ms, so the exec's
+// TimeoutMs is always set (never truncated to 0 and omitted into the agent's
+// ~30s default) and the connect below is bounded well under the remaining budget.
+const netReadyMinBudget = time.Second
+
+// netReadyWindow returns the barrier's connect/exec window and whether to run it
+// at all. It runs when the full netReadyWait fits (no --timeout) or at least
+// netReadyMinBudget remains; a nearly- or already-exhausted budget (window below
+// the floor, including the negative window window() yields past the deadline)
+// skips the barrier. Subsumes the plain !expired() guard: whenever it says run,
+// the window is ≥ netReadyMinBudget.
+func (b runBudget) netReadyWindow() (time.Duration, bool) {
+	if w := b.window(netReadyWait); w >= netReadyMinBudget {
+		return w, true
+	}
+	return 0, false
+}
+
 // guestNetReadyCmd returns a POSIX-sh snippet that blocks until the guest DHCP
 // lease has landed (the marker cleared) or ~maxDeciseconds×0.1s elapse. It
 // exits 0 when the network is ready and 1 on timeout, so the host can warn
@@ -1567,8 +1588,13 @@ func netLeasePending(res *RunResult, err error) bool {
 // marker is already gone (healthy lease, or a restricted policy that brought
 // the network up synchronously). Best-effort: on a connect failure it returns
 // and the caller proceeds.
+//
+// Both the connect and the exec are bounded by the same window (the caller
+// passes a positive one via netReadyWindow) so the barrier can't overrun the
+// --timeout budget — connectVsock's own default is a fixed 5s, which would
+// otherwise let a dead agent stall the run past its deadline.
 func waitGuestNetwork(d vm.VM, port uint32, token string, window time.Duration) {
-	conn, err := connectVsock(d, port)
+	conn, err := connectVsockDeadline(d, port, window)
 	if err != nil {
 		return
 	}
@@ -1966,13 +1992,16 @@ func cmdRun(args []string) error {
 	// run skips this and stays fast. --image / --with go through dew-oci-run,
 	// which gates on the same marker; this covers the plain-command path.
 	//
-	// Gate on !budget.expired() so a run that already blew its --timeout skips
-	// the barrier (the foreground exec below returns timeoutErr anyway) — and,
-	// crucially, so budget.window returns a POSITIVE window: a non-positive one
-	// would leave req.TimeoutMs unset and let the barrier run for the agent
-	// default (~30s) past an already-expired deadline.
-	if tokenSent && cfg.Network && !budget.expired() {
-		waitGuestNetwork(d, cfg.VsockPort, token, budget.window(netReadyWait))
+	// netReadyWindow gates on the remaining --timeout budget: it returns a
+	// positive window (≥ netReadyMinBudget) only when the wait can still finish
+	// before the deadline, so the barrier never runs past — or overruns — an
+	// exhausted budget (the foreground exec below returns timeoutErr in that
+	// state), and the window it hands down is always large enough that the
+	// exec's TimeoutMs is set rather than truncated into the agent's default.
+	if tokenSent && cfg.Network {
+		if window, ok := budget.netReadyWindow(); ok {
+			waitGuestNetwork(d, cfg.VsockPort, token, window)
+		}
 	}
 
 	// argv-or-shell decision: 2+ args → exec argv directly (no

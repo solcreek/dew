@@ -53,6 +53,37 @@ func TestRunBudget_Expiry(t *testing.T) {
 	}
 }
 
+// netReadyWindow decides whether the --network lease barrier runs and with what
+// window. It must (a) run with the full netReadyWait when there's no --timeout,
+// (b) shrink to the remaining budget when ample, (c) skip when too little
+// remains to finish (below the floor), and (d) skip once expired. When it does
+// run, the window must be ≥ netReadyMinBudget so the exec's TimeoutMs is never
+// truncated to 0.
+func TestRunBudget_NetReadyWindow(t *testing.T) {
+	// (a) No --timeout: run with the full default window.
+	if w, ok := newRunBudget(0).netReadyWindow(); !ok || w != netReadyWait {
+		t.Errorf("no-timeout netReadyWindow = (%s, %v), want (%s, true)", w, ok, netReadyWait)
+	}
+
+	// (b) Ample budget: run, window capped at the remaining budget and ≥ floor.
+	if w, ok := newRunBudget(10 * time.Second).netReadyWindow(); !ok || w > 10*time.Second || w < netReadyMinBudget {
+		t.Errorf("ample-budget netReadyWindow = (%s, %v), want run with floor ≤ w ≤ 10s", w, ok)
+	}
+
+	// (c) Budget below the floor: skip (a sub-second wait can't finish a lease
+	// that takes ~1-2s, and the run is about to time out).
+	if w, ok := newRunBudget(500 * time.Millisecond).netReadyWindow(); ok {
+		t.Errorf("sub-floor netReadyWindow = (%s, %v), want skip", w, ok)
+	}
+
+	// (d) Expired budget: skip (window() goes non-positive past the deadline).
+	b := newRunBudget(20 * time.Millisecond)
+	time.Sleep(30 * time.Millisecond)
+	if w, ok := b.netReadyWindow(); ok {
+		t.Errorf("expired netReadyWindow = (%s, %v), want skip", w, ok)
+	}
+}
+
 func TestParseFlags_Timeout(t *testing.T) {
 	_, _, err := parseFlags([]string{"--timeout", "90s", "--", "uname"})
 	if err != nil {
