@@ -1515,6 +1515,68 @@ func cmdStart(args []string) error {
 	return d.Stop(context.Background())
 }
 
+// guestNetPendingMarker is the file init-stage2 creates while the DHCP lease is
+// in flight and bring_up_network removes once the lease (plus host.internal and
+// any egress policy) has landed — see initramfs/build.sh. dew-oci-run gates
+// container /etc/hosts snapshots on it, and dew run's network barrier below
+// waits on it too. Keep this in sync with build.sh; the drift guard in
+// run_network_wait_test.go pins both sides.
+const guestNetPendingMarker = "/run/dew-net-pending"
+
+// netReadyDeciseconds caps how long the guest-side barrier blocks on a pending
+// lease: 300 × 0.1s ≈ 30s, matching dew-oci-run's cap. The healthy case clears
+// in well under a second; the cap only bounds a pathologically slow (or
+// genuinely regressed, e.g. an affected macOS 26 VZ build) lease so the run
+// proceeds with a warning instead of hanging forever.
+const netReadyDeciseconds = 300
+
+// netReadyWait is the host-side window for the barrier exec: slightly above the
+// guest loop's ~30s cap so the host lets the guest self-terminate the loop
+// (exit 1 = still pending) rather than abandoning it first. Shrunk to whatever
+// --timeout leaves via budget.window.
+const netReadyWait = 35 * time.Second
+
+// guestNetReadyCmd returns a POSIX-sh snippet that blocks until the guest DHCP
+// lease has landed (the marker cleared) or ~maxDeciseconds×0.1s elapse. It
+// exits 0 when the network is ready and 1 on timeout, so the host can warn
+// without aborting the run. Mirrors dew-oci-run's guest-side wait loop.
+func guestNetReadyCmd(maxDeciseconds int) string {
+	return fmt.Sprintf(
+		`i=0; while [ -e %[1]s ] && [ "$i" -lt %[2]d ]; do sleep 0.1; i=$((i+1)); done; [ -e %[1]s ] && exit 1 || exit 0`,
+		guestNetPendingMarker, maxDeciseconds)
+}
+
+// netLeasePending reports whether the network barrier's exec came back saying
+// the lease never landed (exit 1 within a clean exec). Extracted so the
+// warn/proceed decision is unit-testable without a VM: a connect/exec error or
+// a nil result means we couldn't tell, so we don't warn (and the caller
+// proceeds — the command may not need the network at all).
+func netLeasePending(res *RunResult, err error) bool {
+	return err == nil && res != nil && res.ExitCode != 0
+}
+
+// waitGuestNetwork blocks until the guest's backgrounded DHCP lease has landed,
+// so a `dew run --network <cmd>` never starts the user's command before the
+// guest has an IP/route — which would fail apk/npm/curl with "Network
+// unreachable" / "bad address". init-stage2 deliberately backgrounds the lease
+// so the vsock agent answers ~0.5-2s sooner, which is exactly why the agent is
+// reachable (and this barrier runs) before the NIC is up. A no-op when the
+// marker is already gone (healthy lease, or a restricted policy that brought
+// the network up synchronously). Best-effort: on a connect failure it returns
+// and the caller proceeds.
+func waitGuestNetwork(d vm.VM, port uint32, token string, window time.Duration) {
+	conn, err := connectVsock(d, port)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	ec, ea := argvOrShellWrap([]string{guestNetReadyCmd(netReadyDeciseconds)})
+	res, err := execVsockConnArgv(conn, token, ec, ea, window)
+	if netLeasePending(res, err) {
+		fmt.Fprintln(os.Stderr, "dew: guest network lease still pending; running command anyway (outbound may fail)")
+	}
+}
+
 func cmdRun(args []string) error {
 	cfg, cmdArgs, err := parseFlags(args)
 	if err != nil {
@@ -1890,6 +1952,18 @@ func cmdRun(args []string) error {
 		hostReader.Close()
 		hostWriter.Close()
 		return err
+	}
+
+	// Ensure the guest network is actually up before running a command that
+	// asked for it. init-stage2 backgrounds the DHCP lease (so the vsock agent
+	// answers ~0.5-2s sooner), which means without this barrier a `dew run
+	// --network <cmd>` can reach the agent and start executing before the guest
+	// has an IP/route — apk/npm/curl then fail with "Network unreachable" /
+	// "bad address" through no fault of the caller's. The default networkless
+	// run skips this and stays fast. --image / --with go through dew-oci-run,
+	// which gates on the same marker; this covers the plain-command path.
+	if tokenSent && cfg.Network {
+		waitGuestNetwork(d, cfg.VsockPort, token, budget.window(netReadyWait))
 	}
 
 	// argv-or-shell decision: 2+ args → exec argv directly (no
