@@ -25,6 +25,7 @@ func TestApplyProfileDefaults_RealWorkProfiles(t *testing.T) {
 		{"node", 4, 2048, "node.img", 4},
 		{"python", 4, 2048, "python.img", 4},
 		{"standard", 4, 2048, "standard.img", 10},
+		{"systemd", 4, 2048, "systemd.img", 10},
 	}
 	for _, c := range cases {
 		t.Run(c.profile, func(t *testing.T) {

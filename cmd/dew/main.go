@@ -226,7 +226,54 @@ func applyProfileDefaults(cfg *vm.Config, profile, dataDir, vmName string) {
 			cfg.DiskPath = profileDiskPath(dataDir, "standard", vmName)
 			cfg.DiskGB = 10
 		}
+	case "systemd":
+		// The systemd profile is the heavy tier: a real Debian + systemd
+		// userland that runs actual units and `systemd-analyze security`.
+		// Same 4 vCPU / 2 GB floor as standard, and a 10 GB disk so journald
+		// and unit state have a real writable filesystem.
+		if cfg.CPUs == 1 {
+			cfg.CPUs = 4
+		}
+		if cfg.MemoryMB == 512 {
+			cfg.MemoryMB = 2048
+		}
+		if cfg.DiskPath == "" {
+			cfg.DiskPath = profileDiskPath(dataDir, "systemd", vmName)
+			cfg.DiskGB = 10
+		}
 	}
+}
+
+// systemdProfileFlagConflict rejects flag combinations that can't work under
+// the systemd profile. Under systemd PID 1 owns /sys/fs/cgroup, so dew's
+// --cgroup (which writes /sys/fs/cgroup/dew directly) doesn't apply — limits
+// belong in systemd drop-ins (MemoryMax=/CPUQuota=/TasksMax=). And --confine
+// only *approximates* a unit's hardening on the Alpine profiles; under a real
+// systemd userland you run the actual unit, so the two are contradictory.
+// Returns a CodeUsage error naming the conflict, or nil.
+//
+// This is wired now but dormant: parseFlags still rejects `--profile systemd`
+// up front (the asset isn't published yet), so systemd never reaches here in
+// production. It activates when that guard is removed alongside the published
+// asset (R1 Phase 4).
+func systemdProfileFlagConflict(profile, confine string, cgroupSet bool) error {
+	if profile != "systemd" {
+		return nil
+	}
+	if cgroupSet {
+		return dewerr.New(dewerr.CodeUsage,
+			"--cgroup cannot be combined with --profile systemd: systemd owns the cgroup "+
+				"hierarchy. Express limits as systemd drop-ins (MemoryMax=/CPUQuota=/TasksMax=) "+
+				"in the unit instead.")
+	}
+	if confine != "" {
+		return dewerr.New(dewerr.CodeUsage,
+			"--confine cannot be combined with --profile systemd: --confine approximates a "+
+				"unit's hardening on the Alpine profiles, but the systemd profile runs the real "+
+				"unit. Drop --confine and use the .service with `systemctl start` / "+
+				"`systemd-analyze security`.")
+	}
+	return nil
 }
 
 func resolveAssets(cfg *vm.Config) error {
@@ -1234,6 +1281,12 @@ func parseFlagsReset(cfg vm.Config, args []string, reset bool) (vm.Config, []str
 			}
 			return cfg, collected, nil
 		}
+	}
+
+	// Reject flag combinations that can't work under the systemd profile
+	// (dormant until the --profile systemd guard is lifted in R1 Phase 4).
+	if err := systemdProfileFlagConflict(flagProfile, flagConfine, cfg.Cgroup.Set()); err != nil {
+		return cfg, nil, err
 	}
 
 	return cfg, remaining, nil
