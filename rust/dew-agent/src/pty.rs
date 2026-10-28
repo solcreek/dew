@@ -162,7 +162,10 @@ mod tests {
                 drop(open(0, 0).unwrap());
             }
         });
-        let probe = "for f in /dev/fd/*; do n=${f##*/}; [ \"$n\" -gt 2 ] && [ -t \"$n\" ] && echo LEAK; done; true";
+        // /proc/self/fd where it exists: minimal Linux images (the dew guest)
+        // have no /dev/fd, and globbing a missing directory checks nothing.
+        let probe = "d=/proc/self/fd; [ -d $d ] || d=/dev/fd; \
+                     for f in $d/*; do n=${f##*/}; [ \"$n\" -gt 2 ] && [ -t \"$n\" ] && echo LEAK; done; true";
         let mut leaks = 0;
         for _ in 0..300 {
             let out = Command::new("/bin/sh")
