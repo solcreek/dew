@@ -1,6 +1,8 @@
 # Rust guest agent migration
 
-Status: phases 1–4 merged (#53, #54, #56, #57); phase 5 next (2026-10-28).
+Status: phases 1–4 merged (#53, #54, #56, #57). Phase 5 in progress
+(2026-10-28): the `DEW_AGENT` build switch and its CI matrix are in
+review; the conformance suite is next.
 
 ## Why the agent, and only the agent (for now)
 
