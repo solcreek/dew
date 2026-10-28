@@ -64,14 +64,19 @@ struct Listener {
     thread: JoinHandle<()>,
 }
 
-impl Listener {
-    /// Stop accepting and release the port; returns once the listener is
-    /// closed. The accept loop polls with a bounded wait and checks `stop`
-    /// itself, so this needs no wake-up connection, which could fail (e.g.
-    /// under fd exhaustion) and leave the port bound after the map forgot it.
-    fn close(self) {
-        self.stop.store(true, Ordering::SeqCst);
-        let _ = self.thread.join();
+/// Stop accepting on `listeners` and release their ports; returns once all
+/// are closed. Every stop flag is set before any join, so the accept loops'
+/// bounded polls (STOP_POLL_MS) overlap: closing N listeners takes about one
+/// interval, not N, which keeps a large set_exposes inside the host's reply
+/// deadline. No wake-up connection is needed (one could fail, e.g. under fd
+/// exhaustion, and leave the port bound after the map forgot it).
+fn close_all(listeners: impl IntoIterator<Item = Listener>) {
+    let listeners: Vec<Listener> = listeners.into_iter().collect();
+    for l in &listeners {
+        l.stop.store(true, Ordering::SeqCst);
+    }
+    for l in listeners {
+        let _ = l.thread.join();
     }
 }
 
@@ -88,9 +93,7 @@ impl Drop for Exposes {
     fn drop(&mut self) {
         let running =
             std::mem::take(&mut *self.listeners.lock().unwrap_or_else(|e| e.into_inner()));
-        for (_, l) in running {
-            l.close();
-        }
+        close_all(running.into_values());
     }
 }
 
@@ -120,11 +123,7 @@ impl Exposes {
             .copied()
             .filter(|p| !desired.contains(p))
             .collect();
-        for port in gone {
-            if let Some(l) = running.remove(&port) {
-                l.close();
-            }
-        }
+        close_all(gone.iter().filter_map(|p| running.remove(p)));
         for port in desired {
             if running.contains_key(&port) {
                 continue;
@@ -406,6 +405,26 @@ mod tests {
         thread::sleep(Duration::from_millis(150));
         c.write_all(b"z").unwrap();
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Ok(b'z'));
+    }
+
+    #[test]
+    fn closing_many_listeners_overlaps_their_waits() {
+        // Each listener notices stop within one poll interval (100 ms). Closed
+        // one after another that adds up per port, and a big enough
+        // set_exposes could blow the host's 5 s reply deadline. Signalling all
+        // before joining any makes it one interval in total.
+        let ports: Vec<i64> = (0..30).map(|_| free_port() as i64).collect();
+        let x = Exposes::new(LO, echo());
+        x.reconcile(&ports);
+        assert_eq!(x.ports().len(), 30);
+        let t = std::time::Instant::now();
+        x.reconcile(&[]);
+        let took = t.elapsed();
+        assert!(x.ports().is_empty());
+        assert!(
+            took < Duration::from_millis(600),
+            "closing 30 listeners took {took:?}"
+        );
     }
 
     #[test]
