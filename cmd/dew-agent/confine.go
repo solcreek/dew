@@ -22,6 +22,10 @@ import (
 // with the Confinement spec passed in DEW_CONFINE_SPEC.
 const confineShimMarker = "--dew-confine-shim"
 
+// confineExecUserEnv carries the agent's own DEW_EXEC_USER to the shim. The
+// parent strips any copy in the request env, so the request can't choose it.
+const confineExecUserEnv = "DEW_CONFINE_EXEC_USER"
+
 // maybeRunConfineShim runs the confinement shim and never returns when the
 // process was launched as the shim — it sets up the namespace/filesystem, then
 // exec()s the target (or exits non-zero). Call it at the top of main(), AFTER
@@ -58,11 +62,12 @@ func runConfineShim(target []string) error {
 		}
 	}
 	// Native privilege drop (capability bounding set, ambient caps, no_new_privs,
-	// uid/gid) — replaces the host-built setpriv prefix. Also honours
-	// DEW_EXEC_USER (unprivileged-exec mode) when the unit names no User=, so a
-	// confinement never runs the target as root when the unconfined path would
-	// have dropped it.
-	if err := applyPrivilegeDrop(&c, os.Getenv("DEW_EXEC_USER")); err != nil {
+	// uid/gid) — replaces the host-built setpriv prefix. Also honours the
+	// agent's DEW_EXEC_USER (unprivileged-exec mode), passed by the parent as
+	// DEW_CONFINE_EXEC_USER, when the unit names no User=, so a confinement
+	// never runs the target as root when the unconfined path would have dropped
+	// it. Not DEW_EXEC_USER itself: in the merged env a request can override it.
+	if err := applyPrivilegeDrop(&c, os.Getenv(confineExecUserEnv)); err != nil {
 		return err
 	}
 	path, err := exec.LookPath(target[0])
@@ -78,6 +83,7 @@ func runConfineShim(target []string) error {
 	}
 	// Don't leak the shim's internal control channel into the confined process.
 	os.Unsetenv("DEW_CONFINE_SPEC")
+	os.Unsetenv(confineExecUserEnv)
 	return syscall.Exec(path, target, os.Environ())
 }
 
@@ -186,19 +192,24 @@ func confineExecCmd(ctx context.Context, req protocol.ExecRequest) *exec.Cmd {
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
 	}
-	// Strip any caller-supplied DEW_CONFINE_SPEC before appending the
-	// authoritative one. req.Env entries sort before our append, and the shim's
-	// os.Getenv returns the first match — so without this a workload could
-	// inject its own spec via req.Env and weaken or break the confinement.
+	// Strip any caller-supplied DEW_CONFINE_SPEC / DEW_CONFINE_EXEC_USER before
+	// appending the authoritative ones. req.Env entries sort before our append,
+	// and the shim's os.Getenv returns the first match — so without this a
+	// workload could inject its own spec or identity via req.Env and weaken or
+	// break the confinement.
 	env := guestenv.ExecEnv(os.Environ(), req.Env)
 	cleaned := env[:0:0]
 	for _, e := range env {
-		if strings.HasPrefix(e, "DEW_CONFINE_SPEC=") {
+		if strings.HasPrefix(e, "DEW_CONFINE_SPEC=") || strings.HasPrefix(e, confineExecUserEnv+"=") {
 			continue
 		}
 		cleaned = append(cleaned, e)
 	}
-	cmd.Env = append(cleaned, "DEW_CONFINE_SPEC="+string(spec))
+	cleaned = append(cleaned, "DEW_CONFINE_SPEC="+string(spec))
+	if execUser != "" {
+		cleaned = append(cleaned, confineExecUserEnv+"="+execUser)
+	}
+	cmd.Env = cleaned
 	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: confineCloneFlags(req.Confine)}
 	return cmd
 }

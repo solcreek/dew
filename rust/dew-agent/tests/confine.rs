@@ -49,18 +49,16 @@ fn shim(exe: &PathBuf, go: bool, spec: &str, exec_user: &str, script: &str) -> O
 }
 
 fn shim_argv(exe: &PathBuf, go: bool, spec: &str, exec_user: &str, target: &[&str]) -> Out {
-    // Each shim gets the environment its own agent gives it: both inherit the
-    // agent's DEW_EXEC_USER, and the Rust parent also passes it explicitly
-    // as DEW_CONFINE_EXEC_USER (the Go shim reads DEW_EXEC_USER).
+    // Both parents pass the agent's DEW_EXEC_USER as DEW_CONFINE_EXEC_USER.
+    // The shims must ignore DEW_EXEC_USER itself, which a request's env can
+    // set: it is set to root here, so a shim that read it would drop nothing.
     let mut cmd = Command::new(exe);
     cmd.arg("--dew-confine-shim")
         .args(target)
         .env("DEW_CONFINE_SPEC", spec)
-        .env("DEW_EXEC_USER", exec_user)
+        .env("DEW_CONFINE_EXEC_USER", exec_user)
+        .env("DEW_EXEC_USER", "0")
         .stdin(Stdio::null());
-    if !go {
-        cmd.env("DEW_CONFINE_EXEC_USER", exec_user);
-    }
     if go {
         unsafe {
             cmd.pre_exec(|| {
