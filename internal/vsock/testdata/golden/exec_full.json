@@ -1,0 +1,1 @@
+{"type":"exec","token":"tok","command":"/bin/sh","args":["-c","echo hi"],"dir":"/app","env":["A=1","B=two words"],"timeout_ms":1500,"stream":true,"stdin":true}

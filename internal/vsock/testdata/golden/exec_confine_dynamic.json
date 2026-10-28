@@ -1,0 +1,1 @@
+{"type":"","token":"tok","command":"/bin/true","confine":{"dynamic_user":true,"drop_caps":["cap_sys_admin"],"address_families":["AF_PACKET"],"address_families_deny":true}}

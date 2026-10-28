@@ -21,7 +21,21 @@ bash kernel/build.sh
 
 # Smoke tests (requires built binary + initramfs)
 ./smoke-test.sh
+
+# Rust workspace (guest-agent migration, docs/rust-agent-migration.md).
+# Use rustup's cargo: rust-toolchain.toml pins the version and musl targets
+# (Homebrew's cargo ignores it and has no musl std).
+cd rust && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test
+go test ./internal/vsock -run Golden -update   # after changing a vsock message type
 ```
+
+### Wire protocol parity (Go ↔ Rust)
+
+`internal/vsock` is the source of truth; `rust/dew-proto` mirrors it field for
+field. Adding or changing a message or field means, in the same change: add a
+case to `goldenFrames` (`internal/vsock/golden_test.go`), regenerate with
+`-update`, and mirror it in `rust/dew-proto` (its golden test fails on any
+golden file it has no type for, or encodes differently).
 
 ## Architecture
 
