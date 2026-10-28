@@ -333,3 +333,31 @@ func TestWriteReadJSON_TTYFields(t *testing.T) {
 		t.Errorf("winch fields lost: %+v", in)
 	}
 }
+
+// writeCounter records each Write call separately.
+type writeCounter struct{ calls [][]byte }
+
+func (w *writeCounter) Write(p []byte) (int, error) {
+	w.calls = append(w.calls, append([]byte(nil), p...))
+	return len(p), nil
+}
+
+// A frame must leave WriteJSON in a single Write: with a separate header
+// and payload write, two goroutines streaming stdout and stderr onto one
+// conn interleaved their frames and corrupted the host's decode.
+func TestWriteJSON_OneWritePerFrame(t *testing.T) {
+	var w writeCounter
+	if err := WriteJSON(&w, &OutputChunk{Stream: "stdout", Data: "hello\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.calls) != 1 {
+		t.Fatalf("WriteJSON issued %d writes, want 1", len(w.calls))
+	}
+	var got OutputChunk
+	if err := ReadJSON(bytes.NewReader(w.calls[0]), &got); err != nil {
+		t.Fatalf("single write is not a complete frame: %v", err)
+	}
+	if got.Data != "hello\n" {
+		t.Errorf("Data = %q, want %q", got.Data, "hello\n")
+	}
+}

@@ -209,19 +209,19 @@ func WriteJSON(w io.Writer, v any) error {
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	// length-prefixed: 4-byte big-endian length + payload
+	// length-prefixed: 4-byte big-endian length + payload, sent in ONE
+	// Write so a frame never splits across two calls. Separate header and
+	// payload writes let concurrent writers on the same conn interleave
+	// (header A, header B, payload A, …) and corrupt the stream.
 	length := uint32(len(data))
-	header := []byte{
-		byte(length >> 24),
-		byte(length >> 16),
-		byte(length >> 8),
-		byte(length),
-	}
-	if _, err := w.Write(header); err != nil {
-		return fmt.Errorf("write header: %w", err)
-	}
-	if _, err := w.Write(data); err != nil {
-		return fmt.Errorf("write payload: %w", err)
+	frame := make([]byte, 4+len(data))
+	frame[0] = byte(length >> 24)
+	frame[1] = byte(length >> 16)
+	frame[2] = byte(length >> 8)
+	frame[3] = byte(length)
+	copy(frame[4:], data)
+	if _, err := w.Write(frame); err != nil {
+		return fmt.Errorf("write frame: %w", err)
 	}
 	return nil
 }

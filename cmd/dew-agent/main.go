@@ -343,13 +343,23 @@ func executeStreaming(conn net.Conn, req protocol.ExecRequest) {
 		}()
 	}
 
-	var wg sync.WaitGroup
+	// stdout and stderr are pumped by two goroutines onto one conn. Serialize
+	// their frames: a conn's Write is not guaranteed atomic for a whole frame
+	// (short writes on a stream socket), and an interleaved frame corrupts
+	// the host's decode for the rest of the exec.
+	var (
+		wg      sync.WaitGroup
+		writeMu sync.Mutex
+	)
 	streamPipe := func(pipe io.Reader, stream string) {
 		defer wg.Done()
 		scanner := bufio.NewScanner(pipe)
 		for scanner.Scan() {
 			chunk := protocol.OutputChunk{Stream: stream, Data: scanner.Text() + "\n"}
-			if err := protocol.WriteJSON(conn, &chunk); err != nil {
+			writeMu.Lock()
+			err := protocol.WriteJSON(conn, &chunk)
+			writeMu.Unlock()
+			if err != nil {
 				return
 			}
 		}
