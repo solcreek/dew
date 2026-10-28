@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`--confine` no longer lets a confined command keep root.** In the guest
+  agent:
+  - A `User=` or `Group=` id that is not a valid `uid_t`/`gid_t`
+    (`4294967295`, `4294967296`, …) is now rejected and the command does not
+    run (exit 126). These ids used to reach `setresuid`, where `(uid_t)-1`
+    means "leave unchanged" and wider values wrap to 0, so the command ran as
+    root.
+  - The agent's exec user, which a confined command drops to when the unit
+    names no `User=`, can no longer be overridden by a `DEW_EXEC_USER` in the
+    request's environment.
+
 ## [0.9.3] - 2026-10-28
 
 ### Fixed
