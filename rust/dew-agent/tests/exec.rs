@@ -586,23 +586,26 @@ fn stream_start_failure_is_exec_done() {
 }
 
 #[test]
-fn stream_tty_and_confine_fail_closed_until_supported() {
-    let tty = ExecRequest {
-        tty: true,
-        stdin: true,
-        ..streaming("true")
-    };
-    let s = stream(tty, vec![], LIMIT);
-    assert!(s.done.error.starts_with("tty:"), "{}", s.done.error);
-
-    let mut confined = streaming("true");
-    confined.confine = Some(Confinement {
-        user: "nobody".into(),
-        ..Default::default()
-    });
-    let s = stream(confined, vec![], LIMIT);
-    assert_eq!(s.done.exit_code, -1);
-    assert!(s.done.error.starts_with("confine:"), "{}", s.done.error);
+fn stream_confine_fails_closed_until_supported_even_with_tty() {
+    for tty in [false, true] {
+        let mut confined = ExecRequest {
+            tty,
+            stdin: tty,
+            ..streaming("true")
+        };
+        confined.confine = Some(Confinement {
+            user: "nobody".into(),
+            ..Default::default()
+        });
+        let s = stream(confined, vec![], LIMIT);
+        assert_eq!(s.done.exit_code, -1, "tty={tty}");
+        assert!(
+            s.done.error.starts_with("confine:"),
+            "tty={tty}: {}",
+            s.done.error
+        );
+        assert!(s.chunks.is_empty(), "tty={tty}: nothing may run");
+    }
 }
 
 // ---------------------------------------------------------------- failure paths

@@ -22,7 +22,6 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const MAX_CHUNK: u64 = 64 * 1024;
 
 const CONFINE_UNSUPPORTED: &str = "confine: not supported by this agent build";
-const TTY_UNSUPPORTED: &str = "tty: not supported by this agent build";
 
 /// uid/gid the agent runs commands as (DEW_EXEC_USER), resolved per exec.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,13 +57,25 @@ fn timeout_error(t: Duration) -> String {
 }
 
 /// Exit code as Go's ExitError.ExitCode reports it: -1 for a signal.
-fn exit_code(s: &ExitStatus) -> i64 {
+pub(crate) fn exit_code(s: &ExitStatus) -> i64 {
     s.code().map_or(-1, i64::from)
+}
+
+/// The command in its own process group (see Deadline), for pipe execs.
+fn build(req: &ExecRequest, cred: Option<Cred>) -> Result<Command, String> {
+    let mut cmd = build_base(req, cred)?;
+    // Own process group, so a timeout can kill the whole tree. (The Go agent
+    // kills only the direct child; a grandchild still holding the output
+    // pipe then keeps the exec running past its deadline.)
+    cmd.process_group(0);
+    Ok(cmd)
 }
 
 /// Build the command the Go agent would run: argv[0] resolved against the
 /// agent's own PATH, the guestenv exec env, the working dir, DEW_EXEC_USER.
-fn build(req: &ExecRequest, cred: Option<Cred>) -> Result<Command, String> {
+/// No process group: a TTY exec makes its own session instead, and setsid
+/// fails for a process that already leads a group.
+pub(crate) fn build_base(req: &ExecRequest, cred: Option<Cred>) -> Result<Command, String> {
     let agent_path = std::env::var("PATH").unwrap_or_else(|_| DEFAULT_PATH.into());
     let path = look_path(&req.command, &agent_path)?;
     if !req.dir.is_empty() {
@@ -82,14 +93,10 @@ fn build(req: &ExecRequest, cred: Option<Cred>) -> Result<Command, String> {
     if let Some(c) = cred {
         cmd.uid(c.uid).gid(c.gid);
     }
-    // Own process group, so a timeout can kill the whole tree. (The Go agent
-    // kills only the direct child; a grandchild still holding the output
-    // pipe then keeps the exec running past its deadline.)
-    cmd.process_group(0);
     Ok(cmd)
 }
 
-fn spawn_error(cmd: &Command, e: &io::Error) -> String {
+pub(crate) fn spawn_error(cmd: &Command, e: &io::Error) -> String {
     format!(
         "fork/exec {}: {}",
         cmd.get_program().to_string_lossy(),
@@ -103,15 +110,19 @@ fn spawn_error(cmd: &Command, e: &io::Error) -> String {
 /// reaped, and `wait` marks the leader exited (under the lock, observed with
 /// WNOWAIT) before reaping it. Callers drain the output pipes *before*
 /// `wait`, so a deadline that fires while a grandchild holds a pipe still
-/// lands on a live group.
-struct Deadline {
+/// lands on a live group. `signal_group` gives other callers (the TTY
+/// hangup) the same guarantee.
+pub(crate) struct Deadline {
     pid: libc::pid_t,
     exited: Mutex<bool>,
     fired: AtomicBool,
 }
 
 impl Deadline {
-    fn arm(child: &Child, timeout: Option<Duration>) -> (Arc<Deadline>, Option<mpsc::Sender<()>>) {
+    pub(crate) fn arm(
+        child: &Child,
+        timeout: Option<Duration>,
+    ) -> (Arc<Deadline>, Option<mpsc::Sender<()>>) {
         let d = Arc::new(Deadline {
             pid: child.id() as libc::pid_t,
             exited: Mutex::new(false),
@@ -124,17 +135,37 @@ impl Deadline {
         let k = d.clone();
         thread::spawn(move || {
             if let Err(mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(timeout) {
-                let exited = k.exited.lock().unwrap();
-                if !*exited {
-                    k.fired.store(true, Ordering::SeqCst);
-                    unsafe { libc::kill(-k.pid, libc::SIGKILL) };
-                }
+                k.signal_locked(libc::SIGKILL, true);
             }
         });
         (d, Some(tx))
     }
 
-    fn wait(&self, child: &mut Child, cancel: Option<mpsc::Sender<()>>) -> io::Result<ExitStatus> {
+    /// Send `sig` to the child's process group unless the child has been
+    /// reaped (see the type docs). Returns whether it was sent.
+    pub(crate) fn signal_group(&self, sig: libc::c_int) -> bool {
+        self.signal_locked(sig, false)
+    }
+
+    /// `fired` is set under the same lock as the kill, before `wait` can see
+    /// the exit, so a timeout can never be reported as a plain signal.
+    fn signal_locked(&self, sig: libc::c_int, mark_fired: bool) -> bool {
+        let exited = self.exited.lock().unwrap();
+        if *exited {
+            return false;
+        }
+        if mark_fired {
+            self.fired.store(true, Ordering::SeqCst);
+        }
+        unsafe { libc::kill(-self.pid, sig) };
+        true
+    }
+
+    pub(crate) fn wait(
+        &self,
+        child: &mut Child,
+        cancel: Option<mpsc::Sender<()>>,
+    ) -> io::Result<ExitStatus> {
         loop {
             let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
             let rc = unsafe {
@@ -432,11 +463,11 @@ pub fn execute_streaming<C: Conn>(conn: C, req: &ExecRequest, cred: Option<Cred>
             error: error.into(),
         })
     };
-    if req.tty {
-        return fail(TTY_UNSUPPORTED);
-    }
     if req.confine.as_ref().is_some_and(|c| c.is_set()) {
         return fail(CONFINE_UNSUPPORTED);
+    }
+    if req.tty {
+        return done(crate::tty::run(&conn, &writer, req, cred));
     }
     // An interactive session runs until stdin closes or the process exits,
     // so only batch streams get the exec timeout.
