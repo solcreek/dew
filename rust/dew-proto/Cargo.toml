@@ -1,0 +1,12 @@
+[package]
+name = "dew-proto"
+version = "0.0.0"
+description = "Wire types and framing for the dew host <-> guest vsock protocol (mirror of internal/vsock)"
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
