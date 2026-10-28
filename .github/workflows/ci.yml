@@ -89,7 +89,11 @@ jobs:
       # main.rs and vsock.rs only run inside a guest (AF_VSOCK); they are
       # exercised end to end, not by unit tests, so they are left out of the
       # floor. Everything else must stay at or above 95% of lines.
+      # `shell: bash` makes Actions run `bash -eo pipefail`; the implicit
+      # shell is plain `bash -e`, where `| tee` would swallow the floor's
+      # failure and pass the step.
       - name: Coverage
+        shell: bash
         run: |
           rustup component add llvm-tools
           cargo llvm-cov --locked --workspace --summary-only \
