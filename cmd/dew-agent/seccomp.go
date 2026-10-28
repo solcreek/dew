@@ -256,6 +256,25 @@ func socketFamilyFilter(nativeArch, sysSocket, sysSocketpair uint32, families []
 	return prog, nil
 }
 
+// addressFamilyFilter builds the RestrictAddressFamilies= program for the
+// build arch (its audit arch and socket/socketpair numbers).
+func addressFamilyFilter(names []string, deny bool) ([]unix.SockFilter, error) {
+	fams, err := resolveFamilies(names)
+	if err != nil {
+		return nil, err
+	}
+	var nativeArch uint32
+	switch runtime.GOARCH {
+	case "arm64":
+		nativeArch = unix.AUDIT_ARCH_AARCH64
+	case "amd64":
+		nativeArch = unix.AUDIT_ARCH_X86_64
+	default:
+		return nil, fmt.Errorf("seccomp: unsupported arch %q", runtime.GOARCH)
+	}
+	return socketFamilyFilter(nativeArch, uint32(unix.SYS_SOCKET), uint32(unix.SYS_SOCKETPAIR), fams, deny)
+}
+
 // applySeccomp installs the spec's seccomp filters on the current (locked)
 // thread, just before exec. seccomp(2) requires no_new_privs (set by the caller
 // for any seccomp spec) or CAP_SYS_ADMIN; filters are inherited across execve.
@@ -272,20 +291,7 @@ func applySeccomp(c *protocol.Confinement) error {
 	}
 
 	if len(c.AddressFamilies) > 0 {
-		fams, err := resolveFamilies(c.AddressFamilies)
-		if err != nil {
-			return err
-		}
-		var nativeArch uint32
-		switch runtime.GOARCH {
-		case "arm64":
-			nativeArch = unix.AUDIT_ARCH_AARCH64
-		case "amd64":
-			nativeArch = unix.AUDIT_ARCH_X86_64
-		default:
-			return fmt.Errorf("seccomp: unsupported arch %q", runtime.GOARCH)
-		}
-		prog, err := socketFamilyFilter(nativeArch, uint32(unix.SYS_SOCKET), uint32(unix.SYS_SOCKETPAIR), fams, c.AddressFamiliesDeny)
+		prog, err := addressFamilyFilter(c.AddressFamilies, c.AddressFamiliesDeny)
 		if err != nil {
 			return err
 		}
