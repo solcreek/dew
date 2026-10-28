@@ -618,12 +618,13 @@ fn file_backed_conn_works_like_the_guest_socket() {
     assert_eq!(chunk.data, "via-file\n");
     let done: ExecDone = read_frame(&mut host).unwrap();
     assert_eq!(done.exit_code, 0);
+    // A read timeout is a leaked conn, not EOF: require a real zero-byte read.
+    host.set_read_timeout(Some(Duration::from_secs(5))).ok();
     let mut b = [0u8; 1];
-    assert_eq!(
-        std::io::Read::read(&mut host, &mut b).unwrap_or(0),
-        0,
-        "File conn shut down"
-    );
+    match std::io::Read::read(&mut host, &mut b) {
+        Ok(0) => {}
+        other => panic!("File conn not shut down: {other:?}"),
+    }
 }
 
 /// Minimal temp-file helper (keeps the crate free of dev-dependencies).

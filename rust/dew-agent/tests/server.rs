@@ -58,9 +58,14 @@ fn exec_req(token: &str, script: &str) -> ExecRequest {
     }
 }
 
+/// The agent closed its end: a zero-byte read. A read error (notably the
+/// timeout `open` installs) means the conn was left open, which must fail.
 fn assert_closed(mut h: UnixStream) {
     let mut b = [0u8; 1];
-    assert_eq!(h.read(&mut b).unwrap_or(0), 0, "conn should be closed");
+    match h.read(&mut b) {
+        Ok(0) => {}
+        other => panic!("conn should be closed, got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------- set_token
