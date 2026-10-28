@@ -34,11 +34,11 @@ pub struct IdSpec {
     pub gid: Option<u32>,
 }
 
-/// An id as the kernel's uid_t/gid_t. Negative ids are rejected as in Go.
-/// Deliberately stricter than Go, which passes an int through and lets the
-/// kernel truncate it: (uid_t)-1 (4294967295) means "leave unchanged" to
-/// setresuid, and anything wider wraps (4294967296 becomes 0, root). Both
-/// would leave the target as root, so both fail closed here.
+/// An id as the kernel's uid_t/gid_t, checked as Go's checkID does. Negative
+/// ids are rejected, and so is anything that isn't a real uid_t:
+/// (uid_t)-1 (4294967295) means "leave unchanged" to setresuid, and anything
+/// wider wraps (4294967296 becomes 0, root). Both would leave the target as
+/// root, so both fail closed.
 fn to_id(kind: &str, n: i64) -> Result<u32, String> {
     if n < 0 {
         return Err(format!("negative {kind} {n}"));
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn ids_that_would_leave_root_are_rejected() {
-        // Go passes these through and the kernel turns both into "still root".
+        // The kernel would turn both into "still root".
         let d = db("range");
         assert_eq!(
             lookup_user("4294967295", &d),
