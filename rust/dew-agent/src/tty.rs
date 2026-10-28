@@ -84,8 +84,14 @@ pub(crate) fn run<C: Conn>(
                 if write_frame(&mut *writer.lock().unwrap(), &chunk).is_err() {
                     // The host is gone. Hang the session up as a terminal
                     // does when its line drops: SIGHUP, and close the master
-                    // so a command ignoring SIGHUP still gets EIO.
+                    // so a command ignoring SIGHUP still gets EIO. The
+                    // feeder holds a dup of the master too; shutting the
+                    // conn down ends its read so it drops that dup. (A
+                    // feeder blocked writing into a full input queue of a
+                    // child that ignores SIGHUP and never reads stdin keeps
+                    // its dup until that write returns.)
                     session.signal_group(libc::SIGHUP);
+                    conn.shutdown();
                     master = None;
                 }
             }

@@ -4,11 +4,15 @@
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use dew_agent::conn::Conn;
 use dew_agent::exec::execute_streaming;
 use dew_proto::*;
 use serde_json::Value;
+use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -288,6 +292,77 @@ fn host_disconnect_hangs_up_a_busy_session() {
     let req = tty_req("read x; while :; do echo spam; done", 24, 80);
     let ok = finishes_after(req, "go\n", "spam", drop, Duration::from_secs(5));
     assert!(ok, "busy session not hung up after the host disconnected");
+}
+
+/// A conn whose writes start failing once `broken` is set while its reads
+/// keep working: the host's line has dropped for output, but the input
+/// feeder's read stays blocked. (A real socket can't do this portably: after
+/// the peer's SHUT_RD, Linux fails writes with EPIPE but macOS discards them.)
+struct WriteBreaks {
+    inner: UnixStream,
+    broken: Arc<AtomicBool>,
+}
+
+impl Read for WriteBreaks {
+    fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(b)
+    }
+}
+
+impl Write for WriteBreaks {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        if self.broken.load(Ordering::SeqCst) {
+            return Err(io::Error::from(io::ErrorKind::BrokenPipe));
+        }
+        self.inner.write(b)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl Conn for WriteBreaks {
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(WriteBreaks {
+            inner: self.inner.try_clone()?,
+            broken: self.broken.clone(),
+        })
+    }
+    fn shutdown(&self) {
+        let _ = self.inner.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+#[test]
+fn hangup_closes_the_master_for_a_command_ignoring_sighup() {
+    // Output writes fail while the feeder, which holds its own dup of the
+    // master, is still blocked reading the conn. The hangup must close the
+    // master completely anyway, so the child's writes get EIO and
+    // `while echo` ends even though it ignores SIGHUP.
+    let (agent_end, mut host) = UnixStream::pair().unwrap();
+    let broken = Arc::new(AtomicBool::new(false));
+    let conn = WriteBreaks {
+        inner: agent_end,
+        broken: broken.clone(),
+    };
+    let req = tty_req("trap '' HUP; read x; while echo spam; do :; done", 24, 80);
+    let worker = thread::spawn(move || execute_streaming(conn, &req, None));
+    write_frame(&mut host, &data("go\n")).unwrap();
+    let mut seen = Vec::new();
+    while !String::from_utf8_lossy(&seen).contains("spam") {
+        let c: OutputChunk = read_frame(&mut host).unwrap();
+        seen.extend(STANDARD.decode(&c.data).unwrap());
+    }
+    broken.store(true, Ordering::SeqCst);
+    let t = std::time::Instant::now();
+    while !worker.is_finished() {
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "master not closed: the session outlived the hangup"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    drop(host);
 }
 
 #[test]
