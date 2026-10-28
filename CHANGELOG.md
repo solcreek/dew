@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The `minimal` profile now runs the Rust guest agent.** It speaks the same
+  vsock protocol as the Go agent and passes the same conformance suite
+  (`test/conformance`) on both arches. The node, python and standard profiles
+  keep the Go agent for one more release. To build `minimal` with the Go
+  agent, set `DEW_AGENT=go bash initramfs/build.sh minimal`. The Rust agent
+  also fixes three cases where the Go agent misbehaved:
+  - An exec timeout now ends a command whose background child still holds
+    its output open.
+  - A dropped connection now hangs up a TTY session, where the Go agent left
+    the shell running.
+  - A `--confine` request on a streaming exec is now refused instead of
+    running unconfined.
+
+  Measured on `minimal` (memory after the conformance suite has run):
+
+  | | aarch64 Go | aarch64 Rust | x86_64 Go | x86_64 Rust |
+  |---|---:|---:|---:|---:|
+  | agent binary | 3.44 MiB | 0.76 MiB | 3.57 MiB | 0.87 MiB |
+  | initramfs (compressed) | 6.85 MiB | 5.89 MiB | 6.82 MiB | 5.75 MiB |
+  | agent RSS | 11.3 MiB | 0.87 MiB | 12.9 MiB | 0.98 MiB |
+  | agent peak RSS | 36.2 MiB | 8.7 MiB | 40.5 MiB | 8.8 MiB |
+
 ## [0.9.4] - 2026-10-28
 
 ### Security
