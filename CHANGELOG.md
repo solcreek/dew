@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-28
+
+### Fixed
+
+- **Streaming `dew exec` / `dew run` output no longer corrupts under heavy
+  stdout + stderr.** The guest agent pumped stdout and stderr from two
+  goroutines onto one vsock connection, and each frame went out as two writes
+  (length header, then payload) with no lock, so concurrent output could
+  interleave two frames' halves and the host failed mid-exec with a JSON decode
+  error (`invalid character '\x00' ...`). Frames are now written in a single
+  `Write` and the two pumps serialize on a mutex. In a VM stress test
+  (20k stdout + 20k stderr lines per exec) corruption went from 16/102 streams
+  to 0/102.
+
 ### Fixed
 
 - **Streaming exec no longer corrupts output when a command writes stdout and
