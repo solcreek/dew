@@ -82,6 +82,18 @@ pub struct Exposes {
     listeners: Mutex<BTreeMap<u16, Listener>>,
 }
 
+/// Close every listener, so dropping the set releases its ports instead of
+/// detaching accept threads that keep them bound.
+impl Drop for Exposes {
+    fn drop(&mut self) {
+        let running =
+            std::mem::take(&mut *self.listeners.lock().unwrap_or_else(|e| e.into_inner()));
+        for (_, l) in running {
+            l.close();
+        }
+    }
+}
+
 impl Exposes {
     pub fn new(ip: IpAddr, handler: Handler) -> Exposes {
         Exposes {
@@ -394,6 +406,17 @@ mod tests {
         thread::sleep(Duration::from_millis(150));
         c.write_all(b"z").unwrap();
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Ok(b'z'));
+    }
+
+    #[test]
+    fn dropping_the_set_closes_its_listeners() {
+        let (a, b) = (free_port(), free_port());
+        let x = Exposes::new(LO, echo());
+        x.reconcile(&[a as i64, b as i64]);
+        drop(x);
+        // Closed and released, not detached: both ports bind again at once.
+        TcpListener::bind((LO, a)).expect("port a released on drop");
+        TcpListener::bind((LO, b)).expect("port b released on drop");
     }
 
     #[test]
