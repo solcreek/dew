@@ -97,16 +97,22 @@ jobs:
         working-directory: .
         run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dew-agent-go" ./cmd/dew-agent/
 
-      # main.rs and vsock.rs only run inside a guest (AF_VSOCK); they are
-      # exercised end to end, not by unit tests, so they are left out of the
-      # floor. Everything else must stay at or above 95% of lines.
+      # Left out of the line floor, because instrumentation cannot see them run:
+      # - main.rs and vsock.rs only run inside a guest (AF_VSOCK) and are
+      #   exercised end to end.
+      # - confine/apply.rs and confine/shim.rs run in the confine shim, a
+      #   child that ends in execve: the image is replaced before the profile
+      #   is written, so a successful enforcement never records. Their
+      #   behaviour is gated in this same step by tests/confine.rs (root, with
+      #   Go parity), which fail the job if enforcement is wrong.
+      # Everything else must stay at or above 95% of lines.
       # `shell: bash` makes Actions run `bash -eo pipefail`; the implicit
       # shell is plain `bash -e`, where `| tee` would swallow the floor's
       # failure and pass the step.
       # As root: the --confine enforcement (mount namespace, capabilities,
-      # uid drop, seccomp) only runs, and only counts, with privilege. The
-      # runner is a disposable VM, and the shim's own mount namespace is
-      # itself asserted by the tests.
+      # uid drop, seccomp) only runs with privilege. The runner is a
+      # disposable VM, and the shim's own mount namespace is itself asserted
+      # by the tests.
       - name: Coverage (as root, with Go parity for --confine)
         shell: bash
         run: |
@@ -115,7 +121,7 @@ jobs:
             "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
             "DEW_GO_AGENT_EXE=$RUNNER_TEMP/dew-agent-go" \
             cargo llvm-cov --locked --workspace --summary-only \
-              --ignore-filename-regex '(main|vsock)\.rs$' \
+              --ignore-filename-regex '(main|vsock|confine/apply|confine/shim)\.rs$' \
               --fail-under-lines 95 | tee -a "$GITHUB_STEP_SUMMARY"
 
   # dew-win is //go:build windows and is skipped by the macOS test job

@@ -28,7 +28,7 @@ bash kernel/build.sh
 cd rust && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test
 go test ./internal/vsock -run Golden -update   # after changing a vsock message type
 cd rust && cargo build --release -p dew-agent --target aarch64-unknown-linux-musl   # guest agent (not shipped yet)
-cd rust && cargo llvm-cov --workspace --ignore-filename-regex '(main|vsock)\.rs$'   # CI floor: 95% lines
+cd rust && cargo llvm-cov --workspace --ignore-filename-regex '(main|vsock|confine/apply|confine/shim)\.rs$'   # CI floor: 95% lines (the confine shim's files end in execve, so they can't record; tests/confine.rs gates them)
 ```
 
 ### Wire protocol parity (Go ↔ Rust)
