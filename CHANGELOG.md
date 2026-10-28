@@ -7,19 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.2] - 2026-10-28
-
-### Fixed
-
-- **Streaming `dew exec` / `dew run` output no longer corrupts under heavy
-  stdout + stderr.** The guest agent pumped stdout and stderr from two
-  goroutines onto one vsock connection, and each frame went out as two writes
-  (length header, then payload) with no lock, so concurrent output could
-  interleave two frames' halves and the host failed mid-exec with a JSON decode
-  error (`invalid character '\x00' ...`). Frames are now written in a single
-  `Write` and the two pumps serialize on a mutex. In a VM stress test
-  (20k stdout + 20k stderr lines per exec) corruption went from 16/102 streams
-  to 0/102.
+## [0.9.3] - 2026-10-28
 
 ### Fixed
 
@@ -31,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (20k stdout + 20k stderr lines per exec) 16 of 102 streams were corrupted.
   Frames are now written in a single write and the two pumps serialize on a
   mutex; the same stress run shows 0 of 102.
+- **Build:** bumped the pinned Alpine `linux-virt` kernel to `6.12.114-r0`; the
+  previously pinned `6.12.95-r0` was rotated off the Alpine CDN.
+
+## [0.9.2] - 2026-10-28 — withdrawn
+
+Failed at the initramfs build step (the pinned Alpine kernel had been rotated
+off the CDN) before any release artifacts were published. Re-shipped as 0.9.3
+with the same fix plus the kernel bump.
 
 ## [0.9.1] - 2026-07-09
 
@@ -1970,7 +1966,8 @@ Covers 0.3.0 – 0.4.0; the 0.3.x tags were not documented separately.
 - GitHub Actions CI (tests + cross-compile) and kernel build workflow
 - Smoke test script for pre-release validation
 
-[Unreleased]: https://github.com/solcreek/dew/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/solcreek/dew/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/solcreek/dew/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/solcreek/dew/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/solcreek/dew/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/solcreek/dew/compare/v0.8.5...v0.9.0
