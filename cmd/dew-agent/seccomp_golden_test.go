@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/elastic/go-seccomp-bpf/arch"
@@ -66,6 +67,27 @@ func TestSeccompGolden(t *testing.T) {
 		// AF_LOCAL aliases AF_UNIX and collapses.
 		{"families_allow_alias", "families", []string{"AF_UNIX", "AF_LOCAL", "AF_INET"}, false},
 	}
+	// Every syscall this arch knows: past 255 instructions, so the assembler's
+	// long-jump handling (copied RETs within reach) is exercised.
+	all := make([]string, 0, len(info.SyscallNames))
+	for n := range info.SyscallNames {
+		all = append(all, n)
+	}
+	sort.Strings(all)
+	inputs = append(inputs,
+		struct {
+			name  string
+			kind  string
+			names []string
+			deny  bool
+		}{"syscalls_allow_all", "syscalls", all, false},
+		struct {
+			name  string
+			kind  string
+			names []string
+			deny  bool
+		}{"syscalls_deny_all", "syscalls", all, true},
+	)
 	dir := filepath.Join("testdata", "seccomp")
 	if *updateSeccompGolden {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
