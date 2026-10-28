@@ -110,15 +110,19 @@ pub(crate) fn spawn_error(cmd: &Command, e: &io::Error) -> String {
 /// reaped, and `wait` marks the leader exited (under the lock, observed with
 /// WNOWAIT) before reaping it. Callers drain the output pipes *before*
 /// `wait`, so a deadline that fires while a grandchild holds a pipe still
-/// lands on a live group.
-struct Deadline {
+/// lands on a live group. `signal_group` gives other callers (the TTY
+/// hangup) the same guarantee.
+pub(crate) struct Deadline {
     pid: libc::pid_t,
     exited: Mutex<bool>,
     fired: AtomicBool,
 }
 
 impl Deadline {
-    fn arm(child: &Child, timeout: Option<Duration>) -> (Arc<Deadline>, Option<mpsc::Sender<()>>) {
+    pub(crate) fn arm(
+        child: &Child,
+        timeout: Option<Duration>,
+    ) -> (Arc<Deadline>, Option<mpsc::Sender<()>>) {
         let d = Arc::new(Deadline {
             pid: child.id() as libc::pid_t,
             exited: Mutex::new(false),
@@ -131,17 +135,37 @@ impl Deadline {
         let k = d.clone();
         thread::spawn(move || {
             if let Err(mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(timeout) {
-                let exited = k.exited.lock().unwrap();
-                if !*exited {
-                    k.fired.store(true, Ordering::SeqCst);
-                    unsafe { libc::kill(-k.pid, libc::SIGKILL) };
-                }
+                k.signal_locked(libc::SIGKILL, true);
             }
         });
         (d, Some(tx))
     }
 
-    fn wait(&self, child: &mut Child, cancel: Option<mpsc::Sender<()>>) -> io::Result<ExitStatus> {
+    /// Send `sig` to the child's process group unless the child has been
+    /// reaped (see the type docs). Returns whether it was sent.
+    pub(crate) fn signal_group(&self, sig: libc::c_int) -> bool {
+        self.signal_locked(sig, false)
+    }
+
+    /// `fired` is set under the same lock as the kill, before `wait` can see
+    /// the exit, so a timeout can never be reported as a plain signal.
+    fn signal_locked(&self, sig: libc::c_int, mark_fired: bool) -> bool {
+        let exited = self.exited.lock().unwrap();
+        if *exited {
+            return false;
+        }
+        if mark_fired {
+            self.fired.store(true, Ordering::SeqCst);
+        }
+        unsafe { libc::kill(-self.pid, sig) };
+        true
+    }
+
+    pub(crate) fn wait(
+        &self,
+        child: &mut Child,
+        cancel: Option<mpsc::Sender<()>>,
+    ) -> io::Result<ExitStatus> {
         loop {
             let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
             let rc = unsafe {

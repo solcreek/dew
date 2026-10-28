@@ -232,6 +232,95 @@ fn spawn_failure_is_exec_done() {
     );
 }
 
+// ---------------------------------------------------------------- hangup
+
+/// Start a TTY exec, wait until `ready` appears in its output, then run
+/// `then` on the host end. Returns whether the agent's streaming call
+/// finished within `limit`.
+fn finishes_after(
+    req: ExecRequest,
+    ready_input: &str,
+    ready: &str,
+    then: impl FnOnce(UnixStream),
+    limit: Duration,
+) -> bool {
+    let (agent, mut host) = UnixStream::pair().unwrap();
+    let worker = thread::spawn(move || execute_streaming(agent, &req, None));
+    write_frame(&mut host, &data(ready_input)).unwrap();
+    let mut seen = Vec::new();
+    while !String::from_utf8_lossy(&seen).contains(ready) {
+        let c: OutputChunk = read_frame(&mut host).expect("output before ready");
+        seen.extend(STANDARD.decode(&c.data).unwrap());
+    }
+    then(host);
+    let t = std::time::Instant::now();
+    while !worker.is_finished() {
+        if t.elapsed() > limit {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
+#[test]
+fn host_disconnect_hangs_up_an_idle_session() {
+    // An interactive shell waiting for input. The Go agent never notices the
+    // host is gone (it is blocked reading the pty) and leaks the shell.
+    let req = ExecRequest {
+        args: vec![],
+        ..tty_req("", 24, 80)
+    };
+    let ok = finishes_after(
+        req,
+        "echo ready-$((1+1))\n",
+        "ready-2",
+        drop,
+        Duration::from_secs(5),
+    );
+    assert!(ok, "idle session not hung up after the host disconnected");
+}
+
+#[test]
+fn host_disconnect_hangs_up_a_busy_session() {
+    // Endless output: the write to the vanished host fails, and the agent
+    // must hang the session up rather than wait for it forever.
+    let req = tty_req("read x; while :; do echo spam; done", 24, 80);
+    let ok = finishes_after(req, "go\n", "spam", drop, Duration::from_secs(5));
+    assert!(ok, "busy session not hung up after the host disconnected");
+}
+
+#[test]
+fn eof_then_half_close_does_not_hang_up() {
+    // A host that sends the EOF frame and stops writing, but keeps reading,
+    // has not gone away: the command must run to completion.
+    let req = tty_req("read x; echo first; sleep 0.3; echo after-delay", 24, 80);
+    let (agent, mut host) = UnixStream::pair().unwrap();
+    thread::spawn(move || execute_streaming(agent, &req, None));
+    write_frame(&mut host, &data("go\n")).unwrap();
+    write_frame(
+        &mut host,
+        &InputChunk {
+            eof: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    host.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut out = Vec::new();
+    let done = loop {
+        let v: Value = read_frame(&mut host).unwrap();
+        if v.get("exit_code").is_some() {
+            break serde_json::from_value::<ExecDone>(v).unwrap();
+        }
+        let c: OutputChunk = serde_json::from_value(v).unwrap();
+        out.extend(STANDARD.decode(&c.data).unwrap());
+    };
+    let out = String::from_utf8_lossy(&out);
+    assert!(out.contains("after-delay"), "killed early: {out:?}");
+    assert_eq!(done.exit_code, 0);
+}
+
 #[test]
 fn large_output_arrives_whole() {
     // More than several READ_CHUNKs; nothing may be lost before EIO/EOF.

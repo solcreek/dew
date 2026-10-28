@@ -61,17 +61,20 @@ pub(crate) fn run<C: Conn>(
         Ok(c) => c,
         Err(_) => return fail(spawn_err.unwrap_or_default()),
     };
-    let mut master = p.master;
+    let mut master = Some(p.master);
+    // Guards the hangup signal against a reaped (recyclable) pid.
+    let (session, _) = exec::Deadline::arm(&child, None);
 
     // host -> pty: stdin bytes and window-size changes.
-    if let (Ok(reader), Ok(input)) = (conn.try_clone(), master.try_clone()) {
-        feed(reader, input);
+    let m = master.as_ref().unwrap();
+    if let (Ok(reader), Ok(input)) = (conn.try_clone(), m.try_clone()) {
+        feed(reader, input, session.clone());
     }
 
     // pty -> host: raw bytes, base64-framed.
     let mut buf = vec![0u8; READ_CHUNK];
-    loop {
-        match master.read(&mut buf) {
+    while let Some(m) = master.as_mut() {
+        match m.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
                 let chunk = OutputChunk {
@@ -79,7 +82,11 @@ pub(crate) fn run<C: Conn>(
                     data: STANDARD.encode(&buf[..n]),
                 };
                 if write_frame(&mut *writer.lock().unwrap(), &chunk).is_err() {
-                    break;
+                    // The host is gone. Hang the session up as a terminal
+                    // does when its line drops: SIGHUP, and close the master
+                    // so a command ignoring SIGHUP still gets EIO.
+                    session.signal_group(libc::SIGHUP);
+                    master = None;
                 }
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -88,7 +95,7 @@ pub(crate) fn run<C: Conn>(
         }
     }
 
-    let status = child.wait();
+    let status = session.wait(&mut child, None);
     // As the Go agent (deferred ptmx.Close), the master closes after Wait.
     drop(master);
     match status {
@@ -104,9 +111,15 @@ pub(crate) fn run<C: Conn>(
 /// Apply InputChunk frames to the pty until EOF or a read error. A resize
 /// frame carries nothing else (its data is ignored, as in the Go agent);
 /// undecodable base64 and failed writes are skipped.
-fn feed<C: Conn>(mut conn: C, mut master: File) {
+///
+/// The conn failing before an EOF frame means the host went away, so the
+/// session is hung up (SIGHUP to its process group). The Go agent just stops
+/// reading, and an idle shell then waits on the pty forever. After an EOF
+/// frame the host may half-close and keep reading output: no hangup.
+fn feed<C: Conn>(mut conn: C, mut master: File, session: Arc<exec::Deadline>) {
     thread::spawn(move || loop {
         let Ok(chunk) = read_frame::<InputChunk>(&mut conn) else {
+            session.signal_group(libc::SIGHUP);
             return;
         };
         if chunk.winch {
