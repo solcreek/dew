@@ -55,5 +55,7 @@ fi
 (cd "$REPO" && go test -c -o "$WORK/conformance.test" ./test/conformance/)
 codesign --entitlements "$REPO/entitlements.plist" --force -s - "$WORK/conformance.test" 2>/dev/null
 
+# -test.timeout bounds a hang anywhere in the suite (a later flag in "$@"
+# overrides it).
 DEW_CONFORMANCE_KERNEL="$KERNEL" DEW_CONFORMANCE_INITRD="$INITRD" DEW_CONFORMANCE_DISK_GB="$DISK_GB" \
-  "$WORK/conformance.test" -test.v "$@"
+  "$WORK/conformance.test" -test.v -test.timeout 10m "$@"

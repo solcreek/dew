@@ -581,7 +581,11 @@ func TestConnect_ProxiesBothWays(t *testing.T) {
 	}
 	msg := strings.Repeat("conformance-", 10000) + "\n" // > one read's worth
 	go fmt.Fprint(c, msg)
+	// vsock read deadlines can't be relied on (see proto.ReadJSONTimeout):
+	// a proxy that stalls is cut off by closing the conn.
+	stall := time.AfterFunc(10*time.Second, func() { c.Close() })
 	got, err := bufio.NewReader(c).ReadString('\n')
+	stall.Stop()
 	if err != nil || got != msg {
 		t.Fatalf("echo through connect: %d of %d bytes, %v", len(got), len(msg), err)
 	}
