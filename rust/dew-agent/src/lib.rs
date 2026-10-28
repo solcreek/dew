@@ -12,6 +12,7 @@ pub mod conn;
 pub mod env;
 pub mod exec;
 pub mod gofmt;
+pub mod pty;
 pub mod server;
 #[cfg(target_os = "linux")]
 pub mod vsock;
