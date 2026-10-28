@@ -1767,7 +1767,18 @@ under the hood.
 - `cmd/dew-serve/` — duplicated `cmd/dew` after the v0.4 unification;
   systemd unit renamed to `dew.service`
 
-## [0.5.0] - 2026-05-30
+## [0.5.1] - 2026-05-29
+
+### Fixed
+
+- **npm install keeps the Developer ID signature.** The postinstall always
+  re-ran `codesign --force -s -`, which replaced the signed + notarized v0.5.0
+  binary's signature with an ad-hoc one, so `dew doctor` warned about a
+  restricted entitlement and VM commands failed. It now leaves a Developer ID
+  signature alone and only ad-hoc-signs binaries that have no usable
+  signature (local builds, forks), with a warning that VM commands won't work.
+
+## [0.5.0] - 2026-05-29
 
 **Headline:** the VM actually works.
 
@@ -1808,7 +1819,9 @@ was effectively non-functional. This release fixes the root cause.
 - `APPLE_TEAM_ID`
 - `APPLE_APP_PASSWORD`
 
-## [0.4.7] - 2026-05-30
+## [0.4.7] - 2026-05-29
+
+Covers 0.4.5 – 0.4.7.
 
 ### Added
 
@@ -1839,6 +1852,8 @@ was effectively non-functional. This release fixes the root cause.
 
 ## [0.4.4] - 2026-05-29
 
+Covers 0.4.1 – 0.4.4.
+
 ### Added
 
 - **`dew update`** — self-update with semver comparison + SHA-256 checksum verification. Background check every 24h
@@ -1868,6 +1883,8 @@ was effectively non-functional. This release fixes the root cause.
 - README rewritten for v0.4
 
 ## [0.4.0] - 2026-05-29
+
+Covers 0.3.0 – 0.4.0; the 0.3.x tags were not documented separately.
 
 ### Added
 
@@ -1953,6 +1970,76 @@ was effectively non-functional. This release fixes the root cause.
 - GitHub Actions CI (tests + cross-compile) and kernel build workflow
 - Smoke test script for pre-release validation
 
-[0.4.0]: https://github.com/solcreek/dew/releases/tag/v0.4.0
+[Unreleased]: https://github.com/solcreek/dew/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/solcreek/dew/compare/v0.9.1...v0.9.2
+[0.9.1]: https://github.com/solcreek/dew/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/solcreek/dew/compare/v0.8.5...v0.9.0
+[0.8.5]: https://github.com/solcreek/dew/compare/v0.8.4...v0.8.5
+[0.8.4]: https://github.com/solcreek/dew/compare/v0.8.3...v0.8.4
+[0.8.3]: https://github.com/solcreek/dew/compare/v0.8.2...v0.8.3
+[0.8.2]: https://github.com/solcreek/dew/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/solcreek/dew/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/solcreek/dew/compare/v0.7.55...v0.8.0
+[0.7.55]: https://github.com/solcreek/dew/compare/v0.7.54...v0.7.55
+[0.7.54]: https://github.com/solcreek/dew/compare/v0.7.53...v0.7.54
+[0.7.53]: https://github.com/solcreek/dew/compare/v0.7.52...v0.7.53
+[0.7.52]: https://github.com/solcreek/dew/compare/v0.7.51...v0.7.52
+[0.7.51]: https://github.com/solcreek/dew/compare/v0.7.50...v0.7.51
+[0.7.50]: https://github.com/solcreek/dew/compare/v0.7.49...v0.7.50
+[0.7.49]: https://github.com/solcreek/dew/compare/v0.7.48...v0.7.49
+[0.7.48]: https://github.com/solcreek/dew/compare/v0.7.47...v0.7.48
+[0.7.47]: https://github.com/solcreek/dew/compare/v0.7.46...v0.7.47
+[0.7.46]: https://github.com/solcreek/dew/compare/v0.7.45...v0.7.46
+[0.7.45]: https://github.com/solcreek/dew/compare/v0.7.44...v0.7.45
+[0.7.44]: https://github.com/solcreek/dew/compare/v0.7.43...v0.7.44
+[0.7.43]: https://github.com/solcreek/dew/compare/v0.7.42...v0.7.43
+[0.7.42]: https://github.com/solcreek/dew/compare/v0.7.41...v0.7.42
+[0.7.41]: https://github.com/solcreek/dew/compare/v0.7.40...v0.7.41
+[0.7.40]: https://github.com/solcreek/dew/compare/v0.7.39...v0.7.40
+[0.7.39]: https://github.com/solcreek/dew/compare/v0.7.38...v0.7.39
+[0.7.38]: https://github.com/solcreek/dew/compare/v0.7.37...v0.7.38
+[0.7.37]: https://github.com/solcreek/dew/compare/v0.7.36...v0.7.37
+[0.7.36]: https://github.com/solcreek/dew/compare/v0.7.35...v0.7.36
+[0.7.35]: https://github.com/solcreek/dew/compare/v0.7.34...v0.7.35
+[0.7.34]: https://github.com/solcreek/dew/compare/v0.7.33...v0.7.34
+[0.7.33]: https://github.com/solcreek/dew/compare/v0.7.32...v0.7.33
+[0.7.32]: https://github.com/solcreek/dew/compare/v0.7.31...v0.7.32
+[0.7.31]: https://github.com/solcreek/dew/compare/v0.7.30...v0.7.31
+[0.7.30]: https://github.com/solcreek/dew/compare/v0.7.29...v0.7.30
+[0.7.29]: https://github.com/solcreek/dew/compare/v0.7.28...v0.7.29
+[0.7.28]: https://github.com/solcreek/dew/compare/v0.7.27...v0.7.28
+[0.7.27]: https://github.com/solcreek/dew/compare/v0.7.26...v0.7.27
+[0.7.26]: https://github.com/solcreek/dew/compare/v0.7.25...v0.7.26
+[0.7.25]: https://github.com/solcreek/dew/compare/v0.7.24...v0.7.25
+[0.7.24]: https://github.com/solcreek/dew/compare/v0.7.23...v0.7.24
+[0.7.23]: https://github.com/solcreek/dew/compare/v0.7.22...v0.7.23
+[0.7.22]: https://github.com/solcreek/dew/compare/v0.7.21...v0.7.22
+[0.7.21]: https://github.com/solcreek/dew/compare/v0.7.20...v0.7.21
+[0.7.20]: https://github.com/solcreek/dew/compare/v0.7.19...v0.7.20
+[0.7.19]: https://github.com/solcreek/dew/compare/v0.7.18...v0.7.19
+[0.7.18]: https://github.com/solcreek/dew/compare/v0.7.17...v0.7.18
+[0.7.17]: https://github.com/solcreek/dew/compare/v0.7.16...v0.7.17
+[0.7.16]: https://github.com/solcreek/dew/compare/v0.7.15...v0.7.16
+[0.7.15]: https://github.com/solcreek/dew/compare/v0.7.14...v0.7.15
+[0.7.14]: https://github.com/solcreek/dew/compare/v0.7.13...v0.7.14
+[0.7.13]: https://github.com/solcreek/dew/compare/v0.7.12...v0.7.13
+[0.7.12]: https://github.com/solcreek/dew/compare/v0.7.11...v0.7.12
+[0.7.11]: https://github.com/solcreek/dew/compare/v0.7.10...v0.7.11
+[0.7.10]: https://github.com/solcreek/dew/compare/v0.7.9...v0.7.10
+[0.7.9]: https://github.com/solcreek/dew/compare/v0.7.8...v0.7.9
+[0.7.8]: https://github.com/solcreek/dew/compare/v0.7.7...v0.7.8
+[0.7.7]: https://github.com/solcreek/dew/compare/v0.7.6...v0.7.7
+[0.7.6]: https://github.com/solcreek/dew/compare/v0.7.5...v0.7.6
+[0.7.5]: https://github.com/solcreek/dew/compare/v0.7.4...v0.7.5
+[0.7.4]: https://github.com/solcreek/dew/compare/v0.7.3...v0.7.4
+[0.7.3]: https://github.com/solcreek/dew/compare/v0.7.2...v0.7.3
+[0.7.2]: https://github.com/solcreek/dew/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/solcreek/dew/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/solcreek/dew/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/solcreek/dew/compare/v0.5.1...v0.6.0
+[0.5.1]: https://github.com/solcreek/dew/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/solcreek/dew/compare/v0.4.7...v0.5.0
+[0.4.7]: https://github.com/solcreek/dew/compare/v0.4.4...v0.4.7
+[0.4.4]: https://github.com/solcreek/dew/compare/v0.4.0...v0.4.4
+[0.4.0]: https://github.com/solcreek/dew/compare/v0.2.0...v0.4.0
 [0.2.0]: https://github.com/solcreek/dew/releases/tag/v0.2.0
-[0.1.0]: https://github.com/solcreek/dew/releases/tag/v0.1.0
