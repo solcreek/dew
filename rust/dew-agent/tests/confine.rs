@@ -342,10 +342,13 @@ fn address_family_denylist_blocks_inet_sockets() {
         c.address_families = strs(&["AF_INET", "AF_INET6"]);
         c.address_families_deny = true;
     });
+    // Something that opens an AF_INET socket and reports EPERM: python3 where
+    // present (OpenBSD nc on the CI runner is silent on failure without -v),
+    // else BusyBox nc (the dew guest), which prints the error.
     let o = case(
         &c,
         "",
-        &format!("{STATUS}; {{ if command -v nc >/dev/null; then nc -z -w 1 127.0.0.1 9; else python3 -c 'import socket; socket.socket(socket.AF_INET)'; fi; }} 2>&1 | grep -o 'not permitted' | head -1"),
+        &format!("{STATUS}; {{ if command -v python3 >/dev/null; then python3 -c 'import socket; socket.socket(socket.AF_INET)'; else nc -z -w 1 127.0.0.1 9; fi; }} 2>&1 | grep -o 'not permitted' | head -1"),
     );
     assert_eq!(field(&o.stdout, "Seccomp"), "2");
     assert_eq!(
