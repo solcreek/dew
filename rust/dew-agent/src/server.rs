@@ -162,7 +162,12 @@ pub fn handle_conn<C: Conn>(mut conn: C, agent: &Agent) {
                 if req.stream {
                     return exec::execute_streaming(conn, &req, agent.cred());
                 }
-                if write_frame(&mut conn, &exec::execute(&req, agent.cred())).is_err() {
+                if write_frame(
+                    &mut conn,
+                    &exec::execute_as(&req, agent.cred(), agent.exec_user.as_deref()),
+                )
+                .is_err()
+                {
                     return;
                 }
             }

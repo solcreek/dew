@@ -230,15 +230,79 @@ fn invalid_utf8_is_replaced_like_encoding_json() {
 }
 
 #[test]
-fn confine_fails_closed_until_supported() {
-    let mut req = sh("true");
+fn confined_exec_never_runs_unconfined_without_its_shim() {
+    // A confined exec only ever runs through the shim (the agent re-exec'd).
+    // With no shim to exec, it must fail rather than fall back to running the
+    // command unconfined. (Enforcement itself is tested in tests/confine.rs.)
+    let _ = dew_agent::exec::SELF_EXE.set("/no/such/dew-agent".into());
+    let mut req = sh("echo RAN-UNCONFINED");
     req.confine = Some(Confinement {
         read_only_root: true,
         ..Default::default()
     });
     let r = execute(&req, None);
     assert_eq!(r.exit_code, -1);
-    assert!(r.error.starts_with("confine:"), "{}", r.error);
+    assert!(r.error.contains("/no/such/dew-agent"), "{}", r.error);
+    assert!(!r.stdout.contains("RAN-UNCONFINED"));
+}
+
+#[test]
+fn confined_command_re_execs_the_agent_with_an_authoritative_spec() {
+    use dew_agent::exec::confined_command;
+    let mut req = sh("id -u");
+    req.dir = "/".into();
+    req.env = vec![
+        "FOO=bar".into(),
+        "DEW_CONFINE_SPEC={}".into(),
+        "DEW_CONFINE_EXEC_USER=0".into(),
+    ];
+    let c = Confinement {
+        user: "65534".into(),
+        read_only_root: true,
+        ..Default::default()
+    };
+    req.confine = Some(c.clone());
+
+    let cmd = confined_command(&req, Some("dew")).unwrap();
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        args,
+        ["--dew-confine-shim", "/bin/sh", "-c", "id -u"],
+        "the shim resolves the command itself"
+    );
+    let env: std::collections::HashMap<String, String> = cmd
+        .get_envs()
+        .filter_map(|(k, v)| {
+            Some((
+                k.to_string_lossy().into_owned(),
+                v?.to_string_lossy().into_owned(),
+            ))
+        })
+        .collect();
+    let spec: Confinement = serde_json::from_str(&env["DEW_CONFINE_SPEC"]).unwrap();
+    assert_eq!(spec, c, "the request's own DEW_CONFINE_SPEC is replaced");
+    assert_eq!(
+        env["DEW_CONFINE_EXEC_USER"], "dew",
+        "the agent's exec user, not the request's"
+    );
+    assert_eq!(env["FOO"], "bar", "other request env passes through");
+    assert!(env.contains_key("PATH"));
+    assert_eq!(cmd.get_current_dir(), Some(std::path::Path::new("/")));
+
+    let none = confined_command(&req, None).unwrap();
+    assert!(
+        !none.get_envs().any(|(k, _)| k == "DEW_CONFINE_EXEC_USER"),
+        "no exec user: the variable is absent, not the request's value"
+    );
+    let mut bad_dir = req.clone();
+    bad_dir.dir = "/no/such/dir".into();
+    assert_eq!(
+        confined_command(&bad_dir, None).unwrap_err(),
+        "chdir /no/such/dir: no such file or directory"
+    );
 }
 
 #[test]
