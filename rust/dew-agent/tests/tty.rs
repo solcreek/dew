@@ -354,6 +354,14 @@ fn hangup_closes_the_master_for_a_command_ignoring_sighup() {
         seen.extend(STANDARD.decode(&c.data).unwrap());
     }
     broken.store(true, Ordering::SeqCst);
+    // Keep draining what the agent already has in flight: a write blocked on
+    // a full socket buffer when the flag flipped would otherwise never return
+    // and never reach the failure path. The agent's shutdown ends the drain.
+    // The host still sends nothing, so the feeder stays blocked on its read.
+    let mut drain = host.try_clone().unwrap();
+    let drainer = thread::spawn(move || {
+        let _ = io::copy(&mut drain, &mut io::sink());
+    });
     let t = std::time::Instant::now();
     while !worker.is_finished() {
         assert!(
@@ -362,6 +370,7 @@ fn hangup_closes_the_master_for_a_command_ignoring_sighup() {
         );
         thread::sleep(Duration::from_millis(20));
     }
+    drainer.join().unwrap();
     drop(host);
 }
 
