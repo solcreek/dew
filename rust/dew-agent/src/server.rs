@@ -326,6 +326,22 @@ mod tests {
     }
 
     #[test]
+    fn defaults_target_the_guest() {
+        let a = Agent::new(None);
+        assert_eq!(a.expose_ip.to_string(), "127.0.0.2");
+        assert_eq!(a.reverse_timeout, Duration::from_secs(5));
+    }
+
+    // Off Linux there is no vsock: the default dialer must fail cleanly, not
+    // pretend. (On Linux it really dials CID 2, which tests don't attempt.)
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn default_host_dialer_is_unsupported_off_linux() {
+        let e = (Agent::new(None).host_dialer)().unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::Unsupported);
+    }
+
+    #[test]
     fn empty_exec_user_means_unchanged() {
         assert_eq!(Agent::new(Some(String::new())).cred(), None);
         assert_eq!(Agent::new(None).cred(), None);
