@@ -104,7 +104,14 @@ func boot(m *testing.M, kernel, initrd string) (int, error) {
 		return 0, fmt.Errorf("cannot tell the agent apart: %+v", r)
 	}
 	fmt.Printf("conformance: agent=%s kernel=%s initrd=%s disk_gb=%d\n", agent, kernel, initrd, cfg.DiskGB)
-	return m.Run(), nil
+	code := m.Run()
+	// The agent's memory once the suite has exercised it: the resident set
+	// now and its peak (VmHWM), for comparing the two agents.
+	if r, err := execOnce(proto.ExecRequest{Command: "/bin/sh", Args: []string{"-c",
+		`grep -E '^Vm(RSS|HWM):' /proc/$(pidof dew-agent | cut -d' ' -f1)/status | tr -s ' \t' ' ' | tr '\n' ' '`}}); err == nil {
+		fmt.Printf("conformance: agent=%s memory after the suite: %s\n", agent, strings.TrimSpace(r.Stdout))
+	}
+	return code, nil
 }
 
 // lockedBuffer collects the serial console while the guest keeps writing,
