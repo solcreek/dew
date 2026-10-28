@@ -26,6 +26,27 @@ pub fn listen(port: u32) -> io::Result<OwnedFd> {
     }
 }
 
+/// Connect to `port` on `cid` (the host is VMADDR_CID_HOST), as
+/// mdlayher/vsock's Dial.
+pub fn dial(cid: u32, port: u32) -> io::Result<File> {
+    unsafe {
+        let fd = libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let file = File::from_raw_fd(fd);
+        let mut addr: libc::sockaddr_vm = std::mem::zeroed();
+        addr.svm_family = libc::AF_VSOCK as libc::sa_family_t;
+        addr.svm_port = port;
+        addr.svm_cid = cid;
+        let len = std::mem::size_of::<libc::sockaddr_vm>() as libc::socklen_t;
+        if libc::connect(fd, &addr as *const _ as *const libc::sockaddr, len) < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(file)
+    }
+}
+
 /// Accept one connection as a File (read/write on the socket fd).
 pub fn accept(listener: &OwnedFd) -> io::Result<File> {
     use std::os::fd::AsRawFd;

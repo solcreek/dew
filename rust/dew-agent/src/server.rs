@@ -3,12 +3,13 @@
 
 use crate::conn::Conn;
 use crate::exec::{self, Cred};
+use crate::expose::{reverse_dial, Exposes, Handler, HostDialer, EXPOSE_IP, REVERSE_DIAL_TIMEOUT};
 use crate::gofmt;
 use dew_proto::*;
 use std::io::{self, ErrorKind};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
-use std::sync::{mpsc, OnceLock};
+use std::sync::{mpsc, Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,19 +22,61 @@ pub const CONFINE_SUPPORTED: bool = false;
 
 /// Agent-wide state shared by all connections.
 pub struct Agent {
-    token: OnceLock<String>,
+    /// Shared with the expose handler, which presents it on reverse dials.
+    token: Arc<OnceLock<String>>,
     /// DEW_EXEC_USER: run commands as this user instead of root.
     pub exec_user: Option<String>,
     pub passwd: PathBuf,
+    /// Where expose listeners bind (127.0.0.2 in the guest).
+    pub expose_ip: IpAddr,
+    /// How an exposed connection reaches the host.
+    pub host_dialer: HostDialer,
+    /// How long a reverse dial waits for the host's answer.
+    pub reverse_timeout: Duration,
+    /// Created on the first set_exposes, from the fields above.
+    exposes: OnceLock<Exposes>,
+}
+
+/// The guest's reverse-forward dial: vsock to the host on port 1025.
+fn vsock_host_dialer() -> HostDialer {
+    #[cfg(target_os = "linux")]
+    return Arc::new(|| crate::vsock::dial(libc::VMADDR_CID_HOST, REVERSE_FORWARD_PORT));
+    #[cfg(not(target_os = "linux"))]
+    return Arc::new(|| {
+        Err(io::Error::new(
+            ErrorKind::Unsupported,
+            "vsock is Linux-only",
+        ))
+    });
 }
 
 impl Agent {
     pub fn new(exec_user: Option<String>) -> Agent {
         Agent {
-            token: OnceLock::new(),
+            token: Arc::new(OnceLock::new()),
             exec_user,
             passwd: PathBuf::from("/etc/passwd"),
+            expose_ip: EXPOSE_IP.parse().expect("valid expose IP"),
+            host_dialer: vsock_host_dialer(),
+            reverse_timeout: REVERSE_DIAL_TIMEOUT,
+            exposes: OnceLock::new(),
         }
+    }
+
+    /// The expose listener set, created on first use.
+    pub fn exposes(&self) -> &Exposes {
+        self.exposes.get_or_init(|| {
+            let (token, dial, timeout) = (
+                self.token.clone(),
+                self.host_dialer.clone(),
+                self.reverse_timeout,
+            );
+            let handler: Handler = Arc::new(move |tcp, port| {
+                let t = token.get().map(String::as_str).unwrap_or_default();
+                reverse_dial(tcp, port, t, &dial, timeout);
+            });
+            Exposes::new(self.expose_ip, handler)
+        })
     }
 
     /// Fail closed: nothing is authorized until the host has sent set_token.
@@ -89,7 +132,14 @@ pub fn handle_conn<C: Conn>(mut conn: C, agent: &Agent) {
                 if !agent.authorized(&req.token) {
                     return reply(&mut conn, "unauthorized");
                 }
-                return reply(&mut conn, "set_exposes: not supported by this agent build");
+                // The full desired set: a nil/empty list closes every listener.
+                agent.exposes().reconcile(&req.ports.unwrap_or_default());
+                let ok = ConnectResponse {
+                    ok: true,
+                    ..Default::default()
+                };
+                let _ = write_frame(&mut conn, &ok);
+                return;
             }
             TYPE_CONNECT => {
                 let req: ConnectRequest = serde_json::from_slice(&data).unwrap_or_default();
@@ -174,29 +224,17 @@ where
 /// Dial a TCP address inside the guest and proxy bytes both ways until both
 /// directions finish (no half-close, as in the Go agent).
 fn handle_connect<C: Conn>(mut vs: C, addr: &str) {
-    let mut tcp = match dial(addr) {
+    let tcp = match dial(addr) {
         Ok(t) => t,
         Err(e) => return reply(&mut vs, &e),
     };
-    if write_frame(
-        &mut vs,
-        &ConnectResponse {
-            ok: true,
-            ..Default::default()
-        },
-    )
-    .is_err()
-    {
-        return;
-    }
-    let (Ok(mut vs_in), Ok(mut tcp_out)) = (vs.try_clone(), tcp.try_clone()) else {
-        return;
+    let ok = ConnectResponse {
+        ok: true,
+        ..Default::default()
     };
-    let up = thread::spawn(move || {
-        let _ = io::copy(&mut vs_in, &mut tcp_out);
-    });
-    let _ = io::copy(&mut tcp, &mut vs);
-    let _ = up.join();
+    if write_frame(&mut vs, &ok).is_ok() {
+        crate::conn::proxy(vs, tcp);
+    }
 }
 
 #[cfg(test)]

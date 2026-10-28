@@ -6,7 +6,12 @@
 //! services in the same VM) and hands each accepted connection to a handler,
 //! which tunnels it to the host.
 
+use crate::conn;
+use dew_proto::{
+    read_frame, write_frame, ReverseDialRequest, ReverseDialResponse, TYPE_REVERSE_DIAL,
+};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
 use std::io;
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +24,43 @@ pub const EXPOSE_IP: &str = "127.0.0.2";
 
 /// Called on its own thread for each accepted connection, with the port.
 pub type Handler = Arc<dyn Fn(TcpStream, u16) + Send + Sync>;
+
+/// Opens a stream to the host's reverse-forward listener (in the guest: vsock
+/// CID 2, port 1025).
+pub type HostDialer = Arc<dyn Fn() -> io::Result<File> + Send + Sync>;
+
+/// How long to wait for the host's ReverseDialResponse (the Go agent's
+/// reverseDialRespTimeout): a stalled host listener must not pin the guest
+/// connection forever.
+pub const REVERSE_DIAL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Tunnel one accepted guest connection to the host (handleExposeConn): dial
+/// the host, ask it to dial 127.0.0.1:<port> on macOS, and on OK proxy both
+/// ways. The host checks the token and that the port was exposed. Any
+/// failure, a refusal, or no answer within `timeout` closes the guest
+/// connection.
+pub fn reverse_dial(tcp: TcpStream, port: u16, token: &str, dial: &HostDialer, timeout: Duration) {
+    let Ok(mut host) = dial() else {
+        return;
+    };
+    let req = ReverseDialRequest {
+        kind: TYPE_REVERSE_DIAL.into(),
+        token: token.into(),
+        port: port.into(),
+    };
+    // A zero SO_RCVTIMEO means "never time out"; keep the bound real.
+    let timeout = timeout.max(Duration::from_millis(1));
+    if write_frame(&mut host, &req).is_err()
+        || conn::set_read_timeout(&host, Some(timeout)).is_err()
+    {
+        return;
+    }
+    let ok = read_frame::<ReverseDialResponse>(&mut host).is_ok_and(|r| r.ok);
+    if !ok || conn::set_read_timeout(&host, None).is_err() {
+        return;
+    }
+    conn::proxy(host, tcp);
+}
 
 struct Listener {
     addr: SocketAddr,

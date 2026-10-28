@@ -279,7 +279,9 @@ fn exec_user_runs_commands_as_that_user() {
 // ---------------------------------------------------------------- set_exposes
 
 #[test]
-fn set_exposes_validates_then_reports_unsupported() {
+fn malformed_set_exposes_is_rejected_before_auth() {
+    // A corrupt frame must not reconcile (and possibly tear down) listeners.
+    // The working paths are in tests/expose.rs.
     let a = ready_agent();
     let mut h = open(&a);
     let bad = br#"{"type":"set_exposes","token":"s3cret","ports":"nope"}"#;
@@ -287,17 +289,7 @@ fn set_exposes_validates_then_reports_unsupported() {
     h.write_all(bad).unwrap();
     let r: ConnectResponse = read_frame(&mut h).unwrap();
     assert_eq!(r.error, "bad set_exposes request");
-
-    let r: ConnectResponse = roundtrip(
-        &a,
-        &SetExposesRequest {
-            kind: TYPE_SET_EXPOSES.into(),
-            token: TOKEN.into(),
-            ports: Some(vec![3000]),
-        },
-    );
-    assert!(!r.ok);
-    assert!(r.error.starts_with("set_exposes:"), "{}", r.error);
+    assert_closed(h);
 }
 
 // ---------------------------------------------------------------- connect
