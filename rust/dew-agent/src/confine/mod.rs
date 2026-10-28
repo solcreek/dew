@@ -5,3 +5,4 @@
 //! Linux-only syscalls that apply them live in `apply`.
 
 pub mod caps;
+pub mod ids;
