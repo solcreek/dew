@@ -76,7 +76,11 @@ fn set_token_acks_once_and_reports_confine_support() {
     let r = set_token(&a, TOKEN);
     assert!(r.ok);
     assert_eq!(r.confine, CONFINE_SUPPORTED);
-    assert!(!r.confine, "phase 2 must not claim confine support");
+    assert_eq!(
+        r.confine,
+        cfg!(target_os = "linux"),
+        "confine is acked exactly where the shim can enforce it"
+    );
 
     let again = set_token(&a, "attacker");
     assert!(!again.ok);

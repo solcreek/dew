@@ -15,10 +15,11 @@ use std::time::{Duration, Instant};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Whether this build enforces ExecRequest.confine. Acked in the set_token
-/// reply; while false the host refuses `--confine` (fails closed) instead of
-/// running the command unconfined. Flips to true with the confine shim.
-pub const CONFINE_SUPPORTED: bool = false;
+/// Whether this build enforces ExecRequest.confine, acked in the set_token
+/// reply. The confine shim exists only on Linux (the guest); elsewhere the
+/// ack stays false and the host refuses `--confine` instead of running the
+/// command unconfined.
+pub const CONFINE_SUPPORTED: bool = cfg!(target_os = "linux");
 
 /// Agent-wide state shared by all connections.
 pub struct Agent {
