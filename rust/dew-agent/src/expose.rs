@@ -409,21 +409,27 @@ mod tests {
 
     #[test]
     fn closing_many_listeners_overlaps_their_waits() {
-        // Each listener notices stop within one poll interval (100 ms). Closed
-        // one after another that adds up per port, and a big enough
+        // Each listener notices stop within one poll interval. Closed one
+        // after another, each join waits out the rest of that listener's
+        // interval (uniform, mean half an interval), so N closes cost about
+        // N/2 intervals (≈1.5 s for 30; σ≈0.16 s), and a big enough
         // set_exposes could blow the host's 5 s reply deadline. Signalling all
-        // before joining any makes it one interval in total.
-        let ports: Vec<i64> = (0..30).map(|_| free_port() as i64).collect();
+        // before joining any makes it about one interval in total. The bound,
+        // N/4 intervals, has several intervals of headroom for a loaded
+        // runner and sits ~5σ below the sequential cost.
+        const N: usize = 30;
+        let ports: Vec<i64> = (0..N).map(|_| free_port() as i64).collect();
         let x = Exposes::new(LO, echo());
         x.reconcile(&ports);
-        assert_eq!(x.ports().len(), 30);
+        assert_eq!(x.ports().len(), N);
         let t = std::time::Instant::now();
         x.reconcile(&[]);
         let took = t.elapsed();
         assert!(x.ports().is_empty());
+        let bound = Duration::from_millis((N as u64 * STOP_POLL_MS as u64) / 4);
         assert!(
-            took < Duration::from_millis(600),
-            "closing 30 listeners took {took:?}"
+            took < bound,
+            "closing {N} listeners took {took:?} (bound {bound:?})"
         );
     }
 
