@@ -11,7 +11,7 @@ use base64::Engine;
 use dew_proto::{read_frame, write_frame, ExecDone, ExecRequest, InputChunk, OutputChunk};
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::Stdio;
@@ -130,10 +130,42 @@ pub(crate) fn run<C: Conn>(
 }
 
 /// Block until the master has output (false) or the wake socket fired
-/// (true). select(2) rather than poll(2): macOS poll doesn't support tty
-/// devices. Descriptors at or past FD_SETSIZE can't go in an fd_set, so the
-/// caller then just reads (no wake-up), as without this.
+/// (true). On Linux, where the agent runs, this is poll(2): it works on ptys
+/// and has no descriptor ceiling, so an agent holding fds past FD_SETSIZE
+/// still gets the wake-up.
+#[cfg(not(target_os = "macos"))]
 fn wait_master(master: &File, wake: &UnixStream) -> bool {
+    let mut fds = [
+        libc::pollfd {
+            fd: master.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: wake.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    loop {
+        let rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+        if rc < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return false; // let the read report whatever is wrong
+        }
+        return fds[1].revents != 0;
+    }
+}
+
+/// macOS (where only the tests run): poll(2) doesn't support tty devices
+/// there, so this uses select(2). An fd_set can't hold descriptors at or
+/// past FD_SETSIZE; those fall back to a plain read with no wake-up.
+#[cfg(target_os = "macos")]
+fn wait_master(master: &File, wake: &UnixStream) -> bool {
+    #[cfg(target_os = "macos")]
+    use std::os::fd::RawFd;
     let (m, w) = (master.as_raw_fd(), wake.as_raw_fd());
     if m >= libc::FD_SETSIZE as RawFd || w >= libc::FD_SETSIZE as RawFd {
         return false;
@@ -196,4 +228,69 @@ fn feed<C: Conn>(
             return;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(target_os = "linux")]
+    use std::os::fd::{FromRawFd, RawFd};
+
+    #[test]
+    fn wait_master_sees_output_and_the_wake() {
+        let p = pty::open(24, 80).unwrap();
+        let (rx, mut tx) = UnixStream::pair().unwrap();
+        let mut slave = File::from(p.slave);
+        slave.write_all(b"x").unwrap();
+        assert!(
+            !wait_master(&p.master, &rx),
+            "output must read as master-ready"
+        );
+        let mut b = [0u8; 8];
+        let _ = (&p.master).read(&mut b).unwrap();
+        tx.write_all(&[1]).unwrap();
+        assert!(wait_master(&p.master, &rx), "wake must be seen");
+    }
+
+    // The guest is Linux, where an agent with many conns can hold
+    // descriptors past FD_SETSIZE (1024). The wake-up must still work there,
+    // or an idle command ignoring SIGHUP outlives a host disconnect.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wait_master_works_past_fd_setsize() {
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) }, 0);
+        let want = 1200 as libc::rlim_t;
+        if lim.rlim_cur < want {
+            if lim.rlim_max < want {
+                eprintln!(
+                    "skipping: RLIMIT_NOFILE hard limit {} < {want}",
+                    lim.rlim_max
+                );
+                return;
+            }
+            lim.rlim_cur = want;
+            assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) }, 0);
+        }
+        let high = |fd: RawFd, to: RawFd| {
+            assert_eq!(unsafe { libc::dup2(fd, to) }, to);
+            to
+        };
+        let p = pty::open(24, 80).unwrap();
+        let (rx, mut tx) = UnixStream::pair().unwrap();
+        let m = unsafe { File::from_raw_fd(high(p.master.as_raw_fd(), 1100)) };
+        let w = unsafe { UnixStream::from_raw_fd(high(rx.as_raw_fd(), 1101)) };
+        assert!(
+            1100 >= libc::FD_SETSIZE as RawFd,
+            "premise: past FD_SETSIZE"
+        );
+        tx.write_all(&[1]).unwrap();
+        assert!(
+            wait_master(&m, &w),
+            "wake not seen on a descriptor past FD_SETSIZE"
+        );
+    }
 }
