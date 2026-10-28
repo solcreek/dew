@@ -1,0 +1,1 @@
+{"type":"","token":"tok","command":"/usr/bin/id","confine":{"user":"nobody","group":"nogroup","no_new_privs":true,"drop_all_caps":true,"keep_caps":["cap_net_bind_service"],"read_only_root":true,"read_write_paths":["/var/lib/app"],"address_families":["AF_UNIX","AF_INET"],"system_calls":["ptrace","mount"],"system_calls_deny":true}}
