@@ -380,6 +380,52 @@ fn stream_normalises_line_endings_like_bufio_scanner() {
 }
 
 #[test]
+fn stream_drops_a_trailing_cr_at_eof() {
+    // bufio.ScanLines drops a final \r even without a \n after it.
+    let s = stream(streaming("printf 'hello\\r'"), vec![], LIMIT);
+    assert_eq!(s.joined("stdout"), "hello\n");
+}
+
+#[test]
+fn stream_terminates_an_unterminated_line_of_exactly_max_chunk() {
+    let n = MAX_CHUNK as usize;
+    let s = stream(
+        streaming(&format!("head -c {n} /dev/zero | tr '\\0' x")),
+        vec![],
+        LIMIT,
+    );
+    assert_eq!(s.joined("stdout"), format!("{}\n", "x".repeat(n)));
+}
+
+#[test]
+fn stream_strips_a_crlf_split_across_chunks() {
+    // The \r lands as the last byte of a full chunk and the \n starts the next.
+    let n = MAX_CHUNK as usize - 1;
+    let s = stream(
+        streaming(&format!(
+            "head -c {n} /dev/zero | tr '\\0' x; printf '\\r\\nnext\\n'"
+        )),
+        vec![],
+        LIMIT,
+    );
+    assert_eq!(s.joined("stdout"), format!("{}\nnext\n", "x".repeat(n)));
+}
+
+#[test]
+fn stream_keeps_a_cr_in_the_middle_of_a_long_line() {
+    // A held-back \r not followed by \n is ordinary data.
+    let n = MAX_CHUNK as usize - 1;
+    let s = stream(
+        streaming(&format!(
+            "head -c {n} /dev/zero | tr '\\0' x; printf '\\rtail\\n'"
+        )),
+        vec![],
+        LIMIT,
+    );
+    assert_eq!(s.joined("stdout"), format!("{}\rtail\n", "x".repeat(n)));
+}
+
+#[test]
 fn stream_splits_lines_longer_than_max_chunk() {
     let n = MAX_CHUNK as usize * 2 + 10;
     let s = stream(

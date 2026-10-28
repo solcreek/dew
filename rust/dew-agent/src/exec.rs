@@ -304,22 +304,52 @@ pub fn execute(req: &ExecRequest, cred: Option<Cred>) -> ExecResponse {
     resp
 }
 
-/// Send one pipe's output as OutputChunk frames, a line at a time. Like the
-/// Go agent's bufio.Scanner: a trailing "\r\n" or "\n" becomes "\n", and a
-/// final unterminated line gets one.
+/// Trailing bytes of a mid-line piece to carry into the next one: a final
+/// `\r` may be the first half of a CRLF split across the chunk boundary.
+fn hold_back(piece: &[u8]) -> usize {
+    usize::from(piece.last() == Some(&b'\r'))
+}
+
+/// Send one pipe's output as OutputChunk frames, a line at a time, with the
+/// line endings bufio.ScanLines gives the Go agent: "\r\n" and "\n" become
+/// "\n", a final unterminated line gets one, and a \r just before EOF is
+/// dropped. Lines over MAX_CHUNK go out in pieces; the line state carries
+/// across pieces, so these rules hold wherever a chunk boundary falls.
 fn pump<C: Conn>(
     pipe: impl Read + Send + 'static,
     stream: &'static str,
     w: Arc<Mutex<C>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
+        let send = |data: &[u8]| {
+            let chunk = OutputChunk {
+                stream: stream.into(),
+                data: String::from_utf8_lossy(data).into_owned(),
+            };
+            write_frame(&mut *w.lock().unwrap(), &chunk).is_ok()
+        };
         let mut r = BufReader::with_capacity(MAX_CHUNK as usize, pipe);
-        let mut buf = Vec::with_capacity(256);
+        // Bytes of the current piece; may start with bytes held back from the
+        // previous piece of the same line.
+        let mut buf: Vec<u8> = Vec::with_capacity(256);
+        // Part of the current line has already been sent.
+        let mut mid_line = false;
         loop {
-            buf.clear();
-            match r.by_ref().take(MAX_CHUNK).read_until(b'\n', &mut buf) {
-                Ok(0) | Err(_) => return,
-                Ok(_) => {}
+            let limit = MAX_CHUNK - buf.len() as u64;
+            let n = match r.by_ref().take(limit).read_until(b'\n', &mut buf) {
+                Ok(n) => n,
+                Err(_) => return,
+            };
+            if n == 0 {
+                // EOF: finish a pending line as ScanLines' final token.
+                if mid_line || !buf.is_empty() {
+                    if buf.last() == Some(&b'\r') {
+                        buf.pop();
+                    }
+                    buf.push(b'\n');
+                    send(&buf);
+                }
+                return;
             }
             if buf.last() == Some(&b'\n') {
                 buf.pop();
@@ -327,16 +357,20 @@ fn pump<C: Conn>(
                     buf.pop();
                 }
                 buf.push(b'\n');
-            } else if (buf.len() as u64) < MAX_CHUNK {
-                buf.push(b'\n'); // last line without a newline (EOF)
+                if !send(&buf) {
+                    return;
+                }
+                buf.clear();
+                mid_line = false;
+                continue;
             }
-            let chunk = OutputChunk {
-                stream: stream.into(),
-                data: String::from_utf8_lossy(&buf).into_owned(),
-            };
-            if write_frame(&mut *w.lock().unwrap(), &chunk).is_err() {
+            // Cut at MAX_CHUNK in the middle of a line.
+            let tail = buf.split_off(buf.len() - hold_back(&buf));
+            if !buf.is_empty() && !send(&buf) {
                 return;
             }
+            buf = tail;
+            mid_line = true;
         }
     })
 }
