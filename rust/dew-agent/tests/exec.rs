@@ -56,6 +56,39 @@ fn failure_returns_exit_code_and_stderr() {
 }
 
 #[test]
+fn failure_stderr_keeps_go_prefix_and_suffix() {
+    // cmd.Output keeps the first and last 32 KiB of stderr with an omission
+    // marker, so a noisy failure can't exhaust guest memory or the frame.
+    let k = 32 * 1024;
+    let script = format!(
+        "head -c {k} /dev/zero | tr '\\0' a >&2; head -c 40000 /dev/zero | tr '\\0' b >&2; \
+         head -c {k} /dev/zero | tr '\\0' c >&2; exit 1"
+    );
+    let r = execute(&sh(&script), None);
+    assert_eq!(r.exit_code, 1);
+    let want = format!(
+        "{}\n... omitting 40000 bytes ...\n{}",
+        "a".repeat(k),
+        "c".repeat(k)
+    );
+    assert_eq!(r.stderr.len(), want.len());
+    assert!(
+        r.stderr == want,
+        "stderr does not match Go's prefixSuffixSaver output"
+    );
+}
+
+#[test]
+fn failure_stderr_at_exactly_two_windows_is_kept_whole() {
+    let k = 32 * 1024;
+    let script = format!(
+        "head -c {k} /dev/zero | tr '\\0' a >&2; head -c {k} /dev/zero | tr '\\0' c >&2; exit 1"
+    );
+    let r = execute(&sh(&script), None);
+    assert_eq!(r.stderr, format!("{}{}", "a".repeat(k), "c".repeat(k)));
+}
+
+#[test]
 fn signalled_process_reports_minus_one_without_error() {
     let r = execute(&sh("kill -9 $$"), None);
     assert_eq!(r.exit_code, -1);

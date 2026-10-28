@@ -173,6 +173,75 @@ fn read_all(mut r: impl Read + Send + 'static) -> thread::JoinHandle<Vec<u8>> {
     })
 }
 
+/// Bytes of stderr kept at each end of a failed buffered exec, as cmd.Output.
+pub const STDERR_WINDOW: usize = 32 << 10;
+
+/// Port of os/exec's prefixSuffixSaver: keeps the first and last `n` bytes
+/// written and counts what falls between, so a noisy command can't grow the
+/// agent's memory or the reply frame without bound.
+pub struct PrefixSuffix {
+    n: usize,
+    prefix: Vec<u8>,
+    suffix: std::collections::VecDeque<u8>,
+    skipped: u64,
+}
+
+impl PrefixSuffix {
+    pub fn new(n: usize) -> Self {
+        PrefixSuffix {
+            n,
+            prefix: Vec::new(),
+            suffix: Default::default(),
+            skipped: 0,
+        }
+    }
+
+    pub fn write(&mut self, mut p: &[u8]) {
+        let room = self.n - self.prefix.len();
+        let take = room.min(p.len());
+        self.prefix.extend_from_slice(&p[..take]);
+        p = &p[take..];
+        // Only the last n bytes of what's left can survive into the suffix.
+        if p.len() > self.n {
+            self.skipped += (p.len() - self.n) as u64;
+            p = &p[p.len() - self.n..];
+        }
+        self.suffix.extend(p);
+        let over = self.suffix.len().saturating_sub(self.n);
+        self.suffix.drain(..over);
+        self.skipped += over as u64;
+    }
+
+    /// The saved bytes, with Go's "... omitting N bytes ..." marker when
+    /// anything was dropped.
+    pub fn into_bytes(self) -> Vec<u8> {
+        let mut out = self.prefix;
+        if self.skipped > 0 {
+            out.extend_from_slice(
+                format!("\n... omitting {} bytes ...\n", self.skipped).as_bytes(),
+            );
+        }
+        out.extend(self.suffix);
+        out
+    }
+}
+
+fn read_bounded(mut r: impl Read + Send + 'static, n: usize) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut saver = PrefixSuffix::new(n);
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            match r.read(&mut buf) {
+                Ok(0) => break,
+                Ok(k) => saver.write(&buf[..k]),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        saver.into_bytes()
+    })
+}
+
 /// Run a non-streaming exec and collect its output (executeCommand).
 pub fn execute(req: &ExecRequest, cred: Option<Cred>) -> ExecResponse {
     let fail = |error: String| ExecResponse {
@@ -203,7 +272,7 @@ pub fn execute(req: &ExecRequest, cred: Option<Cred>) -> ExecResponse {
     };
     let (deadline, cancel) = Deadline::arm(&child, Some(timeout));
     let out = read_all(child.stdout.take().unwrap());
-    let err = read_all(child.stderr.take().unwrap());
+    let err = read_bounded(child.stderr.take().unwrap(), STDERR_WINDOW);
     // Drain before reaping: see Deadline.
     let (stdout, stderr) = (
         out.join().unwrap_or_default(),
@@ -358,4 +427,37 @@ pub fn execute_streaming<C: Conn>(conn: C, req: &ExecRequest, cred: Option<Cred>
         };
     }
     done(d);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PrefixSuffix;
+
+    /// What prefixSuffixSaver.Bytes returns for `data` written in any split.
+    fn reference(data: &[u8], n: usize) -> Vec<u8> {
+        if data.len() <= 2 * n {
+            return data.to_vec();
+        }
+        let mut out = data[..n].to_vec();
+        out.extend_from_slice(
+            format!("\n... omitting {} bytes ...\n", data.len() - 2 * n).as_bytes(),
+        );
+        out.extend_from_slice(&data[data.len() - n..]);
+        out
+    }
+
+    #[test]
+    fn matches_go_for_every_write_split() {
+        let n = 8;
+        for len in [0, 1, 7, 8, 9, 16, 17, 25, 100] {
+            let data: Vec<u8> = (0..len).map(|i| b'a' + (i % 26) as u8).collect();
+            for step in [1, 3, 8, 9, 64] {
+                let mut s = PrefixSuffix::new(n);
+                for chunk in data.chunks(step) {
+                    s.write(chunk);
+                }
+                assert_eq!(s.into_bytes(), reference(&data, n), "len={len} step={step}");
+            }
+        }
+    }
 }
