@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["dew-proto"]
+members = ["dew-proto", "dew-agent"]
 
 [workspace.package]
 edition = "2021"

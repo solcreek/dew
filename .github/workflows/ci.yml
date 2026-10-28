@@ -70,6 +70,32 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      # Guest agent binaries for both VM arches: static musl, linked with the
+      # toolchain's rust-lld (rust/.cargo/config.toml). Not shipped yet; this
+      # keeps the cross-build green and tracks the size.
+      - name: Cross-build guest agent (musl)
+        run: |
+          for t in aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
+            cargo build --locked --release -p dew-agent --target "$t"
+            f="target/$t/release/dew-agent"
+            file "$f"
+            echo "dew-agent $t: $(stat -c %s "$f") bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      # main.rs and vsock.rs only run inside a guest (AF_VSOCK); they are
+      # exercised end to end, not by unit tests, so they are left out of the
+      # floor. Everything else must stay at or above 95% of lines.
+      - name: Coverage
+        run: |
+          rustup component add llvm-tools
+          cargo llvm-cov --locked --workspace --summary-only \
+            --ignore-filename-regex '(main|vsock)\.rs$' \
+            --fail-under-lines 95 | tee -a "$GITHUB_STEP_SUMMARY"
+
   # dew-win is //go:build windows and is skipped by the macOS test job
   # (go test ./... excludes windows-tagged files there). Build and test
   # it natively on Windows so the wrapper's pure helpers — exec/argv

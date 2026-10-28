@@ -1,0 +1,20 @@
+[package]
+name = "dew-agent"
+version = "0.0.0"
+description = "dew guest agent (Rust port of cmd/dew-agent; not shipped yet)"
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "dew-agent"
+path = "src/main.rs"
+
+[dependencies]
+dew-proto = { path = "../dew-proto" }
+serde_json.workspace = true
+libc = "0.2"
+
+[dev-dependencies]
+serde.workspace = true

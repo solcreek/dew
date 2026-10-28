@@ -1,0 +1,9 @@
+# Guest agent targets: static musl, linked with the rust-lld that ships in the
+# toolchain, so they cross-build from macOS or Linux without Docker or zig.
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -1,6 +1,6 @@
 # Rust guest agent migration
 
-Status: phase 1 in progress (2026-10-28).
+Status: phase 1 merged (#53); phase 2 (agent core) in review (2026-10-28).
 
 ## Why the agent, and only the agent (for now)
 
@@ -67,6 +67,27 @@ Not planned. Reopen only with a concrete driver, for example:
 If it happens, the order would be: `internal/vm/darwin` behind a C ABI, then
 leaf packages (`detect`, `services`, `dewfile`), and `cmd/dew` last. Every
 step would sit behind the existing Go interfaces.
+
+## Deliberate behaviour differences from the Go agent
+
+The port matches the Go agent's wire shapes exactly (golden frames) and its
+user-visible error wording where the host shows it, such as
+`timeout after 1.5s`, `exec: "x": executable file not found in $PATH` and
+`dial tcp …: connect: connection refused`. It differs on purpose in these
+cases, and each one has a test in `rust/dew-agent/tests/`:
+
+| case | Go agent | Rust agent | why |
+|---|---|---|---|
+| exec timeout, grandchild holds stdout (`sleep 9 & echo`) | kills only the direct child, then waits for the pipe, so the exec overruns its deadline | kills the child's process group; drains pipes before reaping | a deadline should end the exec |
+| output line > 64 KiB | `bufio.Scanner` stops reading the pipe and the command stalls | splits into ≤ 64 KiB chunks | no stall |
+| `--confine` / TTY request before phases 3–4 | — | explicit `confine:` / `tty:` error; set_token acks `confine: false` | fail closed |
+
+Kept identical even where questionable, so the migration is not also a
+behaviour change:
+
+- An empty token, once set, authorizes empty-token requests.
+- Connect proxying doesn't half-close.
+- A trailing `\r` is stripped from streamed lines.
 
 ## Risks
 
