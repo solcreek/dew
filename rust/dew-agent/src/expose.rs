@@ -172,7 +172,6 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::Ipv4Addr;
-    use std::sync::mpsc;
 
     const LO: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
@@ -248,27 +247,33 @@ mod tests {
         assert_eq!(ask(a, "again").unwrap(), format!("{a}:again"));
     }
 
+    /// The accept thread serving `port`: a restarted listener gets a new one.
+    fn listener_thread(x: &Exposes, port: u16) -> thread::ThreadId {
+        x.listeners.lock().unwrap()[&port].thread.thread().id()
+    }
+
     #[test]
     fn unchanged_ports_are_left_running() {
-        // A connection held open across a reconcile that keeps its port must
-        // survive (the listener isn't restarted).
-        let a = free_port();
-        let (tx, rx) = mpsc::channel::<()>();
-        let rx = Arc::new(Mutex::new(rx));
-        let hold: Handler = Arc::new(move |mut c: TcpStream, _| {
-            let _ = rx.lock().unwrap().recv_timeout(Duration::from_secs(5));
-            let _ = c.write_all(b"held");
-        });
-        let x = Exposes::new(LO, hold);
+        // A reconcile that keeps a port must not restart its listener. (An
+        // already-accepted connection would survive a restart, so asserting
+        // on one couldn't catch it; the accept thread's identity does.)
+        let (a, b) = (free_port(), free_port());
+        let x = Exposes::new(LO, echo());
         x.reconcile(&[a as i64]);
-        let mut c = TcpStream::connect((LO, a)).unwrap();
-        thread::sleep(Duration::from_millis(50));
-        x.reconcile(&[a as i64, a as i64]);
-        tx.send(()).unwrap();
-        let mut out = String::new();
-        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        c.read_to_string(&mut out).unwrap();
-        assert_eq!(out, "held");
+        let before = listener_thread(&x, a);
+        x.reconcile(&[a as i64, a as i64, b as i64]);
+        assert_eq!(
+            listener_thread(&x, a),
+            before,
+            "listener for {a} was restarted"
+        );
+        x.reconcile(&[b as i64, a as i64]);
+        assert_eq!(
+            listener_thread(&x, a),
+            before,
+            "listener for {a} was restarted"
+        );
+        assert_eq!(ask(a, "ok").unwrap(), format!("{a}:ok"));
     }
 
     #[test]
