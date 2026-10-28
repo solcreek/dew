@@ -72,6 +72,26 @@ func TestLookupRejectsNegative(t *testing.T) {
 	}
 }
 
+// An id the kernel can't hold as a uid_t/gid_t must be rejected: setresuid
+// takes (uid_t)-1 (4294967295) as "leave unchanged", and anything wider is
+// truncated (4294967296 → 0). Either would leave a confined target as root.
+func TestLookupRejectsIdsThatWouldStayRoot(t *testing.T) {
+	for _, spec := range []string{"4294967295", "4294967296", "18446744073709551615"} {
+		if _, _, err := lookupUser(spec); err == nil {
+			t.Errorf("lookupUser(%q) accepted an id that leaves the target root", spec)
+		}
+	}
+	if _, err := lookupGroup("4294967295"); err == nil {
+		t.Error("lookupGroup(4294967295) accepted (gid_t)-1")
+	}
+	if uid, gid, err := lookupUser("4294967294"); err != nil || uid != 4294967294 || gid != 4294967294 {
+		t.Errorf("the largest real uid → %d,%d,%v", uid, gid, err)
+	}
+	if g, err := lookupGroup("4294967294"); err != nil || g != 4294967294 {
+		t.Errorf("the largest real gid → %d,%v", g, err)
+	}
+}
+
 func TestKeptCaps(t *testing.T) {
 	got, err := keptCaps(&protocol.Confinement{DropAllCaps: true, KeepCaps: []string{"cap_net_bind_service"}}, 40)
 	if err != nil || !reflect.DeepEqual(got, []int{10}) {

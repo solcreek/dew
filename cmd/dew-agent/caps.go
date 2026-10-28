@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/user"
 	"runtime"
@@ -23,11 +24,15 @@ func lookupUser(spec string) (uid, gid int, err error) {
 			// silently skip the drop, so reject it rather than under-confine.
 			return 0, 0, fmt.Errorf("negative uid %d", n)
 		}
-		uid = n
-		gid = n
+		if uid, err = checkID("uid", n); err != nil {
+			return 0, 0, err
+		}
+		gid = uid
 		if u, e := user.LookupId(spec); e == nil {
 			if g, e := strconv.Atoi(u.Gid); e == nil {
-				gid = g
+				if gid, err = checkID("gid", g); err != nil {
+					return 0, 0, err
+				}
 			}
 		}
 		return uid, gid, nil
@@ -44,7 +49,24 @@ func lookupUser(spec string) (uid, gid int, err error) {
 	if err != nil {
 		return 0, 0, fmt.Errorf("gid %q: %w", u.Gid, err)
 	}
+	if uid, err = checkID("uid", uid); err != nil {
+		return 0, 0, err
+	}
+	if gid, err = checkID("gid", gid); err != nil {
+		return 0, 0, err
+	}
 	return uid, gid, nil
+}
+
+// checkID rejects an id the kernel can't take as a real uid_t/gid_t. The
+// set*id calls pass it as 32 bits: (uid_t)-1 (4294967295) means "leave
+// unchanged" and anything wider is truncated (4294967296 → 0), so either would
+// leave the target running as root.
+func checkID(kind string, n int) (int, error) {
+	if n < 0 || uint64(n) >= math.MaxUint32 {
+		return 0, fmt.Errorf("%s %d out of range", kind, n)
+	}
+	return n, nil
 }
 
 // lookupGroup resolves a Group= spec (numeric gid or group name) to its gid.
@@ -53,7 +75,7 @@ func lookupGroup(spec string) (int, error) {
 		if n < 0 {
 			return 0, fmt.Errorf("negative gid %d", n)
 		}
-		return n, nil
+		return checkID("gid", n)
 	}
 	g, e := user.LookupGroup(spec)
 	if e != nil {
@@ -63,7 +85,7 @@ func lookupGroup(spec string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("gid %q: %w", g.Gid, err)
 	}
-	return gid, nil
+	return checkID("gid", gid)
 }
 
 // capByName maps the lowercase libcap names that confine.Plan emits

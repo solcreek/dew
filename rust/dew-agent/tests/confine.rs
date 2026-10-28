@@ -188,6 +188,25 @@ fn unknown_user_fails_closed_before_running_anything() {
     );
 }
 
+#[test]
+fn ids_that_are_not_a_uid_t_fail_closed() {
+    if !root() {
+        return;
+    }
+    // (uid_t)-1 would leave the ids unchanged and 2^32 would wrap to 0: the
+    // target would run as root, so both shims refuse them.
+    for (s, msg) in [
+        (spec(|c| c.user = "4294967295".into()), "uid 4294967295"),
+        (spec(|c| c.user = "4294967296".into()), "uid 4294967296"),
+        (spec(|c| c.group = "4294967295".into()), "gid 4294967295"),
+    ] {
+        let o = case(&s, "", "echo RAN");
+        assert_eq!(o.code, 126, "{msg}: {o:?}");
+        assert!(!o.stdout.contains("RAN"), "{msg}: {o:?}");
+        assert_eq!(o.stderr.trim(), format!("dew-confine: {msg} out of range"));
+    }
+}
+
 // ------------------------------------------------------------- capabilities
 
 #[test]
