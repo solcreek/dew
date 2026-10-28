@@ -57,6 +57,47 @@ pub fn set_read_timeout(fd: &impl AsRawFd, d: Option<std::time::Duration>) -> st
     Ok(())
 }
 
+/// Read one frame's payload within `budget` for the *whole* frame, as Go's
+/// ReadJSONTimeout bounds the full ReadJSON. SO_RCVTIMEO alone would bound
+/// each read, so a peer trickling bytes could stretch a frame indefinitely;
+/// here every read gets only what is left of the one deadline. The socket's
+/// read timeout is cleared again before returning.
+pub fn read_frame_bytes_within<F>(
+    conn: &mut F,
+    budget: std::time::Duration,
+) -> std::io::Result<Vec<u8>>
+where
+    F: std::io::Read + AsRawFd,
+{
+    struct Deadline<'a, F> {
+        inner: &'a mut F,
+        until: std::time::Instant,
+    }
+    impl<F: std::io::Read + AsRawFd> std::io::Read for Deadline<'_, F> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let left = self
+                .until
+                .saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
+            // Never 0: a zero SO_RCVTIMEO means "no timeout".
+            set_read_timeout(
+                self.inner,
+                Some(left.max(std::time::Duration::from_millis(1))),
+            )?;
+            self.inner.read(buf)
+        }
+    }
+    let until = std::time::Instant::now() + budget;
+    let frame = dew_proto::read_frame_bytes(&mut Deadline {
+        inner: &mut *conn,
+        until,
+    });
+    set_read_timeout(conn, None)?;
+    frame
+}
+
 /// Copy bytes both ways between `a` and `tcp` until both directions end. No
 /// half-close, as in the Go agent's connect and expose proxies.
 pub fn proxy<C: Conn>(mut a: C, mut tcp: std::net::TcpStream) {
@@ -94,6 +135,60 @@ mod tests {
         let mut buf = [0u8; 1];
         assert_eq!(a.read(&mut buf).unwrap(), 1);
         w.join().unwrap();
+    }
+
+    fn frame(payload: &[u8]) -> Vec<u8> {
+        let mut f = (payload.len() as u32).to_be_bytes().to_vec();
+        f.extend_from_slice(payload);
+        f
+    }
+
+    #[test]
+    fn frame_within_budget_is_read_and_timeout_cleared() {
+        let (mut a, mut b) = UnixStream::pair().unwrap();
+        b.write_all(&frame(b"{\"ok\":true}")).unwrap();
+        let got = read_frame_bytes_within(&mut a, Duration::from_secs(2)).unwrap();
+        assert_eq!(got, b"{\"ok\":true}");
+        // Cleared: a later read waits past the budget for late data.
+        let w = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            b.write_all(b"x").unwrap();
+        });
+        let mut one = [0u8; 1];
+        set_read_timeout(&a, None).unwrap();
+        assert_eq!(a.read(&mut one).unwrap(), 1);
+        w.join().unwrap();
+    }
+
+    #[test]
+    fn trickled_frame_fails_at_the_one_deadline() {
+        let (mut a, mut b) = UnixStream::pair().unwrap();
+        let f = frame(b"{\"ok\":true}");
+        let w = std::thread::spawn(move || {
+            for byte in f {
+                if b.write_all(&[byte]).is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let t = Instant::now();
+        assert!(read_frame_bytes_within(&mut a, Duration::from_millis(200)).is_err());
+        assert!(
+            t.elapsed() < Duration::from_millis(600),
+            "{:?}",
+            t.elapsed()
+        );
+        drop(a);
+        w.join().unwrap();
+    }
+
+    #[test]
+    fn zero_budget_times_out_instead_of_waiting_forever() {
+        let (mut a, _b) = UnixStream::pair().unwrap();
+        let t = Instant::now();
+        assert!(read_frame_bytes_within(&mut a, Duration::ZERO).is_err());
+        assert!(t.elapsed() < Duration::from_millis(500));
     }
 
     #[test]

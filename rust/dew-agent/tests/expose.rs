@@ -160,6 +160,47 @@ fn silent_host_times_out_and_closes_the_guest_connection() {
 }
 
 #[test]
+fn trickled_host_answer_is_bounded_by_one_deadline() {
+    // The budget covers the whole response frame (Go's ReadJSONTimeout), not
+    // each read: a host dribbling a valid OK one byte per 100 ms must not keep
+    // the guest connection past a 300 ms budget, nor get the tunnel opened.
+    let (a, host, _) = agent_with_fake_host(Duration::from_millis(300));
+    let port = free_port();
+    set_exposes(&a, Some(vec![port as i64]));
+    let mut guest = connect(port);
+    let (_, mut h) = next_dial(&host);
+    let frame = {
+        let body = serde_json::to_vec(&ReverseDialResponse {
+            ok: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let mut f = (body.len() as u32).to_be_bytes().to_vec();
+        f.extend(body);
+        f
+    };
+    thread::spawn(move || {
+        for b in frame {
+            if h.write_all(&[b]).is_err() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        thread::sleep(Duration::from_secs(10)); // keep the host end open
+    });
+    let t = Instant::now();
+    assert!(
+        read_eof(&mut guest),
+        "tunnel opened despite the expired deadline"
+    );
+    assert!(
+        t.elapsed() < Duration::from_millis(1200),
+        "not bounded: {:?}",
+        t.elapsed()
+    );
+}
+
+#[test]
 fn failed_host_dial_closes_the_guest_connection() {
     let mut a = Agent::new(None);
     a.expose_ip = LO;

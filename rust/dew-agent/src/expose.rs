@@ -7,9 +7,7 @@
 //! which tunnels it to the host.
 
 use crate::conn;
-use dew_proto::{
-    read_frame, write_frame, ReverseDialRequest, ReverseDialResponse, TYPE_REVERSE_DIAL,
-};
+use dew_proto::{write_frame, ReverseDialRequest, ReverseDialResponse, TYPE_REVERSE_DIAL};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io;
@@ -48,18 +46,17 @@ pub fn reverse_dial(tcp: TcpStream, port: u16, token: &str, dial: &HostDialer, t
         token: token.into(),
         port: port.into(),
     };
-    // A zero SO_RCVTIMEO means "never time out"; keep the bound real.
-    let timeout = timeout.max(Duration::from_millis(1));
-    if write_frame(&mut host, &req).is_err()
-        || conn::set_read_timeout(&host, Some(timeout)).is_err()
-    {
+    if write_frame(&mut host, &req).is_err() {
         return;
     }
-    let ok = read_frame::<ReverseDialResponse>(&mut host).is_ok_and(|r| r.ok);
-    if !ok || conn::set_read_timeout(&host, None).is_err() {
-        return;
+    // One deadline for the whole answer frame, however the host paces it.
+    let ok = conn::read_frame_bytes_within(&mut host, timeout)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<ReverseDialResponse>(&b).ok())
+        .is_some_and(|r| r.ok);
+    if ok {
+        conn::proxy(host, tcp);
     }
-    conn::proxy(host, tcp);
 }
 
 struct Listener {
