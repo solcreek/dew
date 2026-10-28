@@ -322,6 +322,28 @@ fn eof_then_half_close_does_not_hang_up() {
 }
 
 #[test]
+fn spawn_eacces_is_exec_done() {
+    // Passes look_path (a path with a slash) but fails at exec(2) itself,
+    // after the pty and its fds were set up: nothing may hang or leak.
+    let f = std::env::temp_dir().join(format!("dew-tty-noexec-{}", std::process::id()));
+    std::fs::write(&f, "#!/bin/sh\n").unwrap();
+    let req = ExecRequest {
+        command: f.to_str().unwrap().into(),
+        args: vec![],
+        ..tty_req("", 24, 80)
+    };
+    let s = run(req, vec![]);
+    let _ = std::fs::remove_file(&f);
+    assert!(s.chunks.is_empty());
+    assert_eq!(s.done.exit_code, -1);
+    assert!(
+        s.done.error.ends_with(": permission denied"),
+        "{}",
+        s.done.error
+    );
+}
+
+#[test]
 fn large_output_arrives_whole() {
     // More than several READ_CHUNKs; nothing may be lost before EIO/EOF.
     let n = 300_000;
