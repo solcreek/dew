@@ -11,7 +11,7 @@ use dew_proto::{write_frame, ReverseDialRequest, ReverseDialResponse, TYPE_REVER
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io;
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -60,22 +60,18 @@ pub fn reverse_dial(tcp: TcpStream, port: u16, token: &str, dial: &HostDialer, t
 }
 
 struct Listener {
-    addr: SocketAddr,
     stop: Arc<AtomicBool>,
     thread: JoinHandle<()>,
 }
 
 impl Listener {
-    /// Stop accepting and release the port. A blocked accept() is woken by
-    /// connecting to it (shutdown(2) on a listening socket doesn't wake it
-    /// on every OS); returns once the listener is closed.
+    /// Stop accepting and release the port; returns once the listener is
+    /// closed. The accept loop polls with a bounded wait and checks `stop`
+    /// itself, so this needs no wake-up connection, which could fail (e.g.
+    /// under fd exhaustion) and leave the port bound after the map forgot it.
     fn close(self) {
         self.stop.store(true, Ordering::SeqCst);
-        if TcpStream::connect_timeout(&self.addr, Duration::from_secs(1)).is_ok() {
-            let _ = self.thread.join();
-        } else {
-            eprintln!("expose: could not wake listener on {}", self.addr);
-        }
+        let _ = self.thread.join();
     }
 }
 
@@ -137,26 +133,64 @@ impl Exposes {
 
     fn listen(&self, port: u16) -> io::Result<Listener> {
         let ln = TcpListener::bind((self.ip, port))?;
-        let addr = ln.local_addr()?;
+        // Nonblocking so a ready-then-vanished connection can't block accept()
+        // after poll said readable; the loop polls with a bounded wait.
+        ln.set_nonblocking(true)?;
+
         let stop = Arc::new(AtomicBool::new(false));
         let (flag, handler) = (stop.clone(), self.handler.clone());
         let thread = thread::spawn(move || accept_loop(ln, port, &flag, &handler));
-        Ok(Listener { addr, stop, thread })
+        Ok(Listener { stop, thread })
     }
 }
 
-fn accept_loop(ln: TcpListener, port: u16, stop: &AtomicBool, handler: &Handler) {
-    loop {
-        let accepted = ln.accept();
-        if stop.load(Ordering::SeqCst) {
-            return; // drops the wake-up conn and the listener
+/// Longest the accept loop waits before re-checking `stop`, which bounds how
+/// long closing a listener takes.
+const STOP_POLL_MS: libc::c_int = 100;
+
+/// Where the accept loop gets connections (a TcpListener; a fake in tests,
+/// which is how the accept-error path is reachable deterministically).
+trait Acceptor {
+    /// Wait up to STOP_POLL_MS for a connection to be ready.
+    fn ready(&self) -> bool;
+    fn accept(&self) -> io::Result<TcpStream>;
+}
+
+impl Acceptor for TcpListener {
+    fn ready(&self) -> bool {
+        use std::os::fd::AsRawFd;
+        let mut pfd = libc::pollfd {
+            fd: self.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        unsafe { libc::poll(&mut pfd, 1, STOP_POLL_MS) > 0 }
+    }
+    fn accept(&self) -> io::Result<TcpStream> {
+        TcpListener::accept(self).map(|(c, _)| c)
+    }
+}
+
+fn accept_loop(ln: impl Acceptor, port: u16, stop: &AtomicBool, handler: &Handler) {
+    while !stop.load(Ordering::SeqCst) {
+        if !ln.ready() || stop.load(Ordering::SeqCst) {
+            continue; // timeout or EINTR: re-check stop
         }
-        match accepted {
-            Ok((conn, _)) => {
+        match ln.accept() {
+            Ok(conn) => {
+                // Accepted sockets inherit O_NONBLOCK on BSD/macOS; the
+                // handler does blocking I/O.
+                if conn.set_nonblocking(false).is_err() {
+                    continue;
+                }
                 let h = handler.clone();
                 thread::spawn(move || h(conn, port));
             }
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) => {}
             // Transient (e.g. EMFILE): keep the listener, don't spin. The Go
             // agent's loop returns here and leaves a dead entry in its map.
             Err(_) => thread::sleep(Duration::from_millis(50)),
@@ -273,40 +307,38 @@ mod tests {
         assert_eq!(ask(a, "ok").unwrap(), format!("{a}:ok"));
     }
 
+    /// Always "ready", every accept() fails with EMFILE; counts the calls.
+    struct Emfile(Arc<std::sync::atomic::AtomicU32>);
+
+    impl Acceptor for Emfile {
+        fn ready(&self) -> bool {
+            true
+        }
+        fn accept(&self) -> io::Result<TcpStream> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(io::Error::from_raw_os_error(libc::EMFILE))
+        }
+    }
+
     #[test]
     fn accept_errors_keep_the_loop_alive_until_stopped() {
-        // A bound socket that never listen()ed makes every accept() fail at
-        // once (EINVAL), standing in for a transient EMFILE. The Go loop
-        // returns on the first error; this one must back off and keep going,
-        // and still exit promptly once stopped.
-        use std::os::fd::FromRawFd;
-        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        assert!(fd >= 0);
-        let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-        #[cfg(target_os = "macos")]
-        {
-            sa.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
-        }
-        sa.sin_family = libc::AF_INET as _;
-        sa.sin_addr.s_addr = u32::from(Ipv4Addr::LOCALHOST).to_be();
-        let len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
-        assert_eq!(
-            unsafe { libc::bind(fd, &sa as *const _ as *const libc::sockaddr, len) },
-            0
-        );
-        let ln = unsafe { TcpListener::from_raw_fd(fd) };
-        assert!(
-            ln.accept().is_err(),
-            "premise: accept on a non-listening socket fails"
-        );
-
+        // fd exhaustion: every accept() fails. The Go loop returns on the
+        // first error and leaves a dead listener; this one must back off
+        // (not spin), keep retrying, and still exit promptly once stopped.
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let stop = Arc::new(AtomicBool::new(false));
-        let flag = stop.clone();
-        let t = thread::spawn(move || accept_loop(ln, 1, &flag, &echo()));
+        let (flag, fake) = (stop.clone(), Emfile(calls.clone()));
+        let t = thread::spawn(move || accept_loop(fake, 1, &flag, &echo()));
         thread::sleep(Duration::from_millis(300));
         assert!(
             !t.is_finished(),
             "accept loop gave up after an accept error"
+        );
+        let n = calls.load(Ordering::SeqCst);
+        assert!(n >= 3, "kept retrying: {n} accept calls in 300 ms");
+        assert!(
+            n <= 20,
+            "backs off instead of spinning: {n} calls in 300 ms"
         );
         stop.store(true, Ordering::SeqCst);
         let started = std::time::Instant::now();
@@ -317,6 +349,51 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn stop_needs_no_wake_up_connection() {
+        // If stopping relied on connecting to the listener (which can fail,
+        // e.g. under fd exhaustion), a failed wake-up would leave accept()
+        // blocked with the port still bound after the map forgot it. The loop
+        // must notice `stop` on its own.
+        let ln = TcpListener::bind((LO, 0)).unwrap();
+        let addr = ln.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let t = thread::spawn(move || accept_loop(ln, addr.port(), &flag, &echo()));
+        thread::sleep(Duration::from_millis(100));
+        stop.store(true, Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        while !t.is_finished() {
+            assert!(
+                started.elapsed() < Duration::from_millis(500),
+                "accept loop ignored stop without a wake-up"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        TcpListener::bind(addr).expect("port released");
+    }
+
+    #[test]
+    fn accepted_connections_are_blocking() {
+        // A nonblocking listener's accepted sockets inherit O_NONBLOCK on
+        // BSD/macOS; handlers use blocking I/O, so the agent must clear it.
+        let a = free_port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = Mutex::new(tx);
+        let probe: Handler = Arc::new(move |c: TcpStream, _| {
+            let mut b = [0u8; 1];
+            // Blocking: waits for the client's byte rather than WouldBlock.
+            let r = (&c).read(&mut b).map(|_| b[0]);
+            let _ = tx.lock().unwrap().send(r.map_err(|e| e.kind()));
+        });
+        let x = Exposes::new(LO, probe);
+        x.reconcile(&[a as i64]);
+        let mut c = TcpStream::connect((LO, a)).unwrap();
+        thread::sleep(Duration::from_millis(150));
+        c.write_all(b"z").unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Ok(b'z'));
     }
 
     #[test]

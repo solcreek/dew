@@ -81,7 +81,7 @@ cases, and each one has a test in `rust/dew-agent/tests/`:
 | exec timeout, grandchild holds stdout (`sleep 9 & echo`) | kills only the direct child, then waits for the pipe, so the exec overruns its deadline | kills the child's process group; drains pipes before reaping | a deadline should end the exec |
 | output line > 64 KiB | `bufio.Scanner` stops reading the pipe and the command stalls | splits into ≤ 64 KiB chunks, keeping line endings and UTF-8 intact across them | no stall |
 | host disconnects from a TTY session | the shell keeps running (idle: the output loop never notices; busy: Wait blocks forever) — one leaked session per dropped conn, reproduced in a guest | SIGHUP to the session's process group when the conn fails before an EOF frame or an output write fails; on the write path the conn is also shut down so the input feeder drops its dup and the master really closes (a command ignoring SIGHUP then gets EIO). Not covered: a feeder blocked writing into a full input queue of a child that ignores SIGHUP and never reads | a dropped line hangs a terminal up |
-| expose `accept` fails transiently (e.g. EMFILE; tested with EINVAL from a non-listening socket) | the accept loop returns, leaving a dead listener in the map | backs off 50 ms and keeps the listener | the port keeps working |
+| expose `accept` fails transiently (e.g. EMFILE; tested with an injected EMFILE acceptor) | the accept loop returns, leaving a dead listener in the map | backs off 50 ms and keeps the listener | the port keeps working |
 | `--confine` before phase 4 | — | explicit `confine:` error on every exec path (TTY included); set_token acks `confine: false` | fail closed |
 
 Kept identical even where questionable, so the migration is not also a
