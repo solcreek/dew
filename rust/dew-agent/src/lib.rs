@@ -11,6 +11,7 @@
 pub mod conn;
 pub mod env;
 pub mod exec;
+pub mod expose;
 pub mod gofmt;
 pub mod pty;
 pub mod server;
