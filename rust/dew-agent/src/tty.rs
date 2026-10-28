@@ -275,8 +275,11 @@ mod tests {
             lim.rlim_cur = want;
             assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) }, 0);
         }
+        // dup3 with O_CLOEXEC, not dup2: tests run in parallel threads, and an
+        // inheritable pty fd here would leak into other tests' children (the
+        // pty leak test sees exactly that).
         let high = |fd: RawFd, to: RawFd| {
-            assert_eq!(unsafe { libc::dup2(fd, to) }, to);
+            assert_eq!(unsafe { libc::dup3(fd, to, libc::O_CLOEXEC) }, to);
             to
         };
         let p = pty::open(24, 80).unwrap();

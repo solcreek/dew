@@ -28,7 +28,7 @@ bash kernel/build.sh
 cd rust && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test
 go test ./internal/vsock -run Golden -update   # after changing a vsock message type
 cd rust && cargo build --release -p dew-agent --target aarch64-unknown-linux-musl   # guest agent (not shipped yet)
-cd rust && cargo llvm-cov --workspace --ignore-filename-regex '(main|vsock)\.rs$'   # CI floor: 95% lines
+cd rust && cargo llvm-cov --workspace --ignore-filename-regex '(main|vsock|confine/apply|confine/shim)\.rs$'   # CI floor: 95% lines (the confine shim's files end in execve, so they can't record; tests/confine.rs gates them)
 ```
 
 ### Wire protocol parity (Go ↔ Rust)
@@ -38,6 +38,21 @@ field. Adding or changing a message or field means, in the same change: add a
 case to `goldenFrames` (`internal/vsock/golden_test.go`), regenerate with
 `-update`, and mirror it in `rust/dew-proto` (its golden test fails on any
 golden file it has no type for, or encodes differently).
+
+### `--confine` parity (Go ↔ Rust)
+
+- `rust/dew-agent/tests/confine.rs` needs **root on Linux** and skips
+  otherwise. Run it in a dew VM or a disposable Linux box. Set
+  `DEW_GO_AGENT_EXE` to a Go agent build and every case also runs through the
+  Go shim and must match it; CI does this as root on x86_64.
+- Seccomp programs must match the Go agent's instruction for instruction:
+  - `cmd/dew-agent/testdata/seccomp/*.json` are emitted by Go
+    (`go test ./cmd/dew-agent -run SeccompGolden -update-seccomp`, run on each
+    arch: linux/arm64 and linux/amd64, which works under `dew run --rosetta`).
+  - The Rust test rebuilds every one of them.
+  - When go-seccomp-bpf changes, regenerate
+    `rust/dew-agent/src/confine/syscalls.rs` with
+    `scripts/gen-seccomp-syscalls.py` in the same change.
 
 ## Architecture
 

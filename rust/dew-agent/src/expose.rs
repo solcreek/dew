@@ -417,19 +417,22 @@ mod tests {
         // before joining any makes it about one interval in total. The bound,
         // N/4 intervals, has several intervals of headroom for a loaded
         // runner and sits ~5σ below the sequential cost.
-        const N: usize = 30;
-        let ports: Vec<i64> = (0..N).map(|_| free_port() as i64).collect();
+        // free_port() can hand two calls the same port, or lose one to a
+        // parallel test, so count the listeners that actually came up; the
+        // property is about closing them, not about every bind succeeding.
+        let ports: Vec<i64> = (0..30).map(|_| free_port() as i64).collect();
         let x = Exposes::new(LO, echo());
         x.reconcile(&ports);
-        assert_eq!(x.ports().len(), N);
+        let n = x.ports().len();
+        assert!(n >= 20, "too few listeners to measure: {n}");
         let t = std::time::Instant::now();
         x.reconcile(&[]);
         let took = t.elapsed();
         assert!(x.ports().is_empty());
-        let bound = Duration::from_millis((N as u64 * STOP_POLL_MS as u64) / 4);
+        let bound = Duration::from_millis((n as u64 * STOP_POLL_MS as u64) / 4);
         assert!(
             took < bound,
-            "closing {N} listeners took {took:?} (bound {bound:?})"
+            "closing {n} listeners took {took:?} (bound {bound:?})"
         );
     }
 
