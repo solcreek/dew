@@ -8,9 +8,8 @@
 use super::apply;
 use super::ids::Db;
 use dew_proto::Confinement;
-use std::ffi::OsString;
+use std::ffi::{CString, OsString};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::process::CommandExt;
 
 pub use super::{EXEC_USER_ENV, SHIM_MARKER, SPEC_ENV};
 
@@ -49,7 +48,7 @@ fn run(target: &[OsString]) -> String {
         Err(e) => return e,
     };
     let exec_user = std::env::var(EXEC_USER_ENV).unwrap_or_default();
-    let steps = || -> Result<std::path::PathBuf, String> {
+    let steps = || -> Result<Exec, String> {
         // Read-only filesystem first: it needs the mount namespace and root.
         if c.read_only_root {
             apply::unshare_mount_namespace()?;
@@ -62,21 +61,59 @@ fn run(target: &[OsString]) -> String {
         let name = String::from_utf8_lossy(prog.as_bytes()).into_owned();
         let path = crate::env::look_path(&name, &std::env::var("PATH").unwrap_or_default())
             .map_err(|e| format!("resolve {name:?}: {e}"))?;
-        // Last: seccomp. Only the execve below follows.
+        // Everything the exec needs is prepared now, while any syscall is
+        // still allowed: the control channel is dropped from the environment
+        // (the shim is single-threaded, so mutating it is safe), argv/envp are
+        // built, and SIGPIPE goes back to default (Rust's runtime ignores it,
+        // and the target must not inherit that; std's Command::exec would
+        // reset it with an rt_sigaction, after the filter).
+        std::env::remove_var(SPEC_ENV);
+        std::env::remove_var(EXEC_USER_ENV);
+        let exec = Exec::new(&path, target)?;
+        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+        // Last: seccomp. The only syscall after it is execve, as with the Go
+        // shim's syscall.Exec, so an allowlist need not cover anything else.
         apply::apply_seccomp(&c)?;
-        Ok(path)
+        Ok(exec)
     };
-    let path = match steps() {
-        Ok(p) => p,
-        Err(e) => return e,
-    };
-    // The control channel must not leak into the confined process. The shim
-    // is single-threaded, so mutating its environment is safe.
-    std::env::remove_var(SPEC_ENV);
-    std::env::remove_var(EXEC_USER_ENV);
-    let err = std::process::Command::new(&path)
-        .arg0(prog)
-        .args(&target[1..])
-        .exec();
-    crate::gofmt::errno_text(&err)
+    match steps() {
+        Ok(exec) => exec.run(),
+        Err(e) => e,
+    }
+}
+
+/// A prepared execve: path, argv (argv[0] is the name as given) and envp.
+struct Exec {
+    path: CString,
+    argv: Vec<CString>,
+    envp: Vec<CString>,
+}
+
+impl Exec {
+    fn new(path: &std::path::Path, target: &[OsString]) -> Result<Exec, String> {
+        let c = |b: &[u8]| CString::new(b).map_err(|_| "argument contains a NUL byte".to_string());
+        Ok(Exec {
+            path: c(path.as_os_str().as_bytes())?,
+            argv: target
+                .iter()
+                .map(|a| c(a.as_bytes()))
+                .collect::<Result<_, _>>()?,
+            envp: std::env::vars_os()
+                .map(|(k, v)| c(&[k.as_bytes(), b"=", v.as_bytes()].concat()))
+                .collect::<Result<_, _>>()?,
+        })
+    }
+
+    /// execve, nothing else; returns only why it failed.
+    fn run(self) -> String {
+        let ptrs = |v: &[CString]| -> Vec<*const libc::c_char> {
+            v.iter()
+                .map(|s| s.as_ptr())
+                .chain(std::iter::once(std::ptr::null()))
+                .collect()
+        };
+        let (argv, envp) = (ptrs(&self.argv), ptrs(&self.envp));
+        unsafe { libc::execve(self.path.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
+        crate::gofmt::errno_text(&std::io::Error::last_os_error())
+    }
 }

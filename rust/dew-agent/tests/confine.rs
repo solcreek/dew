@@ -45,11 +45,16 @@ struct Out {
 /// the Rust shim creates its own, which `shim_has_its_own_mount_namespace`
 /// checks, so only the Go run is given one here.
 fn shim(exe: &PathBuf, go: bool, spec: &str, exec_user: &str, script: &str) -> Out {
+    shim_argv(exe, go, spec, exec_user, &["/bin/sh", "-c", script])
+}
+
+fn shim_argv(exe: &PathBuf, go: bool, spec: &str, exec_user: &str, target: &[&str]) -> Out {
     // Each shim gets the environment its own agent gives it: both inherit the
     // agent's DEW_EXEC_USER, and the Rust parent also passes it explicitly
     // as DEW_CONFINE_EXEC_USER (the Go shim reads DEW_EXEC_USER).
     let mut cmd = Command::new(exe);
-    cmd.args(["--dew-confine-shim", "/bin/sh", "-c", script])
+    cmd.arg("--dew-confine-shim")
+        .args(target)
         .env("DEW_CONFINE_SPEC", spec)
         .env("DEW_EXEC_USER", exec_user)
         .stdin(Stdio::null());
@@ -399,6 +404,52 @@ fn syscall_allowlist_blocks_everything_else() {
         "{o:?}"
     );
     assert!(!std::path::Path::new(&dir).exists());
+}
+
+#[test]
+fn shim_makes_no_syscall_between_seccomp_and_execve() {
+    if !root() {
+        return;
+    }
+    // An allowlist without rt_sigaction: the target (echo, which touches no
+    // signals) must still start. Anything the shim did after installing the
+    // filter other than execve, such as std's SIGPIPE reset in
+    // Command::exec, would be refused and the exec would never happen.
+    let arch = dew_agent::confine::seccomp::Arch::native().unwrap();
+    let allow: Vec<String> = arch
+        .syscalls
+        .iter()
+        .map(|(n, _)| n.to_string())
+        .filter(|n| n != "rt_sigaction")
+        .collect();
+    let spec = serde_json::to_string(&spec(|c| c.system_calls = allow)).unwrap();
+    let target = ["/bin/echo", "exec-ok"];
+    let rs = shim_argv(&rust_agent(), false, &spec, "", &target);
+    assert_eq!((rs.code, rs.stdout.as_str()), (0, "exec-ok\n"), "{rs:?}");
+    if let Some(go) = go_agent() {
+        let g = shim_argv(&go, true, &spec, "", &target);
+        assert_eq!((g.code, &g.stdout), (rs.code, &rs.stdout), "go: {g:?}");
+    }
+}
+
+#[test]
+fn target_gets_default_sigpipe() {
+    if !root() {
+        return;
+    }
+    // Rust's runtime ignores SIGPIPE; the shim must hand the target the
+    // default disposition (as Go's exec does), or `yes | head` never ends.
+    let o = case(
+        &spec(|c| c.no_new_privs = true),
+        "",
+        "grep '^SigIgn:' /proc/self/status",
+    );
+    let ign = u64::from_str_radix(field(&o.stdout, "SigIgn").trim(), 16).unwrap();
+    assert_eq!(
+        ign & (1 << (libc::SIGPIPE - 1)),
+        0,
+        "SIGPIPE ignored in the target: {o:?}"
+    );
 }
 
 // ------------------------------------------------------------- the shim itself
