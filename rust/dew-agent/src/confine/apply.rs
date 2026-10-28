@@ -286,12 +286,22 @@ pub fn apply_seccomp(c: &Confinement) -> Result<(), String> {
         return Ok(());
     }
     let arch = Arch::native().ok_or("seccomp: unsupported arch")?;
+    // Build every program before installing any: once a (possibly
+    // default-deny) syscall allowlist is on, nothing may allocate, free or
+    // call anything but the execve that follows; musl's allocator can mmap,
+    // munmap or brk on either.
+    let mut progs = Vec::with_capacity(2);
     if !c.address_families.is_empty() {
         let fams = resolve_families(&c.address_families)?;
-        install_seccomp_filter(&family_filter(arch, &fams, c.address_families_deny)?)?;
+        progs.push(family_filter(arch, &fams, c.address_families_deny)?);
     }
     if !c.system_calls.is_empty() {
-        install_seccomp_filter(&syscall_filter(arch, &c.system_calls, c.system_calls_deny)?)?;
+        progs.push(syscall_filter(arch, &c.system_calls, c.system_calls_deny)?);
     }
+    for p in &progs {
+        install_seccomp_filter(p)?;
+    }
+    // Not freed: execve replaces the image anyway, and a free could syscall.
+    std::mem::forget(progs);
     Ok(())
 }
