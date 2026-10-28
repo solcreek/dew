@@ -47,13 +47,19 @@ case "$HOST_ARCH" in
 esac
 
 # DEW_AGENT picks the guest agent baked in at /usr/local/bin/dew-agent:
-#   go   - cmd/dew-agent (default)
+#   go   - cmd/dew-agent
 #   rust - rust/dew-agent, the migration in docs/rust-agent-migration.md.
 #          Needs rustup's cargo: rust/rust-toolchain.toml pins the version
 #          and the musl targets, which Homebrew's cargo ignores.
-# Both speak the same vsock protocol. Checked here, before anything is
-# downloaded or deleted.
-DEW_AGENT="${DEW_AGENT:-go}"
+# Both speak the same vsock protocol. The default is rust for minimal and
+# go for the other profiles, until the Rust agent has shipped in a release
+# (migration phase 6); DEW_AGENT=go is the fallback for any profile.
+# Checked here, before anything is downloaded or deleted.
+case "$PROFILE" in
+    minimal) DEFAULT_AGENT=rust ;;
+    *)       DEFAULT_AGENT=go ;;
+esac
+DEW_AGENT="${DEW_AGENT:-$DEFAULT_AGENT}"
 case "$DEW_AGENT" in
     go|rust) ;;
     *) echo "unsupported DEW_AGENT: $DEW_AGENT (want go or rust)"; exit 1 ;;
@@ -86,6 +92,7 @@ CRUN_VERSION="1.20"
 
 echo "=== Building Dew initramfs (${PROFILE}) ==="
 echo "Arch: ${ALPINE_ARCH}"
+echo "Guest agent: ${DEW_AGENT}"
 echo ""
 
 rm -rf "$WORK_DIR"

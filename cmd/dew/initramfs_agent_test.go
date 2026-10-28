@@ -10,12 +10,12 @@ import (
 	"testing"
 )
 
-// runBuildScriptPreamble runs a copy of build.sh with DEW_AGENT set (unset
-// when agent is "") and a PATH holding only the tools its argument checks
-// use. Past the checks the script reaches its first `rm` and dies there
+// runBuildScriptPreamble runs a copy of build.sh for profile with DEW_AGENT
+// set (unset when agent is "") and a PATH holding only the tools its
+// argument checks use. Past the checks the script reaches its first `rm` and dies there
 // (command not found under set -e), so the test can't delete or download
 // anything even if a check stops exiting.
-func runBuildScriptPreamble(t *testing.T, agent string) (string, error) {
+func runBuildScriptPreamble(t *testing.T, profile, agent string) (string, error) {
 	t.Helper()
 	dir := t.TempDir()
 	initramfs := filepath.Join(dir, "initramfs")
@@ -39,7 +39,7 @@ func runBuildScriptPreamble(t *testing.T, agent string) (string, error) {
 		}
 	}
 	bash := filepath.Join(bin, "bash")
-	cmd := exec.Command(bash, filepath.Join(initramfs, "build.sh"), "minimal")
+	cmd := exec.Command(bash, filepath.Join(initramfs, "build.sh"), profile)
 	cmd.Env = []string{"PATH=" + bin}
 	if agent != "" {
 		cmd.Env = append(cmd.Env, "DEW_AGENT="+agent)
@@ -52,7 +52,7 @@ func runBuildScriptPreamble(t *testing.T, agent string) (string, error) {
 // before it starts (before WORK_DIR is wiped), and go, rust and the default
 // must get past the check.
 func TestInitramfsBuildScript_ValidatesDewAgent(t *testing.T) {
-	out, err := runBuildScriptPreamble(t, "bogus")
+	out, err := runBuildScriptPreamble(t, "minimal", "bogus")
 	if err == nil {
 		t.Fatalf("DEW_AGENT=bogus did not fail:\n%s", out)
 	}
@@ -64,9 +64,27 @@ func TestInitramfsBuildScript_ValidatesDewAgent(t *testing.T) {
 	}
 
 	for _, agent := range []string{"", "go", "rust"} {
-		out, _ := runBuildScriptPreamble(t, agent)
+		out, _ := runBuildScriptPreamble(t, "minimal", agent)
 		if strings.Contains(out, "unsupported DEW_AGENT") || !strings.Contains(out, "=== Building") {
 			t.Errorf("DEW_AGENT=%q was not accepted:\n%s", agent, out)
+		}
+	}
+}
+
+// Migration phase 6: minimal ships the Rust agent; every other profile keeps
+// Go until a release has carried it. DEW_AGENT overrides either way.
+func TestInitramfsBuildScript_DefaultAgentPerProfile(t *testing.T) {
+	for _, tc := range []struct{ profile, agent, want string }{
+		{"minimal", "", "rust"},
+		{"node", "", "go"},
+		{"python", "", "go"},
+		{"standard", "", "go"},
+		{"minimal", "go", "go"},
+		{"standard", "rust", "rust"},
+	} {
+		out, _ := runBuildScriptPreamble(t, tc.profile, tc.agent)
+		if !strings.Contains(out, "Guest agent: "+tc.want+"\n") {
+			t.Errorf("profile %s, DEW_AGENT=%q: want the %s agent:\n%s", tc.profile, tc.agent, tc.want, out)
 		}
 	}
 }
@@ -75,9 +93,6 @@ func TestInitramfsBuildScript_ValidatesDewAgent(t *testing.T) {
 // arch: Go via GOARCH, Rust via the musl target the toolchain file pins.
 func TestInitramfsBuildScript_BuildsTheSelectedAgent(t *testing.T) {
 	script := readBuildScript(t)
-	if !strings.Contains(script, `DEW_AGENT="${DEW_AGENT:-go}"`) {
-		t.Error("DEW_AGENT does not default to go")
-	}
 	start := strings.Index(script, "# --- Step 3: Build dew-agent ---")
 	end := strings.Index(script, "# --- Step 4a:")
 	if start < 0 || end < start {
