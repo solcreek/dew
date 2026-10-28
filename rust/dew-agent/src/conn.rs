@@ -147,16 +147,16 @@ mod tests {
     fn frame_within_budget_is_read_and_timeout_cleared() {
         let (mut a, mut b) = UnixStream::pair().unwrap();
         b.write_all(&frame(b"{\"ok\":true}")).unwrap();
-        let got = read_frame_bytes_within(&mut a, Duration::from_secs(2)).unwrap();
+        let got = read_frame_bytes_within(&mut a, Duration::from_millis(100)).unwrap();
         assert_eq!(got, b"{\"ok\":true}");
-        // Cleared: a later read waits past the budget for late data.
+        // Cleared: a later read waits well past the 100 ms budget for late
+        // data. A leftover SO_RCVTIMEO would fail this read (WouldBlock).
         let w = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(300));
             b.write_all(b"x").unwrap();
         });
         let mut one = [0u8; 1];
-        set_read_timeout(&a, None).unwrap();
-        assert_eq!(a.read(&mut one).unwrap(), 1);
+        assert_eq!(a.read(&mut one).unwrap(), 1, "timeout not cleared");
         w.join().unwrap();
     }
 
