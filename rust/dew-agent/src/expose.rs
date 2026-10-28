@@ -277,6 +277,52 @@ mod tests {
     }
 
     #[test]
+    fn accept_errors_keep_the_loop_alive_until_stopped() {
+        // A bound socket that never listen()ed makes every accept() fail at
+        // once (EINVAL), standing in for a transient EMFILE. The Go loop
+        // returns on the first error; this one must back off and keep going,
+        // and still exit promptly once stopped.
+        use std::os::fd::FromRawFd;
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        assert!(fd >= 0);
+        let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+        #[cfg(target_os = "macos")]
+        {
+            sa.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
+        }
+        sa.sin_family = libc::AF_INET as _;
+        sa.sin_addr.s_addr = u32::from(Ipv4Addr::LOCALHOST).to_be();
+        let len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        assert_eq!(
+            unsafe { libc::bind(fd, &sa as *const _ as *const libc::sockaddr, len) },
+            0
+        );
+        let ln = unsafe { TcpListener::from_raw_fd(fd) };
+        assert!(
+            ln.accept().is_err(),
+            "premise: accept on a non-listening socket fails"
+        );
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let t = thread::spawn(move || accept_loop(ln, 1, &flag, &echo()));
+        thread::sleep(Duration::from_millis(300));
+        assert!(
+            !t.is_finished(),
+            "accept loop gave up after an accept error"
+        );
+        stop.store(true, Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        while !t.is_finished() {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "loop ignored stop"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
     fn out_of_range_ports_are_ignored() {
         let a = free_port();
         let x = Exposes::new(LO, echo());
