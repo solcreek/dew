@@ -46,6 +46,19 @@ case "$HOST_ARCH" in
     *) echo "unsupported HOST_ARCH: $HOST_ARCH"; exit 1 ;;
 esac
 
+# DEW_AGENT picks the guest agent baked in at /usr/local/bin/dew-agent:
+#   go   - cmd/dew-agent (default)
+#   rust - rust/dew-agent, the migration in docs/rust-agent-migration.md.
+#          Needs rustup's cargo: rust/rust-toolchain.toml pins the version
+#          and the musl targets, which Homebrew's cargo ignores.
+# Both speak the same vsock protocol. Checked here, before anything is
+# downloaded or deleted.
+DEW_AGENT="${DEW_AGENT:-go}"
+case "$DEW_AGENT" in
+    go|rust) ;;
+    *) echo "unsupported DEW_AGENT: $DEW_AGENT (want go or rust)"; exit 1 ;;
+esac
+
 ROOTFS_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/${ALPINE_ARCH}/alpine-minirootfs-${ALPINE_MINOR}-${ALPINE_ARCH}.tar.gz"
 
 # Alpine yanks old patch versions from main as new ones land, and the
@@ -247,11 +260,26 @@ find "$MODS_ROOT" -name "*.ko.gz" -exec gunzip {} \;
 echo "Modules: $(du -sh "$MODS_ROOT" 2>/dev/null | awk '{print $1}')"
 
 # --- Step 3: Build dew-agent ---
-echo "--- Step 3: Build dew-agent ---"
+echo "--- Step 3: Build dew-agent (${DEW_AGENT}) ---"
 mkdir -p "${WORK_DIR}/usr/local/bin"
-GOOS=linux GOARCH="$GO_ARCH" CGO_ENABLED=0 \
-    go build -ldflags="-s -w" -o "${WORK_DIR}/usr/local/bin/dew-agent" \
-    "${REPO_DIR}/cmd/dew-agent/"
+case "$DEW_AGENT" in
+    go)
+        GOOS=linux GOARCH="$GO_ARCH" CGO_ENABLED=0 \
+            go build -ldflags="-s -w" -o "${WORK_DIR}/usr/local/bin/dew-agent" \
+            "${REPO_DIR}/cmd/dew-agent/"
+        ;;
+    rust)
+        # Static musl, linked with the toolchain's rust-lld
+        # (rust/.cargo/config.toml), so this cross-builds from either host
+        # arch. The release profile strips the binary. Both commands run in
+        # rust/, where cargo resolves a relative CARGO_TARGET_DIR.
+        RUST_TARGET="${ALPINE_ARCH}-unknown-linux-musl"
+        (cd "${REPO_DIR}/rust" &&
+            cargo build --locked --release -p dew-agent --target "$RUST_TARGET" &&
+            install -m 0755 "${CARGO_TARGET_DIR:-target}/${RUST_TARGET}/release/dew-agent" \
+                "${WORK_DIR}/usr/local/bin/dew-agent")
+        ;;
+esac
 echo "Agent: $(ls -lh "${WORK_DIR}/usr/local/bin/dew-agent" | awk '{print $5}')"
 
 # --- Step 4a: Runtime pre-install (node / python / standard profiles) ---
