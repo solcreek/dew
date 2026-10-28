@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,7 +74,7 @@ func boot(m *testing.M, kernel, initrd string) (int, error) {
 		return 0, err
 	}
 	cfg.Console = console
-	serial := &strings.Builder{}
+	serial := &lockedBuffer{}
 	go io.Copy(serial, guestOut)
 
 	d, err := darwin.New(cfg)
@@ -104,6 +105,25 @@ func boot(m *testing.M, kernel, initrd string) (int, error) {
 	}
 	fmt.Printf("conformance: agent=%s kernel=%s initrd=%s disk_gb=%d\n", agent, kernel, initrd, cfg.DiskGB)
 	return m.Run(), nil
+}
+
+// lockedBuffer collects the serial console while the guest keeps writing,
+// so a boot failure can print it without racing the copy.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // setToken retries until the agent is listening, as the host does at boot.
