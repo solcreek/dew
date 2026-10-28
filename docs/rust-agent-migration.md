@@ -1,6 +1,6 @@
 # Rust guest agent migration
 
-Status: phases 1–2 merged (#53, #54); phase 3 (TTY + exposes) in review (2026-10-28).
+Status: phases 1–3 merged (#53, #54, #56); phase 4 (--confine) in review (2026-10-28).
 
 ## Why the agent, and only the agent (for now)
 
@@ -82,7 +82,9 @@ cases, and each one has a test in `rust/dew-agent/tests/`:
 | output line > 64 KiB | `bufio.Scanner` stops reading the pipe and the command stalls | splits into ≤ 64 KiB chunks, keeping line endings and UTF-8 intact across them | no stall |
 | host disconnects from a TTY session | the shell keeps running (idle: the output loop never notices; busy: Wait blocks forever) — one leaked session per dropped conn, reproduced in a guest | SIGHUP to the session's process group when the conn fails before an EOF frame or an output write fails, and every copy of the master is closed so the line really hangs up and a command ignoring SIGHUP gets EIO: on the input side the feeder drops its dup and wakes the output loop (poll on the master + a wake socket on Linux; select on macOS, whose poll lacks tty support) to close the other; on the output side the conn is shut down so the feeder drops its dup. Not covered: a feeder blocked writing into a full input queue of a child that ignores SIGHUP and never reads | a dropped line hangs a terminal up |
 | expose `accept` fails transiently (e.g. EMFILE; tested with an injected EMFILE acceptor) | the accept loop returns, leaving a dead listener in the map | backs off 50 ms and keeps the listener | the port keeps working |
-| `--confine` before phase 4 | — | explicit `confine:` error on every exec path (TTY included); set_token acks `confine: false` | fail closed |
+| `--confine` on a streaming exec (the host refuses this combination) | the streaming path ignores the spec and runs the command **unconfined** | `confine:` error, nothing runs | fail closed |
+| `User=`/`Group=` id that is not a valid `uid_t` (`4294967295`, `4294967296`, …) | passed through to `setresuid`: `(uid_t)-1` means "unchanged" and wider values wrap (`4294967296` → 0), so the target **stays root** | rejected, exit 126 | fail closed |
+| the agent's `DEW_EXEC_USER` as the confined fallback identity | the shim reads `DEW_EXEC_USER` from the merged env, so a request's env can override it | passed as `DEW_CONFINE_EXEC_USER`, request copies stripped (as `DEW_CONFINE_SPEC` already is) | the agent's setting stays authoritative |
 
 Kept identical even where questionable, so the migration is not also a
 behaviour change:
@@ -92,6 +94,16 @@ behaviour change:
 - A trailing `\r` is stripped from streamed lines.
 - In TTY mode, an EOF frame only stops reading input; it doesn't send `^D`.
 - A resize frame's data is ignored, and undecodable input is skipped.
+- Confined execs resolve the command on, and inherit, the agent's pinned
+  PATH: the request's PATH does not apply (the Go agent pins PATH before its
+  shim runs).
+- `SystemCallFilter=` names missing from the arch's syscall table are
+  dropped, so a typo in a denylist blocks nothing. Note **aarch64 has no
+  `mkdir`, only `mkdirat`**: a denylist naming just `mkdir` is a no-op on
+  arm64 guests. The tables are generated from go-seccomp-bpf, and every
+  filter program is checked against Go-emitted goldens
+  (`cmd/dew-agent/testdata/seccomp`).
+- `/etc/passwd` and `/etc/group` are parsed with Go `os/user`'s rules.
 
 ## Risks
 
