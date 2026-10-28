@@ -30,17 +30,14 @@ pub struct Cred {
     pub gid: u32,
 }
 
-/// Look `name` up in an /etc/passwd-format file, as Go's pure-Go user.Lookup
-/// does (by user name only).
+/// Look `name` up in an /etc/passwd-format file by user name, with Go's
+/// os/user parsing rules (the Go agent's setExecUser uses user.Lookup). Ids
+/// that don't fit a uid_t leave the exec unchanged.
 pub fn lookup_user(passwd: &str, name: &str) -> Option<Cred> {
-    std::fs::read_to_string(passwd).ok()?.lines().find_map(|l| {
-        let f: Vec<&str> = l.split(':').collect();
-        (f.len() >= 4 && f[0] == name).then(|| {
-            Some(Cred {
-                uid: f[2].parse().ok()?,
-                gid: f[3].parse().ok()?,
-            })
-        })?
+    let u = crate::passwd::user_by_name(passwd, name).ok()??;
+    Some(Cred {
+        uid: u.uid.parse().ok()?,
+        gid: u.gid.parse().ok()?,
     })
 }
 

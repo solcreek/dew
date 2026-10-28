@@ -15,6 +15,7 @@ pub mod env;
 pub mod exec;
 pub mod expose;
 pub mod gofmt;
+pub mod passwd;
 pub mod pty;
 pub mod server;
 pub mod tty;
