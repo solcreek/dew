@@ -9,6 +9,7 @@
 //! explicit error, and the set_token ack reports confine: false so the host
 //! refuses --confine against this build.
 
+pub mod confine;
 pub mod conn;
 pub mod env;
 pub mod exec;
