@@ -1,6 +1,6 @@
 # Rust guest agent migration
 
-Status: phases 1–3 merged (#53, #54, #56); phase 4 (--confine) in review (2026-10-28).
+Status: phases 1–4 merged (#53, #54, #56, #57); phase 5 next (2026-10-28).
 
 ## Why the agent, and only the agent (for now)
 
@@ -83,8 +83,19 @@ cases, and each one has a test in `rust/dew-agent/tests/`:
 | host disconnects from a TTY session | the shell keeps running (idle: the output loop never notices; busy: Wait blocks forever) — one leaked session per dropped conn, reproduced in a guest | SIGHUP to the session's process group when the conn fails before an EOF frame or an output write fails, and every copy of the master is closed so the line really hangs up and a command ignoring SIGHUP gets EIO: on the input side the feeder drops its dup and wakes the output loop (poll on the master + a wake socket on Linux; select on macOS, whose poll lacks tty support) to close the other; on the output side the conn is shut down so the feeder drops its dup. Not covered: a feeder blocked writing into a full input queue of a child that ignores SIGHUP and never reads | a dropped line hangs a terminal up |
 | expose `accept` fails transiently (e.g. EMFILE; tested with an injected EMFILE acceptor) | the accept loop returns, leaving a dead listener in the map | backs off 50 ms and keeps the listener | the port keeps working |
 | `--confine` on a streaming exec (the host refuses this combination) | the streaming path ignores the spec and runs the command **unconfined** | `confine:` error, nothing runs | fail closed |
-| `User=`/`Group=` id that is not a valid `uid_t` (`4294967295`, `4294967296`, …) | passed through to `setresuid`: `(uid_t)-1` means "unchanged" and wider values wrap (`4294967296` → 0), so the target **stays root** | rejected, exit 126 | fail closed |
-| the agent's `DEW_EXEC_USER` as the confined fallback identity | the shim reads `DEW_EXEC_USER` from the merged env, so a request's env can override it | passed as `DEW_CONFINE_EXEC_USER`, request copies stripped (as `DEW_CONFINE_SPEC` already is) | the agent's setting stays authoritative |
+
+Fixed in the Go agent instead, because each let a confined target keep root
+(both agents now behave the same, and `tests/confine.rs` checks it):
+
+- A `User=`/`Group=` id that is not a valid `uid_t` (`4294967295`,
+  `4294967296`, …) is rejected (exit 126). It used to reach `setresuid`,
+  where `(uid_t)-1` means "unchanged" and wider values wrap
+  (`4294967296` → 0).
+- The agent's `DEW_EXEC_USER`, the confined fallback identity, reaches the
+  shim as `DEW_CONFINE_EXEC_USER`, with any copy in the request env
+  stripped (as `DEW_CONFINE_SPEC` already was), and is unset before the
+  target runs. The Go shim used to read `DEW_EXEC_USER` from the merged env,
+  where a request's env could override it, e.g. with `0`.
 
 Kept identical even where questionable, so the migration is not also a
 behaviour change:

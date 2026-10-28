@@ -49,18 +49,16 @@ fn shim(exe: &PathBuf, go: bool, spec: &str, exec_user: &str, script: &str) -> O
 }
 
 fn shim_argv(exe: &PathBuf, go: bool, spec: &str, exec_user: &str, target: &[&str]) -> Out {
-    // Each shim gets the environment its own agent gives it: both inherit the
-    // agent's DEW_EXEC_USER, and the Rust parent also passes it explicitly
-    // as DEW_CONFINE_EXEC_USER (the Go shim reads DEW_EXEC_USER).
+    // Both parents pass the agent's DEW_EXEC_USER as DEW_CONFINE_EXEC_USER.
+    // The shims must ignore DEW_EXEC_USER itself, which a request's env can
+    // set: it is set to root here, so a shim that read it would drop nothing.
     let mut cmd = Command::new(exe);
     cmd.arg("--dew-confine-shim")
         .args(target)
         .env("DEW_CONFINE_SPEC", spec)
-        .env("DEW_EXEC_USER", exec_user)
+        .env("DEW_CONFINE_EXEC_USER", exec_user)
+        .env("DEW_EXEC_USER", "0")
         .stdin(Stdio::null());
-    if !go {
-        cmd.env("DEW_CONFINE_EXEC_USER", exec_user);
-    }
     if go {
         unsafe {
             cmd.pre_exec(|| {
@@ -186,6 +184,25 @@ fn unknown_user_fails_closed_before_running_anything() {
         o.stderr.trim(),
         "dew-confine: user \"ghost-no-such\": user: unknown user ghost-no-such"
     );
+}
+
+#[test]
+fn ids_that_are_not_a_uid_t_fail_closed() {
+    if !root() {
+        return;
+    }
+    // (uid_t)-1 would leave the ids unchanged and 2^32 would wrap to 0: the
+    // target would run as root, so both shims refuse them.
+    for (s, msg) in [
+        (spec(|c| c.user = "4294967295".into()), "uid 4294967295"),
+        (spec(|c| c.user = "4294967296".into()), "uid 4294967296"),
+        (spec(|c| c.group = "4294967295".into()), "gid 4294967295"),
+    ] {
+        let o = case(&s, "", "echo RAN");
+        assert_eq!(o.code, 126, "{msg}: {o:?}");
+        assert!(!o.stdout.contains("RAN"), "{msg}: {o:?}");
+        assert_eq!(o.stderr.trim(), format!("dew-confine: {msg} out of range"));
+    }
 }
 
 // ------------------------------------------------------------- capabilities
