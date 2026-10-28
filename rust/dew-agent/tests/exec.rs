@@ -412,6 +412,36 @@ fn stream_strips_a_crlf_split_across_chunks() {
 }
 
 #[test]
+fn stream_keeps_utf8_characters_split_across_chunks_intact() {
+    // Put é (2 bytes) and 😀 (4 bytes) so that every split point falls on
+    // the MAX_CHUNK boundary; lossy-decoding each piece alone would turn
+    // them into U+FFFD.
+    for (ch, octal) in [("é", "\\303\\251"), ("😀", "\\360\\237\\230\\200")] {
+        for before in 1..ch.len() {
+            let pad = MAX_CHUNK as usize - before;
+            let s = stream(
+                streaming(&format!(
+                    "head -c {pad} /dev/zero | tr '\\0' x; printf '{octal}\\n'"
+                )),
+                vec![],
+                LIMIT,
+            );
+            assert_eq!(
+                s.joined("stdout"),
+                format!("{}{ch}\n", "x".repeat(pad)),
+                "{ch} split after {before} byte(s)"
+            );
+        }
+    }
+}
+
+#[test]
+fn stream_still_replaces_genuinely_invalid_utf8() {
+    let s = stream(streaming("printf 'a\\377b\\n'"), vec![], LIMIT);
+    assert_eq!(s.joined("stdout"), "a\u{FFFD}b\n");
+}
+
+#[test]
 fn stream_keeps_a_cr_in_the_middle_of_a_long_line() {
     // A held-back \r not followed by \n is ordinary data.
     let n = MAX_CHUNK as usize - 1;

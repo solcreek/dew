@@ -305,9 +305,33 @@ pub fn execute(req: &ExecRequest, cred: Option<Cred>) -> ExecResponse {
 }
 
 /// Trailing bytes of a mid-line piece to carry into the next one: a final
-/// `\r` may be the first half of a CRLF split across the chunk boundary.
+/// `\r` may be the first half of a CRLF split across the chunk boundary, and
+/// a UTF-8 character cut in half would otherwise decode as two U+FFFD.
 fn hold_back(piece: &[u8]) -> usize {
-    usize::from(piece.last() == Some(&b'\r'))
+    if piece.last() == Some(&b'\r') {
+        return 1;
+    }
+    incomplete_utf8_tail(piece)
+}
+
+/// Length of an unfinished UTF-8 sequence at the end of `p` (0 if none).
+/// Looks only at the last three bytes, so invalid bytes earlier in the
+/// piece don't hide a character split at its end.
+fn incomplete_utf8_tail(p: &[u8]) -> usize {
+    for i in 1..=p.len().min(3) {
+        let b = p[p.len() - i];
+        if b & 0xC0 == 0x80 {
+            continue; // continuation byte: keep looking for the lead byte
+        }
+        let need = match b {
+            0xF0.. => 4,
+            0xE0.. => 3,
+            0xC0.. => 2,
+            _ => 1,
+        };
+        return if need > i { i } else { 0 };
+    }
+    0
 }
 
 /// Send one pipe's output as OutputChunk frames, a line at a time, with the
@@ -465,7 +489,25 @@ pub fn execute_streaming<C: Conn>(conn: C, req: &ExecRequest, cred: Option<Cred>
 
 #[cfg(test)]
 mod tests {
-    use super::PrefixSuffix;
+    use super::{incomplete_utf8_tail, PrefixSuffix};
+
+    #[test]
+    fn incomplete_utf8_tail_finds_only_unfinished_sequences() {
+        let e = "é".as_bytes(); // C3 A9
+        let g = "😀".as_bytes(); // F0 9F 98 80
+        assert_eq!(incomplete_utf8_tail(b""), 0);
+        assert_eq!(incomplete_utf8_tail(b"abc"), 0);
+        assert_eq!(incomplete_utf8_tail(e), 0, "complete 2-byte char");
+        assert_eq!(incomplete_utf8_tail(g), 0, "complete 4-byte char");
+        assert_eq!(incomplete_utf8_tail(&e[..1]), 1);
+        assert_eq!(incomplete_utf8_tail(&g[..1]), 1);
+        assert_eq!(incomplete_utf8_tail(&g[..2]), 2);
+        assert_eq!(incomplete_utf8_tail(&g[..3]), 3);
+        // An invalid byte earlier must not mask a split character at the end.
+        assert_eq!(incomplete_utf8_tail(&[0xFF, b'a', 0xC3]), 1);
+        // Stray continuation bytes with no lead in reach: nothing to hold.
+        assert_eq!(incomplete_utf8_tail(&[b'a', 0x80, 0x80, 0x80]), 0);
+    }
 
     /// What prefixSuffixSaver.Bytes returns for `data` written in any split.
     fn reference(data: &[u8], n: usize) -> Vec<u8> {
