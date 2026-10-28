@@ -2,7 +2,7 @@
 
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 // The libc crate does not export these for Apple targets; values are from
 // the macOS SDK's <sys/ttycom.h> (the same encoding as the other BSDs).
@@ -31,34 +31,50 @@ fn winsize(rows: u16, cols: u16) -> libc::winsize {
     }
 }
 
-fn cloexec(fd: RawFd) -> io::Result<()> {
-    if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+// The libc crate exports ptsname_r for Linux but not Apple; macOS has it
+// since 10.13.4 (<_stdlib.h>), and dew requires macOS 13.
+#[cfg(target_os = "macos")]
+extern "C" {
+    fn ptsname_r(fd: libc::c_int, buf: *mut libc::c_char, buflen: libc::size_t) -> libc::c_int;
+}
+#[cfg(not(target_os = "macos"))]
+use libc::ptsname_r;
+
+fn check(rc: libc::c_int) -> io::Result<libc::c_int> {
+    if rc < 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(())
+    Ok(rc)
 }
 
 /// Open a pty. The window size is applied only when `rows` or `cols` is
 /// non-zero, as the Go agent calls pty.Setsize only then.
+///
+/// Both ends are created close-on-exec atomically (O_CLOEXEC), not marked
+/// afterwards: the agent forks on other threads concurrently, and a child
+/// forked between creation and an fcntl would inherit the slave and keep it
+/// open, so this TTY exec would never see EIO. (openpty(3) cannot do this.)
 pub fn open(rows: u16, cols: u16) -> io::Result<Pty> {
-    let (mut m, mut s) = (-1, -1);
-    let mut ws = winsize(rows, cols);
-    // termp/winp are `*const` on Linux and `*mut` on macOS; `as _` fits both.
-    let wp: *mut libc::winsize = if rows > 0 || cols > 0 {
-        &mut ws
-    } else {
-        std::ptr::null_mut()
-    };
-    let tp: *mut libc::termios = std::ptr::null_mut();
-    let rc = unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), tp as _, wp as _) };
-    if rc < 0 {
-        return Err(io::Error::last_os_error());
+    let flags = libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC;
+    let m = check(unsafe { libc::posix_openpt(flags) })?;
+    let master = unsafe { File::from_raw_fd(m) };
+    check(unsafe { libc::grantpt(m) })?;
+    check(unsafe { libc::unlockpt(m) })?;
+    let mut name = [0 as libc::c_char; 128];
+    let rc = unsafe { ptsname_r(m, name.as_mut_ptr(), name.len()) };
+    if rc != 0 {
+        // glibc/musl return the error number; macOS returns -1 and sets errno.
+        return Err(if rc > 0 {
+            io::Error::from_raw_os_error(rc)
+        } else {
+            io::Error::last_os_error()
+        });
     }
-    // Own both fds before anything can fail, so an error can't leak them.
-    let (master, slave) = unsafe { (File::from_raw_fd(m), OwnedFd::from_raw_fd(s)) };
-    // Spawned children must inherit only the dup'd stdio, never these.
-    cloexec(master.as_raw_fd())?;
-    cloexec(slave.as_raw_fd())?;
+    let s = check(unsafe { libc::open(name.as_ptr(), flags) })?;
+    let slave = unsafe { OwnedFd::from_raw_fd(s) };
+    if rows > 0 || cols > 0 {
+        set_size(&master, rows, cols)?;
+    }
     Ok(Pty { master, slave })
 }
 
@@ -96,6 +112,7 @@ pub fn become_session_leader_on_stdin() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::RawFd;
 
     fn is_cloexec(fd: RawFd) -> bool {
         unsafe { libc::fcntl(fd, libc::F_GETFD) & libc::FD_CLOEXEC != 0 }
@@ -126,6 +143,42 @@ mod tests {
         let p = open(0, 0).unwrap();
         assert!(is_cloexec(p.master.as_raw_fd()));
         assert!(is_cloexec(p.slave.as_raw_fd()));
+    }
+
+    #[test]
+    fn concurrent_spawns_never_inherit_a_pty() {
+        // The agent serves each conn on its own thread, so a pipe exec can
+        // fork while a TTY exec is opening its pty. Any pty fd that is not
+        // close-on-exec from birth leaks into that child, which then holds
+        // the slave open and the TTY exec never sees EIO. The child's
+        // stdio is null/pipe, so any terminal fd it can see was leaked.
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let stop = Arc::new(AtomicBool::new(false));
+        let s = stop.clone();
+        let opener = std::thread::spawn(move || {
+            while !s.load(Ordering::Relaxed) {
+                drop(open(0, 0).unwrap());
+            }
+        });
+        let probe = "for f in /dev/fd/*; do n=${f##*/}; [ \"$n\" -gt 2 ] && [ -t \"$n\" ] && echo LEAK; done; true";
+        let mut leaks = 0;
+        for _ in 0..300 {
+            let out = Command::new("/bin/sh")
+                .args(["-c", probe])
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .unwrap();
+            leaks += String::from_utf8_lossy(&out.stdout).matches("LEAK").count();
+        }
+        stop.store(true, Ordering::Relaxed);
+        opener.join().unwrap();
+        assert_eq!(
+            leaks, 0,
+            "pty fds leaked into concurrently spawned children"
+        );
     }
 
     #[test]
