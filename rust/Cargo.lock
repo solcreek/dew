@@ -6,7 +6,9 @@ version = 4
 name = "dew-agent"
 version = "0.0.0"
 dependencies = [
+ "dew-proto",
  "libc",
+ "serde_json",
 ]
 
 [[package]]
