@@ -22,7 +22,6 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const MAX_CHUNK: u64 = 64 * 1024;
 
 const CONFINE_UNSUPPORTED: &str = "confine: not supported by this agent build";
-const TTY_UNSUPPORTED: &str = "tty: not supported by this agent build";
 
 /// uid/gid the agent runs commands as (DEW_EXEC_USER), resolved per exec.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,13 +57,25 @@ fn timeout_error(t: Duration) -> String {
 }
 
 /// Exit code as Go's ExitError.ExitCode reports it: -1 for a signal.
-fn exit_code(s: &ExitStatus) -> i64 {
+pub(crate) fn exit_code(s: &ExitStatus) -> i64 {
     s.code().map_or(-1, i64::from)
+}
+
+/// The command in its own process group (see Deadline), for pipe execs.
+fn build(req: &ExecRequest, cred: Option<Cred>) -> Result<Command, String> {
+    let mut cmd = build_base(req, cred)?;
+    // Own process group, so a timeout can kill the whole tree. (The Go agent
+    // kills only the direct child; a grandchild still holding the output
+    // pipe then keeps the exec running past its deadline.)
+    cmd.process_group(0);
+    Ok(cmd)
 }
 
 /// Build the command the Go agent would run: argv[0] resolved against the
 /// agent's own PATH, the guestenv exec env, the working dir, DEW_EXEC_USER.
-fn build(req: &ExecRequest, cred: Option<Cred>) -> Result<Command, String> {
+/// No process group: a TTY exec makes its own session instead, and setsid
+/// fails for a process that already leads a group.
+pub(crate) fn build_base(req: &ExecRequest, cred: Option<Cred>) -> Result<Command, String> {
     let agent_path = std::env::var("PATH").unwrap_or_else(|_| DEFAULT_PATH.into());
     let path = look_path(&req.command, &agent_path)?;
     if !req.dir.is_empty() {
@@ -82,14 +93,10 @@ fn build(req: &ExecRequest, cred: Option<Cred>) -> Result<Command, String> {
     if let Some(c) = cred {
         cmd.uid(c.uid).gid(c.gid);
     }
-    // Own process group, so a timeout can kill the whole tree. (The Go agent
-    // kills only the direct child; a grandchild still holding the output
-    // pipe then keeps the exec running past its deadline.)
-    cmd.process_group(0);
     Ok(cmd)
 }
 
-fn spawn_error(cmd: &Command, e: &io::Error) -> String {
+pub(crate) fn spawn_error(cmd: &Command, e: &io::Error) -> String {
     format!(
         "fork/exec {}: {}",
         cmd.get_program().to_string_lossy(),
@@ -432,11 +439,11 @@ pub fn execute_streaming<C: Conn>(conn: C, req: &ExecRequest, cred: Option<Cred>
             error: error.into(),
         })
     };
-    if req.tty {
-        return fail(TTY_UNSUPPORTED);
-    }
     if req.confine.as_ref().is_some_and(|c| c.is_set()) {
         return fail(CONFINE_UNSUPPORTED);
+    }
+    if req.tty {
+        return done(crate::tty::run(&conn, &writer, req, cred));
     }
     // An interactive session runs until stdin closes or the process exits,
     // so only batch streams get the exec timeout.
