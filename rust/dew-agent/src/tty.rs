@@ -11,7 +11,8 @@ use base64::Engine;
 use dew_proto::{read_frame, write_frame, ExecDone, ExecRequest, InputChunk, OutputChunk};
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -64,16 +65,30 @@ pub(crate) fn run<C: Conn>(
     let mut master = Some(p.master);
     // Guards the hangup signal against a reaped (recyclable) pid.
     let (session, _) = exec::Deadline::arm(&child, None);
+    // Lets the feeder wake this loop out of its wait on the master when the
+    // host disconnects. Without it (pair() failed) the loop just blocks in
+    // read, as before.
+    let wake = UnixStream::pair().ok();
 
     // host -> pty: stdin bytes and window-size changes.
     let m = master.as_ref().unwrap();
     if let (Ok(reader), Ok(input)) = (conn.try_clone(), m.try_clone()) {
-        feed(reader, input, session.clone());
+        let waker = wake.as_ref().and_then(|(_, tx)| tx.try_clone().ok());
+        feed(reader, input, session.clone(), waker);
     }
 
     // pty -> host: raw bytes, base64-framed.
     let mut buf = vec![0u8; READ_CHUNK];
     while let Some(m) = master.as_mut() {
+        if let Some((rx, _)) = &wake {
+            if wait_master(m, rx) {
+                // The feeder saw the host go away and has already dropped its
+                // dup of the master; closing this one hangs the line up, so
+                // even an idle command ignoring SIGHUP gets EIO.
+                master = None;
+                break;
+            }
+        }
         match m.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
@@ -114,18 +129,58 @@ pub(crate) fn run<C: Conn>(
     }
 }
 
+/// Block until the master has output (false) or the wake socket fired
+/// (true). select(2) rather than poll(2): macOS poll doesn't support tty
+/// devices. Descriptors at or past FD_SETSIZE can't go in an fd_set, so the
+/// caller then just reads (no wake-up), as without this.
+fn wait_master(master: &File, wake: &UnixStream) -> bool {
+    let (m, w) = (master.as_raw_fd(), wake.as_raw_fd());
+    if m >= libc::FD_SETSIZE as RawFd || w >= libc::FD_SETSIZE as RawFd {
+        return false;
+    }
+    loop {
+        let mut set: libc::fd_set = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::FD_ZERO(&mut set);
+            libc::FD_SET(m, &mut set);
+            libc::FD_SET(w, &mut set);
+        }
+        let (none, forever) = (std::ptr::null_mut(), std::ptr::null_mut());
+        let rc = unsafe { libc::select(m.max(w) + 1, &mut set, none, none, forever) };
+        if rc < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return false; // let the read report whatever is wrong
+        }
+        return unsafe { libc::FD_ISSET(w, &set) };
+    }
+}
+
 /// Apply InputChunk frames to the pty until EOF or a read error. A resize
 /// frame carries nothing else (its data is ignored, as in the Go agent);
 /// undecodable base64 and failed writes are skipped.
 ///
 /// The conn failing before an EOF frame means the host went away, so the
-/// session is hung up (SIGHUP to its process group). The Go agent just stops
-/// reading, and an idle shell then waits on the pty forever. After an EOF
-/// frame the host may half-close and keep reading output: no hangup.
-fn feed<C: Conn>(mut conn: C, mut master: File, session: Arc<exec::Deadline>) {
+/// session is hung up: SIGHUP to its process group, then this dup of the
+/// master is dropped and the output loop woken to close the other, so the
+/// line really hangs up and a command ignoring SIGHUP gets EIO. The Go agent
+/// just stops reading, and an idle shell then waits on the pty forever.
+/// After an EOF frame the host may half-close and keep reading output: no
+/// hangup.
+fn feed<C: Conn>(
+    mut conn: C,
+    mut master: File,
+    session: Arc<exec::Deadline>,
+    wake: Option<UnixStream>,
+) {
     thread::spawn(move || loop {
         let Ok(chunk) = read_frame::<InputChunk>(&mut conn) else {
             session.signal_group(libc::SIGHUP);
+            drop(master); // before the wake-up, so no dup outlives the close
+            if let Some(mut w) = wake {
+                let _ = w.write_all(&[1]);
+            }
             return;
         };
         if chunk.winch {

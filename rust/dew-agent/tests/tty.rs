@@ -375,6 +375,20 @@ fn hangup_closes_the_master_for_a_command_ignoring_sighup() {
 }
 
 #[test]
+fn host_disconnect_hangs_up_an_idle_command_ignoring_sighup() {
+    // Idle and deaf to SIGHUP: only a fully closed master (EIO on its read)
+    // can end it. The feeder notices the disconnect, but the output loop is
+    // blocked reading its own copy of the master and must be woken to close
+    // it too.
+    let req = tty_req("trap '' HUP; echo ready; read x; read y", 24, 80);
+    let ok = finishes_after(req, "", "ready", drop, Duration::from_secs(5));
+    assert!(
+        ok,
+        "idle SIGHUP-ignoring session outlived the host disconnect"
+    );
+}
+
+#[test]
 fn eof_then_half_close_does_not_hang_up() {
     // A host that sends the EOF frame and stops writing, but keeps reading,
     // has not gone away: the command must run to completion.
