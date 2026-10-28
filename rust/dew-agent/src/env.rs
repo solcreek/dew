@@ -126,6 +126,23 @@ mod tests {
     }
 
     #[test]
+    fn look_path_skips_non_executables_and_directories() {
+        let root = std::env::temp_dir().join(format!("dew-lookpath-{}", std::process::id()));
+        let (a, b) = (root.join("a"), root.join("b"));
+        std::fs::create_dir_all(a.join("tool")).unwrap(); // a/tool is a directory
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(b.join("tool"), "").unwrap(); // b/tool is not executable
+        let exe = root.join("c");
+        std::fs::create_dir_all(&exe).unwrap();
+        std::fs::write(exe.join("tool"), "").unwrap();
+        std::fs::set_permissions(exe.join("tool"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:{}:{}", a.display(), b.display(), exe.display());
+        assert_eq!(look_path("tool", &path).unwrap(), exe.join("tool"));
+        assert!(look_path("tool", &format!("{}:{}", a.display(), b.display())).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn look_path_resolves_and_reports_like_go() {
         assert_eq!(
             look_path("sh", "/nonexistent:/bin").unwrap(),

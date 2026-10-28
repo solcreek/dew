@@ -68,4 +68,10 @@ mod tests {
         let e = io::Error::from_raw_os_error(libc::ENOENT);
         assert_eq!(errno_text(&e), "no such file or directory");
     }
+
+    #[test]
+    fn errno_text_passes_through_non_os_errors() {
+        let e = io::Error::other("custom failure");
+        assert_eq!(errno_text(&e), "custom failure");
+    }
 }

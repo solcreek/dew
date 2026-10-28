@@ -496,6 +496,136 @@ fn stream_tty_and_confine_fail_closed_until_supported() {
     assert!(s.done.error.starts_with("confine:"), "{}", s.done.error);
 }
 
+// ---------------------------------------------------------------- failure paths
+
+#[test]
+fn non_executable_command_reports_permission_denied() {
+    let f = tempfile_lite::write("not-exec", "#!/bin/sh\necho hi\n");
+    let req = ExecRequest {
+        command: f.as_str().into(),
+        ..Default::default()
+    };
+    let r = execute(&req, None);
+    assert_eq!(r.exit_code, -1);
+    assert_eq!(
+        r.error,
+        format!("fork/exec {}: permission denied", f.as_str())
+    );
+
+    let s = stream(
+        ExecRequest {
+            stream: true,
+            ..req
+        },
+        vec![],
+        LIMIT,
+    );
+    assert_eq!(s.done.exit_code, -1);
+    assert!(
+        s.done.error.ends_with(": permission denied"),
+        "{}",
+        s.done.error
+    );
+}
+
+#[test]
+fn host_disconnect_mid_stream_does_not_wedge_the_agent() {
+    // Endless output, host reads one frame and hangs up. The pumps stop on
+    // the write error and the deadline must still reap the child, so the
+    // agent's streaming call returns instead of blocking forever on a full
+    // pipe.
+    let (agent, mut host) = UnixStream::pair().unwrap();
+    let req = ExecRequest {
+        timeout_ms: 500,
+        ..streaming("yes")
+    };
+    let worker = thread::spawn(move || execute_streaming(agent, &req, None));
+    let _: OutputChunk = read_frame(&mut host).unwrap();
+    drop(host);
+    let t = Instant::now();
+    while !worker.is_finished() {
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "agent wedged after host disconnect"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn stdin_closed_by_child_stops_feeding_without_error() {
+    // `head -c 1` exits after one byte; further stdin writes hit EPIPE and
+    // the feeder must give up quietly while the exec still completes.
+    let req = ExecRequest {
+        command: "head".into(),
+        args: vec!["-c".into(), "1".into()],
+        stream: true,
+        stdin: true,
+        ..Default::default()
+    };
+    let mut input: Vec<InputChunk> = (0..200)
+        .map(|_| InputChunk {
+            data: "x".repeat(4096),
+            ..Default::default()
+        })
+        .collect();
+    input.push(InputChunk {
+        eof: true,
+        ..Default::default()
+    });
+    let s = stream(req, input, LIMIT);
+    assert_eq!(s.joined("stdout"), "x\n", "one byte, newline added at EOF");
+    assert_eq!(s.done.exit_code, 0);
+}
+
+#[test]
+fn host_vanishing_without_eof_closes_stdin() {
+    // The host half-closes without sending eof: the feeder's read fails, it
+    // drops the child's stdin, and `cat` sees EOF and exits.
+    let (agent, mut host) = UnixStream::pair().unwrap();
+    let req = ExecRequest {
+        command: "cat".into(),
+        stream: true,
+        stdin: true,
+        ..Default::default()
+    };
+    let worker = thread::spawn(move || execute_streaming(agent, &req, None));
+    write_frame(
+        &mut host,
+        &InputChunk {
+            data: "bye\n".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    host.shutdown(std::net::Shutdown::Write).unwrap();
+    let chunk: OutputChunk = read_frame(&mut host).unwrap();
+    assert_eq!(chunk.data, "bye\n");
+    let done: ExecDone = read_frame(&mut host).unwrap();
+    assert_eq!(done.exit_code, 0);
+    worker.join().unwrap();
+}
+
+#[test]
+fn file_backed_conn_works_like_the_guest_socket() {
+    // In the guest the conn is a File over the accepted vsock fd; exercise
+    // that impl (try_clone + shutdown) through a full streaming exec.
+    use std::os::fd::OwnedFd;
+    let (agent, mut host) = UnixStream::pair().unwrap();
+    let agent = std::fs::File::from(OwnedFd::from(agent));
+    thread::spawn(move || execute_streaming(agent, &streaming("echo via-file"), None));
+    let chunk: OutputChunk = read_frame(&mut host).unwrap();
+    assert_eq!(chunk.data, "via-file\n");
+    let done: ExecDone = read_frame(&mut host).unwrap();
+    assert_eq!(done.exit_code, 0);
+    let mut b = [0u8; 1];
+    assert_eq!(
+        std::io::Read::read(&mut host, &mut b).unwrap_or(0),
+        0,
+        "File conn shut down"
+    );
+}
+
 /// Minimal temp-file helper (keeps the crate free of dev-dependencies).
 mod tempfile_lite {
     pub struct Path(std::path::PathBuf);

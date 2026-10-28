@@ -199,6 +199,17 @@ fn buffered_execs_can_share_one_conn() {
 }
 
 #[test]
+fn host_closing_before_the_reply_ends_the_conn_quietly() {
+    let a = ready_agent();
+    let (agent_end, mut h) = UnixStream::pair().unwrap();
+    let a2 = a.clone();
+    let worker = thread::spawn(move || handle_conn(agent_end, &a2));
+    write_frame(&mut h, &exec_req(TOKEN, "sleep 0.2; echo late")).unwrap();
+    drop(h);
+    worker.join().unwrap(); // returns on the failed reply write / EOF
+}
+
+#[test]
 fn explicit_exec_type_is_dispatched_as_exec() {
     let a = ready_agent();
     let r: ExecResponse = roundtrip(

@@ -336,6 +336,17 @@ mod tests {
     }
 
     #[test]
+    fn refuses_to_encode_an_oversized_frame() {
+        // The peer would reject it anyway; fail at the sender instead.
+        let big = OutputChunk {
+            stream: "stdout".into(),
+            data: "x".repeat(MAX_FRAME as usize),
+        };
+        let err = encode_frame(&big).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
     fn rejects_truncated_header() {
         assert!(read_frame_bytes(&mut [0u8, 0].as_slice()).is_err());
     }
