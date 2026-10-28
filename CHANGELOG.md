@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Streaming exec no longer corrupts output when a command writes stdout and
+  stderr at the same time.** The guest agent pumps both streams from two
+  goroutines onto one vsock conn, and each frame went out as two writes
+  (length header, then payload) without a lock, so frames could interleave and
+  the host's decode failed partway through the command. Under a stress test
+  (20k stdout + 20k stderr lines per exec) 16 of 102 streams were corrupted.
+  Frames are now written in a single write and the two pumps serialize on a
+  mutex; the same stress run shows 0 of 102.
+
 ## [0.9.1] - 2026-07-09
 
 ### Fixed
