@@ -8,9 +8,9 @@ use dew_proto::*;
 use std::io::{self, ErrorKind};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{mpsc, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -122,16 +122,45 @@ pub fn handle_conn<C: Conn>(mut conn: C, agent: &Agent) {
 
 /// Dial like net.DialTimeout("tcp", addr, 5s), with Go's error wording.
 fn dial(addr: &str) -> Result<TcpStream, String> {
-    let addrs: Vec<SocketAddr> = match addr.to_socket_addrs() {
-        Ok(a) => a.collect(),
-        Err(e) => {
-            let host = addr.rsplit_once(':').map_or(addr, |(h, _)| h);
-            return Err(format!("dial tcp: lookup {host}: {e}"));
-        }
+    dial_within(addr, CONNECT_TIMEOUT, |a| {
+        a.to_socket_addrs().map(|it| it.collect())
+    })
+}
+
+/// Shortest slice of the budget an address gets while others remain, as
+/// Go's net.partialDeadline (saneMinimum).
+const MIN_PER_ADDR: Duration = Duration::from_secs(2);
+
+/// net.DialTimeout semantics: one `budget` covers the lookup and every
+/// connection attempt. The lookup runs on a helper thread (getaddrinfo can't
+/// be cancelled; a stalled one is abandoned), and each address gets the
+/// remaining time split across the addresses left, but at least
+/// MIN_PER_ADDR of it.
+fn dial_within<R>(addr: &str, budget: Duration, resolve: R) -> Result<TcpStream, String>
+where
+    R: FnOnce(String) -> io::Result<Vec<SocketAddr>> + Send + 'static,
+{
+    let deadline = Instant::now() + budget;
+    let host = addr.rsplit_once(':').map_or(addr, |(h, _)| h).to_string();
+    let (tx, rx) = mpsc::channel();
+    let owned = addr.to_string();
+    thread::spawn(move || {
+        let _ = tx.send(resolve(owned));
+    });
+    let addrs = match rx.recv_timeout(budget) {
+        Ok(Ok(a)) => a,
+        Ok(Err(e)) => return Err(format!("dial tcp: lookup {host}: {e}")),
+        Err(_) => return Err(format!("dial tcp: lookup {host}: i/o timeout")),
     };
     let mut last = format!("dial tcp {addr}: no addresses");
-    for a in addrs {
-        match TcpStream::connect_timeout(&a, CONNECT_TIMEOUT) {
+    let total = addrs.len() as u32;
+    for (i, a) in addrs.into_iter().enumerate() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(format!("dial tcp {a}: i/o timeout"));
+        }
+        let share = (remaining / (total - i as u32)).max(MIN_PER_ADDR.min(remaining));
+        match TcpStream::connect_timeout(&a, share) {
             Ok(s) => return Ok(s),
             Err(e) if e.kind() == ErrorKind::TimedOut => {
                 last = format!("dial tcp {a}: i/o timeout")
@@ -201,6 +230,61 @@ mod tests {
             }
             assert_eq!(a.authorized(given), *want, "{name}");
         }
+    }
+
+    fn timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
+        let t = std::time::Instant::now();
+        (f(), t.elapsed())
+    }
+
+    #[test]
+    fn stalled_lookup_is_bounded_by_the_dial_budget() {
+        let (r, took) = timed(|| {
+            dial_within("slow.example:80", Duration::from_millis(300), |_| {
+                thread::sleep(Duration::from_secs(3));
+                Ok(vec![])
+            })
+        });
+        assert!(
+            took < Duration::from_secs(1),
+            "lookup not bounded: {took:?}"
+        );
+        assert_eq!(r.unwrap_err(), "dial tcp: lookup slow.example: i/o timeout");
+    }
+
+    #[test]
+    fn several_unreachable_addresses_share_one_budget() {
+        // Non-routable addresses either hang or fail fast; either way the
+        // whole dial must end within the single budget, not one per address.
+        let unroutable: Vec<SocketAddr> = vec![
+            "10.255.255.1:9".parse().unwrap(),
+            "10.255.255.2:9".parse().unwrap(),
+            "10.255.255.3:9".parse().unwrap(),
+        ];
+        let (r, took) = timed(|| {
+            dial_within("multi:9", Duration::from_millis(400), move |_| {
+                Ok(unroutable)
+            })
+        });
+        assert!(r.is_err());
+        assert!(
+            took < Duration::from_millis(1500),
+            "budget exceeded: {took:?}"
+        );
+    }
+
+    #[test]
+    fn lookup_error_uses_go_wording() {
+        let r = dial_within("bad.example:80", Duration::from_secs(1), |_| {
+            Err(io::Error::other("no such host"))
+        });
+        assert_eq!(r.unwrap_err(), "dial tcp: lookup bad.example: no such host");
+    }
+
+    #[test]
+    fn empty_lookup_result_is_an_error() {
+        let r = dial_within("none.example:80", Duration::from_secs(1), |_| Ok(vec![]));
+        assert!(r.unwrap_err().starts_with("dial tcp"));
     }
 
     #[test]
