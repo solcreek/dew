@@ -1,6 +1,6 @@
 # Rust guest agent migration
 
-Status: phase 1 merged (#53); phase 2 (agent core) in review (2026-10-28).
+Status: phases 1–2 merged (#53, #54); phase 3 (TTY + exposes) in review (2026-10-28).
 
 ## Why the agent, and only the agent (for now)
 
@@ -79,15 +79,19 @@ cases, and each one has a test in `rust/dew-agent/tests/`:
 | case | Go agent | Rust agent | why |
 |---|---|---|---|
 | exec timeout, grandchild holds stdout (`sleep 9 & echo`) | kills only the direct child, then waits for the pipe, so the exec overruns its deadline | kills the child's process group; drains pipes before reaping | a deadline should end the exec |
-| output line > 64 KiB | `bufio.Scanner` stops reading the pipe and the command stalls | splits into ≤ 64 KiB chunks | no stall |
-| `--confine` / TTY request before phases 3–4 | — | explicit `confine:` / `tty:` error; set_token acks `confine: false` | fail closed |
+| output line > 64 KiB | `bufio.Scanner` stops reading the pipe and the command stalls | splits into ≤ 64 KiB chunks, keeping line endings and UTF-8 intact across them | no stall |
+| host disconnects from a TTY session | the shell keeps running (idle: the output loop never notices; busy: Wait blocks forever) — one leaked session per dropped conn, reproduced in a guest | SIGHUP to the session's process group when the conn fails before an EOF frame or an output write fails; the master is closed on the write path | a dropped line hangs a terminal up |
+| expose `accept` fails transiently (e.g. EMFILE) | the accept loop returns, leaving a dead listener in the map | backs off 50 ms and keeps the listener | the port keeps working |
+| `--confine` before phase 4 | — | explicit `confine:` error on every exec path (TTY included); set_token acks `confine: false` | fail closed |
 
 Kept identical even where questionable, so the migration is not also a
 behaviour change:
 
 - An empty token, once set, authorizes empty-token requests.
-- Connect proxying doesn't half-close.
+- Connect and expose proxying don't half-close.
 - A trailing `\r` is stripped from streamed lines.
+- In TTY mode, an EOF frame only stops reading input; it doesn't send `^D`.
+- A resize frame's data is ignored, and undecodable input is skipped.
 
 ## Risks
 
