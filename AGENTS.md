@@ -23,6 +23,9 @@ bash kernel/build.sh
 # Smoke tests (requires built binary + initramfs)
 ./smoke-test.sh
 
+# Guest-agent conformance (boots the image; Mac of the image's arch; skips without one)
+scripts/conformance.sh [--disk-gb 4] [--agent BIN] KERNEL INITRD
+
 # Rust workspace (guest-agent migration, docs/rust-agent-migration.md).
 # Use rustup's cargo: rust-toolchain.toml pins the version and musl targets
 # (Homebrew's cargo ignores it and has no musl std).
