@@ -1,8 +1,8 @@
 # Rust guest agent migration
 
-Status: phases 1–4 merged (#53, #54, #56, #57). Phase 5 in progress
-(2026-10-28): the `DEW_AGENT` build switch and its CI matrix are in
-review; the conformance suite is next.
+Status: phases 1–4 merged (#53, #54, #56, #57). Phase 5: the `DEW_AGENT`
+build switch and its CI matrix merged (#59); the conformance suite is in
+review (2026-10-28).
 
 ## Why the agent, and only the agent (for now)
 
@@ -55,6 +55,45 @@ smaller agent is less likely to be the process the OOM killer picks.
 
 Phases 2–4 can be reviewed in parallel once phase 1 merges, since they touch
 separate modules of the crate.
+
+## Conformance suite (phase 5)
+
+`test/conformance` boots one image and drives its agent over real vsock
+through the host's own code (`internal/vm/darwin`, `internal/vsock`). The
+same tests run against either agent, which they detect from the running
+binary. Covered: handshake and auth, ping, buffered exec (output, exit
+code, stderr only on failure, env/dir, several requests on one conn, 4 MiB
+output, missing command, timeout), streaming exec (exit code, timeout,
+stdin, 20k+20k-line interleave stress), TTY (isatty, size, resize, hangup),
+connect, expose, and confine (uid drop, no_new_privs, read-only root,
+address families, fail-closed specs, streaming refused). A case where the
+agents differ on purpose (the table below) skips its Go run.
+
+```bash
+# on a Mac of the image's arch (Apple VZ boots only the host's arch)
+scripts/conformance.sh KERNEL INITRD                   # minimal
+scripts/conformance.sh --disk-gb 4 KERNEL INITRD       # node/python/standard
+scripts/conformance.sh --agent BIN KERNEL INITRD       # overlay a local agent
+```
+
+It can't run in CI: GitHub's macOS runners don't support nested
+virtualization. Results with images from `initramfs/build.sh` at 032156f
+(aarch64 on an M3, x86_64 on an i9 iMac, verified 2026-10-28):
+
+| | minimal | standard (4 GB disk) |
+|---|---|---|
+| aarch64, Go | 22 pass, 3 skip | 22 pass, 3 skip |
+| aarch64, Rust | 25 pass | 25 pass |
+| x86_64, Go | 22 pass, 3 skip | 22 pass, 3 skip |
+| x86_64, Rust | 25 pass | 25 pass |
+
+node and python were not run on their own: they boot through the same
+disk-bearing init path as standard. The suite also fails where it should:
+a Go agent built from before #44 fails the interleave stress on its first
+run, and the standard image of release 0.9.1, whose agent predates #44 and #58,
+fails the interleave stress and the uid-range case. Instead of a release
+dry-run, the `initramfs-agent` CI job (#59) builds minimal with each agent
+on both arches.
 
 ## Host track (optional, decide after phase 6)
 
