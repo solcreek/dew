@@ -340,7 +340,7 @@ fn address_family_denylist_blocks_inet_sockets() {
     let o = case(
         &c,
         "",
-        &format!("{STATUS}; nc -z -w 1 127.0.0.1 9 2>&1 | grep -o 'not permitted' | head -1"),
+        &format!("{STATUS}; {{ if command -v nc >/dev/null; then nc -z -w 1 127.0.0.1 9; else python3 -c 'import socket; socket.socket(socket.AF_INET)'; fi; }} 2>&1 | grep -o 'not permitted' | head -1"),
     );
     assert_eq!(field(&o.stdout, "Seccomp"), "2");
     assert_eq!(
