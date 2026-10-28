@@ -1,6 +1,6 @@
 # Rust guest agent migration
 
-Status: phases 1–3 merged (#53, #54, #56); phase 4 (--confine) in review (2026-10-28).
+Status: phases 1–4 merged (#53, #54, #56, #57); phase 5 next (2026-10-28).
 
 ## Why the agent, and only the agent (for now)
 
