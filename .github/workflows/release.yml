@@ -140,9 +140,8 @@ jobs:
         with:
           go-version: '1.25'
 
-      # Every profile bakes the Rust guest agent (initramfs/build.sh's
-      # default; docs/rust-agent-migration.md phase 6). The toolchain file
-      # pins the version and the musl targets for both arches.
+      # Every profile bakes the Rust guest agent (docs/guest-agent.md). The
+      # toolchain file pins the version and the musl targets for both arches.
       - name: Install pinned Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install

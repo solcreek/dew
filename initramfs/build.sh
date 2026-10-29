@@ -49,8 +49,8 @@ esac
 # The guest agent baked in at /usr/local/bin/dew-agent is rust/dew-agent.
 # Building it needs rustup's cargo: rust/rust-toolchain.toml pins the
 # version and the musl targets, which Homebrew's cargo ignores.
-# DEW_AGENT=go chose the Go agent until it was removed (migration phase 7,
-# docs/rust-agent-migration.md); refuse it instead of quietly building Rust.
+# DEW_AGENT=go chose the Go agent until 0.9.6 removed it; refuse it instead of
+# quietly building Rust.
 # Checked here, before anything is downloaded or deleted.
 case "${DEW_AGENT:-rust}" in
     rust) ;;
