@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-10-28
+
 ### Changed
 
 - **Every profile now runs the Rust guest agent.** 0.9.5 moved `minimal`;
@@ -2024,7 +2026,8 @@ Covers 0.3.0 – 0.4.0; the 0.3.x tags were not documented separately.
 - GitHub Actions CI (tests + cross-compile) and kernel build workflow
 - Smoke test script for pre-release validation
 
-[Unreleased]: https://github.com/solcreek/dew/compare/v0.9.5...HEAD
+[Unreleased]: https://github.com/solcreek/dew/compare/v0.9.6...HEAD
+[0.9.6]: https://github.com/solcreek/dew/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/solcreek/dew/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/solcreek/dew/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/solcreek/dew/compare/v0.9.2...v0.9.3
