@@ -83,11 +83,11 @@ jobs:
       - name: Boot test
         run: |
           echo "=== Boot + exec test ==="
-          RESULT=$(./dew run --json -- uname -r 2>/dev/null)
+          RESULT=$(./dew run --json -- uname -r)
           echo "$RESULT"
           echo "$RESULT" | grep -q "exit_code" || { echo "FAIL: no structured output"; exit 1; }
           echo "=== Filesystem check ==="
-          ./dew run --json -- cat /proc/filesystems 2>/dev/null | grep -q "ext4" || echo "WARN: ext4 not in /proc/filesystems"
+          ./dew run --json -- cat /proc/filesystems | grep -q "ext4" || echo "WARN: ext4 not in /proc/filesystems"
           echo "=== PASS ==="
 
   verify-arm64:
@@ -120,7 +120,7 @@ jobs:
       - name: Boot test
         run: |
           echo "=== Boot + exec test ==="
-          RESULT=$(./dew run --json -- uname -r 2>/dev/null)
+          RESULT=$(./dew run --json -- uname -r)
           echo "$RESULT"
           echo "$RESULT" | grep -q "exit_code" || { echo "FAIL: no structured output"; exit 1; }
           echo "=== PASS ==="
