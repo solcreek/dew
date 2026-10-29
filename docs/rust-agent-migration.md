@@ -4,9 +4,9 @@ Status: phases 1–5 merged (#53, #54, #56, #57, #59, #60). 0.9.4 shipped the
 Go agent's `--confine` fixes (#58) on their own. Phase 6, step one (#62):
 0.9.5 ships the Rust agent in the minimal profile. The 0.9.5 aarch64
 minimal image passes the conformance suite (25 pass, verified 2026-10-28).
-Step two, the Rust agent for every profile, is in review (2026-10-28). It
-does not wait a release after 0.9.5 as planned: dew has few users yet, so
-the owner chose to move on.
+Step two, the Rust agent for every profile, merged in #65. It did not wait
+a release after 0.9.5 as planned: dew has few users yet, so the owner chose
+to move on. Phase 7, removing the Go agent, is in review (2026-10-28).
 
 ## Why the agent, and only the agent (for now)
 
@@ -55,7 +55,7 @@ smaller agent is less likely to be the process the OOM killer picks.
 | 4 | **confine** | Re-exec shim: mount namespace + read-only root + read-write binds, uid/gid/DynamicUser drop, capability bounding/keep/drop, no_new_privs, seccomp (address families, explicit syscalls). Port `caps_test`, `seccomp_test`. Only then does the agent ack `confine: true` in the set_token reply. | Parity with `docs/confine-enforcement.md` |
 | 5 | **build switch + conformance** | `initramfs/build.sh` gains `DEW_AGENT=go\|rust` (default `go`), plus a drift-guard test for it. A conformance suite (grown from the POC harness) boots each profile with each agent and runs the same scenarios: exec, stream, stdin, TTY, connect, expose, confine, interleave stress. The release dry-run builds both. | Suite green for both agents on both arches |
 | 6 | **ship** | Release builds the Rust agent. Default it for `minimal` first, one release later for every profile. Keep the Go agent buildable as a fallback. CHANGELOG entry with size and memory numbers. | One release with no agent regressions |
-| 7 | **retire** | Delete `cmd/dew-agent` and its Linux-only CI job. Code the host needs (`internal/vsock`, `internal/agentauth`) stays. | — |
+| 7 | **retire** | Delete `cmd/dew-agent` and its Linux-only CI job. Code the host needs (`internal/vsock`) stays; `internal/agentauth` and `internal/guestenv` turned out to be agent-only and go too. The seccomp goldens move to `rust/dew-agent/testdata`. | — |
 
 Phases 2–4 can be reviewed in parallel once phase 1 merges, since they touch
 separate modules of the crate.
@@ -162,7 +162,7 @@ behaviour change:
   `mkdir`, only `mkdirat`**: a denylist naming just `mkdir` is a no-op on
   arm64 guests. The tables are generated from go-seccomp-bpf, and every
   filter program is checked against Go-emitted goldens
-  (`cmd/dew-agent/testdata/seccomp`).
+  (`rust/dew-agent/testdata/seccomp`, moved from `cmd/dew-agent` in phase 7).
 - `/etc/passwd` and `/etc/group` are parsed with Go `os/user`'s rules.
 
 ## Risks
