@@ -1,8 +1,11 @@
 # Rust guest agent migration
 
 Status: phases 1–5 merged (#53, #54, #56, #57, #59, #60). 0.9.4 shipped the
-Go agent's `--confine` fixes (#58) on their own. Phase 6, step one (the
-minimal profile defaults to the Rust agent), is in review (2026-10-28).
+Go agent's `--confine` fixes (#58) on their own. Phase 6, step one (#62):
+0.9.5 ships the Rust agent in the minimal profile; node, python and
+standard keep the Go agent. The 0.9.5 aarch64 minimal image passes the
+conformance suite (25 pass, verified 2026-10-28). Step two, the Rust agent
+for every profile, waits for 0.9.5 to run without agent regressions.
 
 ## Why the agent, and only the agent (for now)
 
