@@ -71,8 +71,7 @@ jobs:
         run: cargo test --locked
 
       # Guest agent binaries for both VM arches: static musl, linked with the
-      # toolchain's rust-lld (rust/.cargo/config.toml). Not shipped yet; this
-      # keeps the cross-build green and tracks the size.
+      # toolchain's rust-lld (rust/.cargo/config.toml). Tracks the size.
       - name: Cross-build guest agent (musl)
         run: |
           for t in aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
@@ -86,25 +85,14 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
-      # The Go agent, so tests/confine.rs can run every --confine case through
-      # both shims and require identical results (x86_64 here; aarch64 is
-      # checked in a dew VM).
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.25'
-
-      - name: Build the Go agent for confine parity
-        working-directory: .
-        run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dew-agent-go" ./cmd/dew-agent/
-
       # Left out of the line floor, because instrumentation cannot see them run:
       # - main.rs and vsock.rs only run inside a guest (AF_VSOCK) and are
       #   exercised end to end.
       # - confine/apply.rs and confine/shim.rs run in the confine shim, a
       #   child that ends in execve: the image is replaced before the profile
       #   is written, so a successful enforcement never records. Their
-      #   behaviour is gated in this same step by tests/confine.rs (root, with
-      #   Go parity), which fail the job if enforcement is wrong.
+      #   behaviour is gated in this same step by tests/confine.rs (root),
+      #   which fail the job if enforcement is wrong.
       # Everything else must stay at or above 95% of lines.
       # `shell: bash` makes Actions run `bash -eo pipefail`; the implicit
       # shell is plain `bash -e`, where `| tee` would swallow the floor's
@@ -113,13 +101,12 @@ jobs:
       # uid drop, seccomp) only runs with privilege. The runner is a
       # disposable VM, and the shim's own mount namespace is itself asserted
       # by the tests.
-      - name: Coverage (as root, with Go parity for --confine)
+      - name: Coverage (as root, for --confine)
         shell: bash
         run: |
           rustup component add llvm-tools
           sudo env "PATH=$PATH" "HOME=$HOME" \
             "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
-            "DEW_GO_AGENT_EXE=$RUNNER_TEMP/dew-agent-go" \
             cargo llvm-cov --locked --workspace --summary-only \
               --ignore-filename-regex '(main|vsock|confine/apply|confine/shim)\.rs$' \
               --fail-under-lines 95 | tee -a "$GITHUB_STEP_SUMMARY"

@@ -4,13 +4,11 @@
 //! (they skip otherwise); run inside a dew guest or a disposable VM.
 //!
 //! DEW_AGENT_EXE overrides the agent binary (default: Cargo's build of it).
-//! With DEW_GO_AGENT_EXE set to the Go agent (cmd/dew-agent), every case
-//! also runs through the Go shim and must produce the same exit code and
-//! output, so the two agents are checked to enforce identically.
+//! The cases were checked against the retired Go agent's shim while it
+//! existed (migration phases 4-6), so they pin what it enforced.
 #![cfg(target_os = "linux")]
 
 use dew_proto::{Confinement, ExecRequest};
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -18,10 +16,6 @@ fn rust_agent() -> PathBuf {
     std::env::var_os("DEW_AGENT_EXE")
         .map(PathBuf::from)
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_dew-agent").into())
-}
-
-fn go_agent() -> Option<PathBuf> {
-    std::env::var_os("DEW_GO_AGENT_EXE").map(PathBuf::from)
 }
 
 /// Root with CAP_SYS_ADMIN is needed for every case; skip loudly otherwise.
@@ -40,17 +34,15 @@ struct Out {
     stderr: String,
 }
 
-/// Run `script` under `spec` through one agent's shim. The Go shim expects
-/// its parent to have created the mount namespace (CLONE_NEWNS at clone);
-/// the Rust shim creates its own, which `shim_has_its_own_mount_namespace`
-/// checks, so only the Go run is given one here.
-fn shim(exe: &PathBuf, go: bool, spec: &str, exec_user: &str, script: &str) -> Out {
-    shim_argv(exe, go, spec, exec_user, &["/bin/sh", "-c", script])
+/// Run `script` under `spec` through the agent's shim. The shim creates its
+/// own mount namespace, which `shim_has_its_own_mount_namespace` checks.
+fn shim(exe: &PathBuf, spec: &str, exec_user: &str, script: &str) -> Out {
+    shim_argv(exe, spec, exec_user, &["/bin/sh", "-c", script])
 }
 
-fn shim_argv(exe: &PathBuf, go: bool, spec: &str, exec_user: &str, target: &[&str]) -> Out {
-    // Both parents pass the agent's DEW_EXEC_USER as DEW_CONFINE_EXEC_USER.
-    // The shims must ignore DEW_EXEC_USER itself, which a request's env can
+fn shim_argv(exe: &PathBuf, spec: &str, exec_user: &str, target: &[&str]) -> Out {
+    // The parent passes the agent's DEW_EXEC_USER as DEW_CONFINE_EXEC_USER.
+    // The shim must ignore DEW_EXEC_USER itself, which a request's env can
     // set: it is set to root here, so a shim that read it would drop nothing.
     let mut cmd = Command::new(exe);
     cmd.arg("--dew-confine-shim")
@@ -59,16 +51,6 @@ fn shim_argv(exe: &PathBuf, go: bool, spec: &str, exec_user: &str, target: &[&st
         .env("DEW_CONFINE_EXEC_USER", exec_user)
         .env("DEW_EXEC_USER", "0")
         .stdin(Stdio::null());
-    if go {
-        unsafe {
-            cmd.pre_exec(|| {
-                if libc::unshare(libc::CLONE_NEWNS) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-    }
     let o = cmd.output().expect("run shim");
     Out {
         code: o.status.code().unwrap_or(-1),
@@ -77,25 +59,13 @@ fn shim_argv(exe: &PathBuf, go: bool, spec: &str, exec_user: &str, target: &[&st
     }
 }
 
-/// Run a case through the Rust shim, and through the Go shim when one is
-/// given, requiring the same exit code and stdout. Returns the Rust result.
+/// Run a case through the shim.
 fn case(spec: &Confinement, exec_user: &str, script: &str) -> Out {
     case_json(&serde_json::to_string(spec).unwrap(), exec_user, script)
 }
 
 fn case_json(spec: &str, exec_user: &str, script: &str) -> Out {
-    let rs = shim(&rust_agent(), false, spec, exec_user, script);
-    if let Some(go) = go_agent() {
-        let g = shim(&go, true, spec, exec_user, script);
-        assert_eq!(
-            (g.code, &g.stdout),
-            (rs.code, &rs.stdout),
-            "Go and Rust shims differ for spec {spec}\n go stderr: {}\n rs stderr: {}",
-            g.stderr,
-            rs.stderr
-        );
-    }
-    rs
+    shim(&rust_agent(), spec, exec_user, script)
 }
 
 /// The confined process's view of itself.
@@ -317,11 +287,11 @@ fn shim_has_its_own_mount_namespace() {
     if !root() {
         return;
     }
-    // Only the Rust shim: it must unshare by itself (the Go one relies on its
-    // parent), so a missing unshare can't hide behind an outer namespace.
+    // The shim must unshare by itself, so a missing unshare can't hide behind
+    // an outer namespace.
     let ours = std::fs::read_link("/proc/self/ns/mnt").unwrap();
     let c = serde_json::to_string(&spec(|c| c.read_only_root = true)).unwrap();
-    let o = shim(&rust_agent(), false, &c, "", "readlink /proc/self/ns/mnt");
+    let o = shim(&rust_agent(), &c, "", "readlink /proc/self/ns/mnt");
     assert_eq!(o.code, 0, "{o:?}");
     assert_ne!(
         o.stdout.trim(),
@@ -444,12 +414,8 @@ fn shim_makes_no_syscall_between_seccomp_and_execve() {
         .collect();
     let spec = serde_json::to_string(&spec(|c| c.system_calls = allow)).unwrap();
     let target = ["/bin/echo", "exec-ok"];
-    let rs = shim_argv(&rust_agent(), false, &spec, "", &target);
+    let rs = shim_argv(&rust_agent(), &spec, "", &target);
     assert_eq!((rs.code, rs.stdout.as_str()), (0, "exec-ok\n"), "{rs:?}");
-    if let Some(go) = go_agent() {
-        let g = shim_argv(&go, true, &spec, "", &target);
-        assert_eq!((g.code, &g.stdout), (rs.code, &rs.stdout), "go: {g:?}");
-    }
 }
 
 #[test]
@@ -492,7 +458,7 @@ fn bad_spec_fails_closed() {
     if !root() {
         return;
     }
-    let o = shim(&rust_agent(), false, "{not json", "", "echo RAN");
+    let o = shim(&rust_agent(), "{not json", "", "echo RAN");
     assert_eq!(o.code, 126);
     assert!(!o.stdout.contains("RAN"));
     assert!(
@@ -506,7 +472,7 @@ fn missing_target_is_reported() {
     if !root() {
         return;
     }
-    let o = shim(&rust_agent(), false, "{}", "", "x");
+    let o = shim(&rust_agent(), "{}", "", "x");
     let missing = Command::new(rust_agent())
         .arg("--dew-confine-shim")
         .output()
