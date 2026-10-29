@@ -1,5 +1,5 @@
 //! Buffered and streaming exec (mirrors executeCommand / executeStreaming in
-//! cmd/dew-agent/main.go).
+//! the retired Go agent's main.go).
 
 use crate::conn::Conn;
 use crate::env::{env_pairs, exec_env, look_path, DEFAULT_PATH};
@@ -72,7 +72,7 @@ fn build(req: &ExecRequest, cred: Option<Cred>) -> Result<Command, String> {
 }
 
 /// Build the command the Go agent would run: argv[0] resolved against the
-/// agent's own PATH, the guestenv exec env, the working dir, DEW_EXEC_USER.
+/// agent's own PATH, the exec env (env.rs), the working dir, DEW_EXEC_USER.
 /// No process group: a TTY exec makes its own session instead, and setsid
 /// fails for a process that already leads a group.
 pub(crate) fn build_base(req: &ExecRequest, cred: Option<Cred>) -> Result<Command, String> {

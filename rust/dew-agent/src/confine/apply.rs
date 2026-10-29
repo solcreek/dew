@@ -1,6 +1,6 @@
 //! The Linux syscalls that enforce a confinement (mirrors applyReadOnlyFS,
 //! bindReadWrite, applyPrivilegeDrop, addInheritable, applySeccomp and
-//! installSeccompFilter in cmd/dew-agent). Runs only in the single-threaded
+//! installSeccompFilter in the retired Go agent). Runs only in the single-threaded
 //! confine shim, as root, just before it execs the target.
 
 use super::caps::{caps_to_drop, kept_caps, last_capability};

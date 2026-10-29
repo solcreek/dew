@@ -42,20 +42,18 @@ case to `goldenFrames` (`internal/vsock/golden_test.go`), regenerate with
 `-update`, and mirror it in `rust/dew-proto` (its golden test fails on any
 golden file it has no type for, or encodes differently).
 
-### `--confine` parity (Go ↔ Rust)
+### `--confine` enforcement (Rust agent)
 
 - `rust/dew-agent/tests/confine.rs` needs **root on Linux** and skips
-  otherwise. Run it in a dew VM or a disposable Linux box. Set
-  `DEW_GO_AGENT_EXE` to a Go agent build and every case also runs through the
-  Go shim and must match it; CI does this as root on x86_64.
-- Seccomp programs must match the Go agent's instruction for instruction:
-  - `cmd/dew-agent/testdata/seccomp/*.json` are emitted by Go
-    (`go test ./cmd/dew-agent -run SeccompGolden -update-seccomp`, run on each
-    arch: linux/arm64 and linux/amd64, which works under `dew run --rosetta`).
-  - The Rust test rebuilds every one of them.
-  - When go-seccomp-bpf changes, regenerate
-    `rust/dew-agent/src/confine/syscalls.rs` with
-    `scripts/gen-seccomp-syscalls.py` in the same change.
+  otherwise. Run it in a dew VM or a disposable Linux box; CI runs it as root
+  on x86_64.
+- Seccomp programs are pinned instruction for instruction:
+  - `rust/dew-agent/testdata/seccomp/*.json` are programs the retired Go agent
+    emitted, with their inputs; the Rust test rebuilds every one. They are
+    frozen: a deliberate filter change updates them in the same change.
+  - `rust/dew-agent/src/confine/syscalls.rs` is generated from
+    go-seccomp-bpf v1.6.0's syscall tables by `scripts/gen-seccomp-syscalls.py`
+    (fetch them with `go mod download github.com/elastic/go-seccomp-bpf@v1.6.0`).
 
 ## Architecture
 
@@ -94,8 +92,7 @@ All communication uses length-prefixed JSON over vsock (no SSH). Auth token inje
 ### Build tags
 
 - `//go:build darwin` — host CLI and darwin VM backend
-- `//go:build linux` — guest agent only
-- Guest agent: `CGO_ENABLED=0` static binary (runs on Alpine musl)
+- Guest agent: Rust (`rust/dew-agent`), a static musl binary built by `initramfs/build.sh`
 
 ### Init system (two-stage)
 

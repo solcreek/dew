@@ -1,5 +1,5 @@
 //! The identity a confined exec drops to (mirrors lookupUser / lookupGroup /
-//! resolveDropID in cmd/dew-agent/caps.go). Pure except for passwd/group
+//! resolveDropID in the retired Go agent's caps.go). Pure except for passwd/group
 //! file reads.
 
 use crate::gofmt;

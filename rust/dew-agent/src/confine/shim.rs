@@ -1,5 +1,5 @@
 //! The confine shim (mirrors maybeRunConfineShim / runConfineShim in
-//! cmd/dew-agent/confine.go). A confined exec re-runs the agent binary as
+//! the retired Go agent's confine.go). A confined exec re-runs the agent binary as
 //! `[exe, --dew-confine-shim, target, args...]` with the spec in
 //! DEW_CONFINE_SPEC. That fresh process, single-threaded and still root,
 //! applies the spec and then execs the target; any failure exits 126 with

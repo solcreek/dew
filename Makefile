@@ -7,9 +7,13 @@ ENTITLEMENTS := entitlements.plist
 build:
 	go build -o $(BIN) ./cmd/dew/
 
+# Guest agent (rust/dew-agent) for both VM arches. Needs rustup's cargo:
+# rust/rust-toolchain.toml pins the version and the musl targets.
 agent:
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o $(AGENT)-linux-amd64 ./cmd/dew-agent/
-	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(AGENT)-linux-arm64 ./cmd/dew-agent/
+	cd rust && cargo build --locked --release -p dew-agent --target x86_64-unknown-linux-musl
+	cd rust && cargo build --locked --release -p dew-agent --target aarch64-unknown-linux-musl
+	cp rust/target/x86_64-unknown-linux-musl/release/$(AGENT) $(AGENT)-linux-amd64
+	cp rust/target/aarch64-unknown-linux-musl/release/$(AGENT) $(AGENT)-linux-arm64
 
 sign: build
 	codesign --entitlements $(ENTITLEMENTS) --force -s - $(BIN)

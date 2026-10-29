@@ -111,11 +111,12 @@ imperative steps that must run in the child post-clone, pre-exec.
 
 **Decision: a re-exec shim.** The agent re-execs *itself* with argv
 `[exe, --dew-confine-shim, targetCmd, args...]` (the `--dew-confine-shim`
-sentinel; see `cmd/dew-agent/confine.go`), the spec passed in the
-`DEW_CONFINE_SPEC` env var, and the namespace flags in `SysProcAttr`; the shim
-process (now inside the new mount ns) performs the imperative steps in order,
-then `exec`s the real target. This is the standard pattern (runc/crun do the
-same). The shim stays in the static no-cgo agent binary, so no extra asset.
+sentinel; see `rust/dew-agent/src/confine/shim.rs`), the spec passed in the
+`DEW_CONFINE_SPEC` env var. The shim unshares its own mount namespace (the
+retired Go agent set the namespace flags in `SysProcAttr` instead), performs
+the imperative steps in order, then `exec`s the real target. This is the
+standard pattern (runc/crun do the same). The shim stays in the static agent
+binary, so no extra asset.
 Order inside the shim:
 
 1. `unshare`-side already done by parent's `Cloneflags` (mount ns).
@@ -187,7 +188,8 @@ Effort: medium. Self-contained, pure Go, **fully verifiable in-VM**.
 ## 4. Native capability/uid drop (replace `setpriv` shell-out) — IMPLEMENTED
 
 The host-side `wrapWithSetpriv` + util-linux dependency is gone; the shim applies
-the drop natively (`cmd/dew-agent/caps.go`, `applyPrivilegeDrop`). Mapping:
+the drop natively (`rust/dew-agent/src/confine/apply.rs`, planned by
+`caps.rs` and `ids.rs`). Mapping:
 
 - `CapabilityBoundingSet=` (empty / positive list) → `DropAllCaps`; drop every
   cap via `PR_CAPBSET_DROP` except `KeepCaps`.
@@ -222,9 +224,10 @@ Verified in-VM (`smoke-test.sh` Test 6f + ad-hoc): empty bounding set →
 `CapBnd=0` + `NoNewPrivs=1` as root on `minimal`; `User=65534` +
 `CapabilityBoundingSet=CAP_NET_BIND_SERVICE` → uid 65534 with `CapAmb`/`CapEff`
 == that one cap; `DynamicUser` → uid 65534; ro-fs + capped bounding set composed
-on `standard`. The linux-only pure logic (`capsToDrop`, `resolveDropID`, cap-name
-resolution) is unit-tested in `cmd/dew-agent/caps_test.go` (CI `test-linux-agent`
-job, and run in-VM against a real kernel).
+on `standard`. The pure logic (which caps to drop, the drop identity, cap-name
+resolution) is unit-tested in `rust/dew-agent/src/confine/{caps,ids}.rs`, and the
+enforcement by `rust/dew-agent/tests/confine.rs` as root (CI `rust` job, and
+in-VM against a real kernel).
 
 ---
 

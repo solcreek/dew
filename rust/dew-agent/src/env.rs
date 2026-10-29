@@ -1,5 +1,5 @@
-//! Exec environment and command resolution (mirrors internal/guestenv and
-//! Go's exec.LookPath as the Go agent uses them).
+//! Exec environment and command resolution (mirrors the retired Go
+//! agent's guestenv package, and Go's exec.LookPath as that agent used it).
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

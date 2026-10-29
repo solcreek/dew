@@ -109,8 +109,9 @@ fn set_token_closes_the_conn() {
 
 #[test]
 fn empty_token_is_accepted_like_go() {
-    // agentauth.IsAuthorized is tokenSet && given == expected, so an empty
-    // token, once set, authorizes empty-token requests. Keep parity.
+    // The Go agent's agentauth.IsAuthorized was tokenSet && given ==
+    // expected, so an empty token, once set, authorizes empty-token requests.
+    // Keep that behaviour.
     let a = Arc::new(Agent::new(None));
     assert!(set_token(&a, "").ok);
     let r: ExecResponse = roundtrip(&a, &exec_req("", "echo ok"));

@@ -13,7 +13,8 @@
 // The emitted table is the cross-arch *union* of each group's members (the C
 // source guards some names per-arch with #if, which this parser ignores). The
 // guest agent drops names absent from its own arch table when assembling the
-// BPF, recovering each architecture's exact subset — see cmd/dew-agent/seccomp.go.
+// BPF, recovering each architecture's exact subset — see
+// rust/dew-agent/src/confine/seccomp.rs.
 package main
 
 import (

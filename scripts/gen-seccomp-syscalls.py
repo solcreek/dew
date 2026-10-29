@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Generate rust/dew-agent/src/confine/syscalls.rs from go-seccomp-bpf.
 
-The Rust agent must resolve SystemCallFilter= names exactly as the Go agent
-does, so it uses the same tables: the syscall name -> number maps that
+The Rust agent resolves SystemCallFilter= names exactly as the retired Go
+agent did, so it uses the same tables: the syscall name -> number maps that
 go-seccomp-bpf ships in arch/zsyscalls.go, for the two guest arches.
 
-Usage (from the repo root):
-    python3 scripts/gen-seccomp-syscalls.py "$(go env GOMODCACHE)/github.com/elastic/go-seccomp-bpf@<version>/arch/zsyscalls.go"
+Usage (from the repo root; the module is no longer a dependency, so fetch it):
+    go mod download github.com/elastic/go-seccomp-bpf@v1.6.0
+    python3 scripts/gen-seccomp-syscalls.py "$(go env GOMODCACHE)/github.com/elastic/go-seccomp-bpf@v1.6.0/arch/zsyscalls.go"
 """
 
 import re
