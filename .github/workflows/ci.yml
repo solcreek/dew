@@ -124,41 +124,32 @@ jobs:
               --ignore-filename-regex '(main|vsock|confine/apply|confine/shim)\.rs$' \
               --fail-under-lines 95 | tee -a "$GITHUB_STEP_SUMMARY"
 
-  # initramfs/build.sh with each guest agent (DEW_AGENT), for both VM arches
-  # (aarch64 is cross-built, as in the release). Only minimal: the agent step
-  # is the same in every profile, and the others add large package installs.
-  # Checks the image carries the agent it was asked for, so the rust arm
-  # can't rot while releases still ship the Go agent.
+  # initramfs/build.sh for both VM arches (aarch64 is cross-built, as in the
+  # release). Only minimal: the agent step is the same in every profile, and
+  # the others add large package installs. Checks the image carries a static
+  # Rust agent for its arch.
   initramfs-agent:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         arch: [x86_64, aarch64]
-        agent: [go, rust]
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.25'
-
       - name: Install pinned Rust toolchain (rust-toolchain.toml)
-        if: matrix.agent == 'rust'
         working-directory: rust
         run: rustup toolchain install
 
       - name: Build minimal initramfs
         env:
           TARGET_ARCH: ${{ matrix.arch }}
-          DEW_AGENT: ${{ matrix.agent }}
         run: bash initramfs/build.sh minimal
 
       - name: Check the baked agent
         shell: bash
         env:
           ARCH: ${{ matrix.arch }}
-          AGENT: ${{ matrix.agent }}
         run: |
           mkdir x && cd x
           gzip -dc ../initramfs/initramfs-minimal.cpio.gz | cpio -id usr/local/bin/dew-agent
@@ -172,9 +163,8 @@ jobs:
           echo "$info" | grep -q "$want" || { echo "::error::not a $ARCH binary"; exit 1; }
           echo "$info" | grep -q 'statically linked\|static-pie linked' || { echo "::error::not static"; exit 1; }
           # Go binaries carry a build-info header; the Rust agent does not.
-          if grep -q 'Go buildinf' "$f"; then got=go; else got=rust; fi
-          [ "$got" = "$AGENT" ] || { echo "::error::asked for $AGENT, image has $got"; exit 1; }
-          echo "dew-agent $AGENT $ARCH: $(stat -c %s "$f") bytes; initramfs $(stat -c %s ../initramfs/initramfs-minimal.cpio.gz) bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+          if grep -q 'Go buildinf' "$f"; then echo "::error::the image has a Go agent"; exit 1; fi
+          echo "dew-agent $ARCH: $(stat -c %s "$f") bytes; initramfs $(stat -c %s ../initramfs/initramfs-minimal.cpio.gz) bytes" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # dew-win is //go:build windows and is skipped by the macOS test job
   # (go test ./... excludes windows-tagged files there). Build and test

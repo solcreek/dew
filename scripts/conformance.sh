@@ -6,7 +6,7 @@
 #   scripts/conformance.sh [--agent BIN] [--disk-gb N] KERNEL INITRD [go test flags...]
 #
 #   KERNEL, INITRD  the image to boot, e.g. from
-#                   `DEW_AGENT=rust TARGET_ARCH=aarch64 bash initramfs/build.sh minimal`
+#                   `TARGET_ARCH=aarch64 bash initramfs/build.sh minimal`
 #                   (Linux) or the cached release assets in ~/.local/share/dew.
 #   --agent BIN     bake BIN in as /usr/local/bin/dew-agent: appended as a cpio
 #                   overlay, whose entries replace the image's. For trying a

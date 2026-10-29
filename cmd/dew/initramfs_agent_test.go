@@ -48,22 +48,24 @@ func runBuildScriptPreamble(t *testing.T, profile, agent string) (string, error)
 	return string(out), err
 }
 
-// DEW_AGENT selects the guest agent; an unknown value must stop the build
-// before it starts (before WORK_DIR is wiped), and go, rust and the default
-// must get past the check.
+// The Go agent is gone: DEW_AGENT=go (or anything but rust) must stop the
+// build before it starts (before WORK_DIR is wiped) instead of quietly
+// baking the Rust agent, and unset or rust must get past the check.
 func TestInitramfsBuildScript_ValidatesDewAgent(t *testing.T) {
-	out, err := runBuildScriptPreamble(t, "minimal", "bogus")
-	if err == nil {
-		t.Fatalf("DEW_AGENT=bogus did not fail:\n%s", out)
-	}
-	if !strings.Contains(out, "unsupported DEW_AGENT: bogus") {
-		t.Errorf("DEW_AGENT=bogus: no clear error:\n%s", out)
-	}
-	if strings.Contains(out, "=== Building") {
-		t.Errorf("DEW_AGENT=bogus: the build started before the check:\n%s", out)
+	for _, agent := range []string{"go", "bogus"} {
+		out, err := runBuildScriptPreamble(t, "minimal", agent)
+		if err == nil {
+			t.Fatalf("DEW_AGENT=%s did not fail:\n%s", agent, out)
+		}
+		if !strings.Contains(out, "unsupported DEW_AGENT: "+agent) {
+			t.Errorf("DEW_AGENT=%s: no clear error:\n%s", agent, out)
+		}
+		if strings.Contains(out, "=== Building") {
+			t.Errorf("DEW_AGENT=%s: the build started before the check:\n%s", agent, out)
+		}
 	}
 
-	for _, agent := range []string{"", "go", "rust"} {
+	for _, agent := range []string{"", "rust"} {
 		out, _ := runBuildScriptPreamble(t, "minimal", agent)
 		if strings.Contains(out, "unsupported DEW_AGENT") || !strings.Contains(out, "=== Building") {
 			t.Errorf("DEW_AGENT=%q was not accepted:\n%s", agent, out)
@@ -71,27 +73,9 @@ func TestInitramfsBuildScript_ValidatesDewAgent(t *testing.T) {
 	}
 }
 
-// Migration phase 6: every profile ships the Rust agent; DEW_AGENT=go is the
-// fallback.
-func TestInitramfsBuildScript_DefaultAgentPerProfile(t *testing.T) {
-	for _, tc := range []struct{ profile, agent, want string }{
-		{"minimal", "", "rust"},
-		{"node", "", "rust"},
-		{"python", "", "rust"},
-		{"standard", "", "rust"},
-		{"minimal", "go", "go"},
-		{"standard", "go", "go"},
-	} {
-		out, _ := runBuildScriptPreamble(t, tc.profile, tc.agent)
-		if !strings.Contains(out, "Guest agent: "+tc.want+"\n") {
-			t.Errorf("profile %s, DEW_AGENT=%q: want the %s agent:\n%s", tc.profile, tc.agent, tc.want, out)
-		}
-	}
-}
-
-// Both agents must land at the path init-stage2 starts, built for the target
-// arch: Go via GOARCH, Rust via the musl target the toolchain file pins.
-func TestInitramfsBuildScript_BuildsTheSelectedAgent(t *testing.T) {
+// The agent must land at the path init-stage2 starts, built for the target
+// arch via the musl target the toolchain file pins.
+func TestInitramfsBuildScript_BuildsTheAgent(t *testing.T) {
 	script := readBuildScript(t)
 	start := strings.Index(script, "# --- Step 3: Build dew-agent ---")
 	end := strings.Index(script, "# --- Step 4a:")
@@ -100,21 +84,6 @@ func TestInitramfsBuildScript_BuildsTheSelectedAgent(t *testing.T) {
 	}
 	step := script[start:end]
 
-	goIdx := strings.Index(step, "    go)")
-	if goIdx < 0 {
-		t.Fatal("no go) arm in the agent step")
-	}
-	goArm := step[goIdx:]
-	rustIdx := strings.Index(goArm, "    rust)")
-	if rustIdx < 0 {
-		t.Fatal("no rust) arm after the go) arm in the agent step")
-	}
-	goArm, rustArm := goArm[:rustIdx], goArm[rustIdx:]
-	for _, want := range []string{`GOARCH="$GO_ARCH"`, "CGO_ENABLED=0", `-o "${WORK_DIR}/usr/local/bin/dew-agent"`, `"${REPO_DIR}/cmd/dew-agent/"`} {
-		if !strings.Contains(goArm, want) {
-			t.Errorf("go agent build lost %q", want)
-		}
-	}
 	for _, want := range []string{
 		`RUST_TARGET="${ALPINE_ARCH}-unknown-linux-musl"`,
 		`cd "${REPO_DIR}/rust"`,
@@ -122,11 +91,11 @@ func TestInitramfsBuildScript_BuildsTheSelectedAgent(t *testing.T) {
 		`"${CARGO_TARGET_DIR:-target}/${RUST_TARGET}/release/dew-agent"`,
 		`"${WORK_DIR}/usr/local/bin/dew-agent"`,
 	} {
-		if !strings.Contains(rustArm, want) {
+		if !strings.Contains(step, want) {
 			t.Errorf("rust agent build lost %q", want)
 		}
 	}
-	// The init script starts whatever is at this path; neither arm may move it.
+	// The init script starts whatever is at this path; the build may not move it.
 	if !strings.Contains(script, "exec env $AGENT_ENV /usr/local/bin/dew-agent") {
 		t.Error("init-stage2 no longer starts /usr/local/bin/dew-agent — update the agent step's install path with it")
 	}

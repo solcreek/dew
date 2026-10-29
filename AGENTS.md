@@ -15,7 +15,6 @@ bash initramfs/build.sh minimal    # ~5MB, exec-only
 bash initramfs/build.sh node       # ~31MB, Node.js + npm + build-base
 bash initramfs/build.sh python     # python3 + pip
 bash initramfs/build.sh standard   # node tier + larger RAM/disk; OCI via crun (no daemon)
-DEW_AGENT=go bash initramfs/build.sh minimal     # bake the Go guest agent instead of Rust (default: rust)
 
 # Turbo kernel (Docker required)
 bash kernel/build.sh
