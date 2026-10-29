@@ -140,19 +140,22 @@ jobs:
         with:
           go-version: '1.25'
 
-      # The minimal profile bakes the Rust guest agent (initramfs/build.sh's
-      # per-profile default; docs/rust-agent-migration.md phase 6). The
-      # toolchain file pins the version and the musl targets for both arches.
+      # Every profile bakes the Rust guest agent (initramfs/build.sh's
+      # default; docs/rust-agent-migration.md phase 6). The toolchain file
+      # pins the version and the musl targets for both arches.
       - name: Install pinned Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install
 
-      # Standalone Go agent binaries, kept as release assets (and as the
-      # fallback: DEW_AGENT=go bash initramfs/build.sh minimal).
+      # Standalone agent binaries, kept as release assets: the same Rust
+      # builds the initramfs profiles bake in (they reuse this build).
       - name: Build guest agent
         run: |
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dew-agent-linux-amd64 ./cmd/dew-agent/
-          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dew-agent-linux-arm64 ./cmd/dew-agent/
+          cd rust
+          for t in x86_64:amd64 aarch64:arm64; do
+            cargo build --locked --release -p dew-agent --target "${t%%:*}-unknown-linux-musl"
+            cp "target/${t%%:*}-unknown-linux-musl/release/dew-agent" "$GITHUB_WORKSPACE/dew-agent-linux-${t##*:}"
+          done
 
       - name: Build Windows wrappers (x86_64 + arm64)
         # Two targets because Windows-on-ARM (Snapdragon laptops, the
