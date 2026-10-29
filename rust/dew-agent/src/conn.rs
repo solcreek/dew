@@ -11,7 +11,7 @@ pub trait Conn: Read + Write + Send + Sized + 'static {
     /// A second handle on the same socket (for a concurrent reader/writer).
     fn try_clone(&self) -> std::io::Result<Self>;
     /// Shut the socket down in both directions, so a thread blocked reading
-    /// a clone returns. Mirrors the Go agent's deferred conn.Close.
+    /// a clone returns.
     fn shutdown(&self);
 }
 
@@ -99,7 +99,7 @@ where
 }
 
 /// Copy bytes both ways between `a` and `tcp` until both directions end. No
-/// half-close, as in the Go agent's connect and expose proxies.
+/// half-close. Used by both the connect and the expose proxies.
 pub fn proxy<C: Conn>(mut a: C, mut tcp: std::net::TcpStream) {
     let (Ok(mut a_in), Ok(mut tcp_out)) = (a.try_clone(), tcp.try_clone()) else {
         return;

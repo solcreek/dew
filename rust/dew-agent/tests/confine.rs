@@ -4,15 +4,13 @@
 //! (they skip otherwise); run inside a dew guest or a disposable VM.
 //!
 //! DEW_AGENT_EXE overrides the agent binary (default: Cargo's build of it).
-//! The cases were checked against the retired Go agent's shim while it
-//! existed (migration phases 4-6), so they pin what it enforced.
 #![cfg(target_os = "linux")]
 
 use dew_proto::{Confinement, ExecRequest};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-fn rust_agent() -> PathBuf {
+fn agent_exe() -> PathBuf {
     std::env::var_os("DEW_AGENT_EXE")
         .map(PathBuf::from)
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_dew-agent").into())
@@ -65,7 +63,7 @@ fn case(spec: &Confinement, exec_user: &str, script: &str) -> Out {
 }
 
 fn case_json(spec: &str, exec_user: &str, script: &str) -> Out {
-    shim(&rust_agent(), spec, exec_user, script)
+    shim(&agent_exe(), spec, exec_user, script)
 }
 
 /// The confined process's view of itself.
@@ -162,7 +160,7 @@ fn ids_that_are_not_a_uid_t_fail_closed() {
         return;
     }
     // (uid_t)-1 would leave the ids unchanged and 2^32 would wrap to 0: the
-    // target would run as root, so both shims refuse them.
+    // target would run as root, so the shim refuses them.
     for (s, msg) in [
         (spec(|c| c.user = "4294967295".into()), "uid 4294967295"),
         (spec(|c| c.user = "4294967296".into()), "uid 4294967296"),
@@ -291,7 +289,7 @@ fn shim_has_its_own_mount_namespace() {
     // an outer namespace.
     let ours = std::fs::read_link("/proc/self/ns/mnt").unwrap();
     let c = serde_json::to_string(&spec(|c| c.read_only_root = true)).unwrap();
-    let o = shim(&rust_agent(), &c, "", "readlink /proc/self/ns/mnt");
+    let o = shim(&agent_exe(), &c, "", "readlink /proc/self/ns/mnt");
     assert_eq!(o.code, 0, "{o:?}");
     assert_ne!(
         o.stdout.trim(),
@@ -414,7 +412,7 @@ fn shim_makes_no_syscall_between_seccomp_and_execve() {
         .collect();
     let spec = serde_json::to_string(&spec(|c| c.system_calls = allow)).unwrap();
     let target = ["/bin/echo", "exec-ok"];
-    let rs = shim_argv(&rust_agent(), &spec, "", &target);
+    let rs = shim_argv(&agent_exe(), &spec, "", &target);
     assert_eq!((rs.code, rs.stdout.as_str()), (0, "exec-ok\n"), "{rs:?}");
 }
 
@@ -458,7 +456,7 @@ fn bad_spec_fails_closed() {
     if !root() {
         return;
     }
-    let o = shim(&rust_agent(), "{not json", "", "echo RAN");
+    let o = shim(&agent_exe(), "{not json", "", "echo RAN");
     assert_eq!(o.code, 126);
     assert!(!o.stdout.contains("RAN"));
     assert!(
@@ -472,8 +470,8 @@ fn missing_target_is_reported() {
     if !root() {
         return;
     }
-    let o = shim(&rust_agent(), "{}", "", "x");
-    let missing = Command::new(rust_agent())
+    let o = shim(&agent_exe(), "{}", "", "x");
+    let missing = Command::new(agent_exe())
         .arg("--dew-confine-shim")
         .output()
         .unwrap();
@@ -488,7 +486,7 @@ fn missing_target_is_reported() {
 // ------------------------------------------------------------- through exec
 
 fn with_agent() {
-    let _ = dew_agent::exec::SELF_EXE.set(rust_agent());
+    let _ = dew_agent::exec::SELF_EXE.set(agent_exe());
 }
 
 fn confined(script: &str, c: Confinement, env: &[&str]) -> ExecRequest {
@@ -520,7 +518,7 @@ fn execute_runs_the_target_confined() {
 }
 
 #[test]
-fn execute_reports_a_shim_failure_like_go() {
+fn execute_reports_a_shim_failure() {
     if !root() {
         return;
     }

@@ -112,9 +112,8 @@ imperative steps that must run in the child post-clone, pre-exec.
 **Decision: a re-exec shim.** The agent re-execs *itself* with argv
 `[exe, --dew-confine-shim, targetCmd, args...]` (the `--dew-confine-shim`
 sentinel; see `rust/dew-agent/src/confine/shim.rs`), the spec passed in the
-`DEW_CONFINE_SPEC` env var. The shim unshares its own mount namespace (the
-retired Go agent set the namespace flags in `SysProcAttr` instead), performs
-the imperative steps in order, then `exec`s the real target. This is the
+`DEW_CONFINE_SPEC` env var. The shim unshares its own mount namespace,
+performs the imperative steps in order, then `exec`s the real target. This is the
 standard pattern (runc/crun do the same). The shim stays in the static agent
 binary, so no extra asset.
 Order inside the shim:

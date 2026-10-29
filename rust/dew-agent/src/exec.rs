@@ -1,5 +1,4 @@
-//! Buffered and streaming exec (mirrors executeCommand / executeStreaming in
-//! the retired Go agent's main.go).
+//! Buffered and streaming exec.
 
 use crate::conn::Conn;
 use crate::env::{env_pairs, exec_env, look_path, DEFAULT_PATH};
@@ -17,13 +16,13 @@ use std::time::Duration;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Longest stdout/stderr line sent as one OutputChunk. Longer lines go out in
-/// pieces of this size. (The Go agent's bufio.Scanner stops reading a pipe at
-/// a 64 KiB line, which stalls the command; splitting avoids that.)
+/// pieces of this size. (A reader that stopped at an over-long line would
+/// stop draining the pipe and stall the command; splitting avoids that.)
 pub const MAX_CHUNK: u64 = 64 * 1024;
 
 /// Streaming execs never run confined: the shim runs on the batch path and
-/// the host refuses --confine with --stream. (The Go agent's streaming path
-/// ignores the spec and runs the command unconfined; this fails closed.)
+/// the host refuses --confine with --stream. A confined streaming request
+/// fails closed rather than running the command unconfined.
 const CONFINE_STREAMING: &str = "confine: not supported on the streaming path";
 
 /// uid/gid the agent runs commands as (DEW_EXEC_USER), resolved per exec.
@@ -34,8 +33,8 @@ pub struct Cred {
 }
 
 /// Look `name` up in an /etc/passwd-format file by user name, with Go's
-/// os/user parsing rules (the Go agent's setExecUser uses user.Lookup). Ids
-/// that don't fit a uid_t leave the exec unchanged.
+/// os/user parsing rules (see passwd.rs). Ids that don't fit a uid_t leave
+/// the exec unchanged.
 pub fn lookup_user(passwd: &str, name: &str) -> Option<Cred> {
     let u = crate::passwd::user_by_name(passwd, name).ok()??;
     Some(Cred {
@@ -64,15 +63,15 @@ pub(crate) fn exit_code(s: &ExitStatus) -> i64 {
 /// The command in its own process group (see Deadline), for pipe execs.
 fn build(req: &ExecRequest, cred: Option<Cred>) -> Result<Command, String> {
     let mut cmd = build_base(req, cred)?;
-    // Own process group, so a timeout can kill the whole tree. (The Go agent
-    // kills only the direct child; a grandchild still holding the output
-    // pipe then keeps the exec running past its deadline.)
+    // Own process group, so a timeout can kill the whole tree. (Killing only
+    // the direct child would let a grandchild still holding the output pipe
+    // keep the exec running past its deadline.)
     cmd.process_group(0);
     Ok(cmd)
 }
 
-/// Build the command the Go agent would run: argv[0] resolved against the
-/// agent's own PATH, the exec env (env.rs), the working dir, DEW_EXEC_USER.
+/// Build the command to run: argv[0] resolved against the agent's own PATH,
+/// the exec env (env.rs), the working dir, DEW_EXEC_USER.
 /// No process group: a TTY exec makes its own session instead, and setsid
 /// fails for a process that already leads a group.
 pub(crate) fn build_base(req: &ExecRequest, cred: Option<Cred>) -> Result<Command, String> {
@@ -107,8 +106,8 @@ fn self_exe() -> std::path::PathBuf {
         .unwrap_or_else(|| "/proc/self/exe".into())
 }
 
-/// The re-exec into the confine shim for a confined batch exec (Go:
-/// confineExecCmd): `[self, --dew-confine-shim, command, args...]` with the
+/// The re-exec into the confine shim for a confined batch exec:
+/// `[self, --dew-confine-shim, command, args...]` with the
 /// spec in DEW_CONFINE_SPEC and the agent's DEW_EXEC_USER in
 /// DEW_CONFINE_EXEC_USER. Both are stripped from the request env first, so
 /// a workload can't inject its own spec or identity. The shim runs as root
@@ -330,7 +329,7 @@ pub fn execute(req: &ExecRequest, cred: Option<Cred>) -> ExecResponse {
 /// execute, also given the agent's DEW_EXEC_USER name, which a confined
 /// exec's shim resolves itself (with the unit's User= taking precedence).
 /// A confined exec that fails to apply its spec exits 126 with
-/// `dew-confine: <reason>` on stderr, as with the Go agent.
+/// `dew-confine: <reason>` on stderr.
 pub fn execute_as(req: &ExecRequest, cred: Option<Cred>, exec_user: Option<&str>) -> ExecResponse {
     let fail = |error: String| ExecResponse {
         exit_code: -1,
@@ -425,7 +424,7 @@ fn incomplete_utf8_tail(p: &[u8]) -> usize {
 }
 
 /// Send one pipe's output as OutputChunk frames, a line at a time, with the
-/// line endings bufio.ScanLines gives the Go agent: "\r\n" and "\n" become
+/// line endings of Go's bufio.ScanLines: "\r\n" and "\n" become
 /// "\n", a final unterminated line gets one, and a \r just before EOF is
 /// dropped. Lines over MAX_CHUNK go out in pieces; the line state carries
 /// across pieces, so these rules hold wherever a chunk boundary falls.

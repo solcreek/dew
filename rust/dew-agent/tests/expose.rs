@@ -1,7 +1,6 @@
 //! `dew up --expose-host` end to end inside the agent: set_exposes over a
 //! conn, a guest client connecting to an exposed port, and the reverse dial
 //! to a fake host on a socketpair (the real one is vsock CID 2, port 1025).
-//! Matched against the Go agent's startExposeForwarders / handleExposeConn.
 
 use dew_agent::server::{handle_conn, Agent};
 use dew_proto::*;

@@ -2,10 +2,8 @@
 
 // Package conformance boots a guest image and checks its agent over real
 // vsock, through the host's own VM and protocol code (internal/vm/darwin,
-// internal/vsock). The same tests run against the Go and the Rust agent, so
-// they pin what the host can observe: frames, exit codes, error wording,
-// timing contracts. Where the agents differ on purpose
-// (docs/rust-agent-migration.md), a test says so and skips the Go run.
+// internal/vsock). They pin what the host can observe: frames, exit codes,
+// error wording, timing contracts.
 //
 // Run it with scripts/conformance.sh, which signs the test binary (Apple's
 // Virtualization framework needs the entitlement) and picks the image.
@@ -37,9 +35,6 @@ const token = "conformance-token-0123456789abcdef"
 
 // guest is the one VM every test shares; nil when no image is configured.
 var guest *darwin.DarwinVM
-
-// agent is "go" or "rust": which agent the booted image runs.
-var agent string
 
 func TestMain(m *testing.M) {
 	kernel, initrd := os.Getenv("DEW_CONFORMANCE_KERNEL"), os.Getenv("DEW_CONFORMANCE_INITRD")
@@ -90,26 +85,13 @@ func boot(m *testing.M, kernel, initrd string) (int, error) {
 	}
 	guest = d
 
-	// Which agent init started: a Go binary keeps its runtime's function
-	// names (pclntab) even when stripped, and the Rust agent has none.
-	// (Not the "Go buildinf" header: the guest's BusyBox grep misses it.)
-	r, err := execOnce(proto.ExecRequest{Command: "/bin/sh", Args: []string{"-c",
-		`exe=/proc/$(pidof dew-agent | cut -d' ' -f1)/exe; test -r "$exe" || exit 2; grep -q 'runtime\.goexit' "$exe" && echo go || echo rust`}})
-	switch {
-	case err != nil:
-		return 0, err
-	case r.ExitCode == 0 && (r.Stdout == "go\n" || r.Stdout == "rust\n"):
-		agent = strings.TrimSpace(r.Stdout)
-	default:
-		return 0, fmt.Errorf("cannot tell the agent apart: %+v", r)
-	}
-	fmt.Printf("conformance: agent=%s kernel=%s initrd=%s disk_gb=%d\n", agent, kernel, initrd, cfg.DiskGB)
+	fmt.Printf("conformance: kernel=%s initrd=%s disk_gb=%d\n", kernel, initrd, cfg.DiskGB)
 	code := m.Run()
 	// The agent's memory once the suite has exercised it: the resident set
-	// now and its peak (VmHWM), for comparing the two agents.
+	// now and its peak (VmHWM).
 	if r, err := execOnce(proto.ExecRequest{Command: "/bin/sh", Args: []string{"-c",
 		`grep -E '^Vm(RSS|HWM):' /proc/$(pidof dew-agent | cut -d' ' -f1)/status | tr -s ' \t' ' ' | tr '\n' ' '`}}); err == nil {
-		fmt.Printf("conformance: agent=%s memory after the suite: %s\n", agent, strings.TrimSpace(r.Stdout))
+		fmt.Printf("conformance: agent memory after the suite: %s\n", strings.TrimSpace(r.Stdout))
 	}
 	return code, nil
 }
@@ -166,14 +148,6 @@ func needGuest(t *testing.T) {
 	t.Helper()
 	if guest == nil {
 		t.Skip("no image: set DEW_CONFORMANCE_KERNEL and DEW_CONFORMANCE_INITRD (scripts/conformance.sh)")
-	}
-}
-
-// goDiffers skips the Go run of a case where the agents differ on purpose.
-func goDiffers(t *testing.T, why string) {
-	t.Helper()
-	if agent == "go" {
-		t.Skip("deliberate difference (docs/rust-agent-migration.md): " + why)
 	}
 }
 
@@ -412,7 +386,6 @@ func TestExec_Timeout(t *testing.T) {
 // past its deadline.
 func TestExec_TimeoutWithGrandchildHoldingStdout(t *testing.T) {
 	needGuest(t)
-	goDiffers(t, "the Go agent kills only the direct child and waits for the pipe")
 	start := time.Now()
 	r := run(t, proto.ExecRequest{Command: "/bin/sh", Args: []string{"-c", "sleep 30 & echo started; wait"}, TimeoutMs: 1500})
 	if r.ExitCode != -1 || r.Error != "timeout after 1.5s" {
@@ -434,9 +407,9 @@ func TestStream_OutputAndExitCode(t *testing.T) {
 }
 
 // Both streams written concurrently arrive whole and in order, each in its
-// own frames. This is the frame interleave bug fixed in the Go agent (PR
-// #44), which corrupted about one stream in six at this size; it is a race,
-// so the reps make a miss unlikely, not impossible.
+// own frames. A regression test for the frame interleave bug fixed in #44,
+// which corrupted about one stream in six at this size; it is a race, so the
+// reps make a miss unlikely, not impossible.
 func TestStream_InterleaveStress(t *testing.T) {
 	needGuest(t)
 	const lines = 20000
@@ -543,7 +516,6 @@ func readUntil(t *testing.T, r *bufio.Reader, want string) string {
 // Dropping the host side of a TTY session hangs the terminal up.
 func TestTTY_HostDisconnectEndsTheSession(t *testing.T) {
 	needGuest(t)
-	goDiffers(t, "the Go agent leaves the shell running when the host disconnects")
 	c, err := guest.VsockConnect(proto.DefaultPort)
 	if err != nil {
 		t.Fatal(err)
@@ -752,7 +724,6 @@ func TestConfine_FailsClosed(t *testing.T) {
 // command unconfined.
 func TestConfine_StreamingIsRefused(t *testing.T) {
 	needGuest(t)
-	goDiffers(t, "the Go agent's streaming path ignores the spec")
 	c := dial(t)
 	send(t, c, &proto.ExecRequest{Token: token, Command: "/bin/sh", Args: []string{"-c", "touch /tmp/conformance-stream-confine"},
 		Stream: true, Confine: &proto.Confinement{NoNewPrivs: true}})

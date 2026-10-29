@@ -1,6 +1,5 @@
-//! The identity a confined exec drops to (mirrors lookupUser / lookupGroup /
-//! resolveDropID in the retired Go agent's caps.go). Pure except for passwd/group
-//! file reads.
+//! The identity a confined exec drops to. Pure except for passwd/group file
+//! reads.
 
 use crate::gofmt;
 use crate::passwd;
@@ -144,7 +143,6 @@ mod tests {
         c
     }
 
-    // Port of TestLookupRejectsNegative.
     #[test]
     fn negative_ids_are_rejected() {
         let d = db("neg");
@@ -224,7 +222,6 @@ mod tests {
             .starts_with("group \"wheel\": open /no/such/group:"));
     }
 
-    // Port of TestResolveDropID.
     #[test]
     fn drop_identity_plans() {
         let d = db("drop");

@@ -25,7 +25,7 @@ bash kernel/build.sh
 # Guest-agent conformance (boots the image; Mac of the image's arch; skips without one)
 scripts/conformance.sh [--disk-gb 4] [--agent BIN] KERNEL INITRD
 
-# Rust workspace (guest-agent migration, docs/rust-agent-migration.md).
+# Rust workspace: the guest agent (docs/guest-agent.md).
 # Use rustup's cargo: rust-toolchain.toml pins the version and musl targets
 # (Homebrew's cargo ignores it and has no musl std).
 cd rust && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test
@@ -48,9 +48,9 @@ golden file it has no type for, or encodes differently).
   otherwise. Run it in a dew VM or a disposable Linux box; CI runs it as root
   on x86_64.
 - Seccomp programs are pinned instruction for instruction:
-  - `rust/dew-agent/testdata/seccomp/*.json` are programs the retired Go agent
-    emitted, with their inputs; the Rust test rebuilds every one. They are
-    frozen: a deliberate filter change updates them in the same change.
+  - `rust/dew-agent/testdata/seccomp/*.json` are recorded programs with their
+    inputs; the Rust test rebuilds every one. They are frozen: a deliberate
+    filter change updates them in the same change.
   - `rust/dew-agent/src/confine/syscalls.rs` is generated from
     go-seccomp-bpf v1.6.0's syscall tables by `scripts/gen-seccomp-syscalls.py`
     (fetch them with `go mod download github.com/elastic/go-seccomp-bpf@v1.6.0`).

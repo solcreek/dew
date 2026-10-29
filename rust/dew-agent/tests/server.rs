@@ -1,7 +1,7 @@
-//! Request dispatch over one connection (handle_conn), matched against the Go
-//! agent's handleConn: the set_token handshake, fail-closed auth on every
-//! request type, buffered exec reuse of a conn, streaming, and the connect
-//! proxy. A socketpair stands in for the vsock conn.
+//! Request dispatch over one connection (handle_conn): the set_token
+//! handshake, fail-closed auth on every request type, buffered exec reuse
+//! of a conn, streaming, and the connect proxy. A socketpair stands in for
+//! the vsock conn.
 
 use dew_agent::server::{handle_conn, Agent, CONFINE_SUPPORTED};
 use dew_proto::*;
@@ -108,9 +108,9 @@ fn set_token_closes_the_conn() {
 }
 
 #[test]
-fn empty_token_is_accepted_like_go() {
-    // The Go agent's agentauth.IsAuthorized was tokenSet && given ==
-    // expected, so an empty token, once set, authorizes empty-token requests.
+fn empty_token_once_set_authorizes_empty_tokens() {
+    // Authorization is token set && given == expected, so an empty token,
+    // once set, authorizes empty-token requests, as in earlier releases.
     // Keep that behaviour.
     let a = Arc::new(Agent::new(None));
     assert!(set_token(&a, "").ok);
@@ -270,8 +270,7 @@ fn exec_user_runs_commands_as_that_user() {
     let r: ExecResponse = roundtrip(&a, &exec_req(TOKEN, "id -u"));
     assert_eq!(r.stdout, format!("{uid}\n"));
 
-    // An unknown user leaves the exec unchanged, as the Go agent's
-    // setExecUser does when user.Lookup fails.
+    // An unknown user leaves the exec unchanged.
     let mut agent = Agent::new(Some("ghost".into()));
     agent.passwd = passwd.clone();
     let a = Arc::new(agent);
@@ -334,7 +333,7 @@ fn connect_proxies_bytes_both_ways() {
 }
 
 #[test]
-fn connect_refused_uses_go_wording() {
+fn connect_refused_error_text() {
     // Bind then drop to get a port that is almost certainly closed.
     let port = TcpListener::bind("127.0.0.1:0")
         .unwrap()

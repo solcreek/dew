@@ -1,7 +1,6 @@
-//! TTY exec: the command runs on a pseudo-terminal (mirrors runPTY in
-//! the retired Go agent's main.go). One merged output stream, isatty true, job
-//! control. Terminal bytes are binary, so InputChunk/OutputChunk `data` is
-//! standard base64 in this mode.
+//! TTY exec: the command runs on a pseudo-terminal. One merged output
+//! stream, isatty true, job control. Terminal bytes are binary, so
+//! InputChunk/OutputChunk `data` is standard base64 in this mode.
 
 use crate::conn::Conn;
 use crate::exec::{self, Cred};
@@ -18,7 +17,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-/// Bytes read from the pty per OutputChunk (the Go agent's buffer size).
+/// Bytes read from the pty per OutputChunk.
 pub const READ_CHUNK: usize = 32 * 1024;
 
 fn stdio(fd: &OwnedFd) -> io::Result<Stdio> {
@@ -117,7 +116,7 @@ pub(crate) fn run<C: Conn>(
     }
 
     let status = session.wait(&mut child, None);
-    // As the Go agent (deferred ptmx.Close), the master closes after Wait.
+    // The master closes only after Wait.
     drop(master);
     match status {
         Ok(s) if s.success() => ExecDone::default(),
@@ -190,14 +189,14 @@ fn wait_master(master: &File, wake: &UnixStream) -> bool {
 }
 
 /// Apply InputChunk frames to the pty until EOF or a read error. A resize
-/// frame carries nothing else (its data is ignored, as in the Go agent);
+/// frame carries nothing else (its data is ignored);
 /// undecodable base64 and failed writes are skipped.
 ///
 /// The conn failing before an EOF frame means the host went away, so the
 /// session is hung up: SIGHUP to its process group, then this dup of the
 /// master is dropped and the output loop woken to close the other, so the
-/// line really hangs up and a command ignoring SIGHUP gets EIO. The Go agent
-/// just stops reading, and an idle shell then waits on the pty forever.
+/// line really hangs up and a command ignoring SIGHUP gets EIO. Just
+/// stopping reading would leave an idle shell waiting on the pty forever.
 /// After an EOF frame the host may half-close and keep reading output: no
 /// hangup.
 fn feed<C: Conn>(

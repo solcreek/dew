@@ -1,4 +1,4 @@
-//! Pseudo-terminals for TTY exec (the role creack/pty plays in the Go agent).
+//! Pseudo-terminals for TTY exec.
 
 use std::fs::File;
 use std::io;
@@ -48,7 +48,7 @@ fn check(rc: libc::c_int) -> io::Result<libc::c_int> {
 }
 
 /// Open a pty. The window size is applied only when `rows` or `cols` is
-/// non-zero, as the Go agent calls pty.Setsize only then.
+/// non-zero.
 ///
 /// Both ends are created close-on-exec atomically (O_CLOEXEC), not marked
 /// afterwards: the agent forks on other threads concurrently, and a child

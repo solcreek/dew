@@ -1,5 +1,5 @@
-//! Capability names and the bounding-set plan (mirrors the pure half of
-//! the retired Go agent's caps.go). No syscalls here; `apply` performs the drop.
+//! Capability names and the bounding-set plan. No syscalls here; `apply`
+//! performs the drop.
 
 use dew_proto::Confinement;
 
@@ -119,7 +119,6 @@ mod tests {
         v.iter().map(|x| x.to_string()).collect()
     }
 
-    // Port of TestResolveCap.
     #[test]
     fn resolve_cap_by_name() {
         assert_eq!(resolve_cap("cap_net_bind_service"), Ok(10));
@@ -138,7 +137,6 @@ mod tests {
         assert_eq!(nums, (0..=CAP_LAST_CAP_FALLBACK).collect::<Vec<_>>());
     }
 
-    // Port of TestCapsToDrop.
     #[test]
     fn caps_to_drop_plans() {
         let c = Confinement {
@@ -201,7 +199,6 @@ mod tests {
             .is_empty());
     }
 
-    // Port of TestKeptCaps.
     #[test]
     fn kept_caps_plans() {
         let c = Confinement {

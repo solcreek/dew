@@ -1,5 +1,5 @@
-//! Exec environment and command resolution (mirrors the retired Go
-//! agent's guestenv package, and Go's exec.LookPath as that agent used it).
+//! Exec environment and command resolution (with Go's exec.LookPath rules
+//! and error text).
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -47,8 +47,8 @@ pub fn env_pairs(env: &[String]) -> Vec<(String, String)> {
 
 /// Resolve `name` against the agent's own PATH, like exec.LookPath: a name
 /// with a slash is used as is; otherwise the first executable regular file
-/// on `path` wins. Resolving here (not via the child env) matches the Go
-/// agent, where a request's PATH never changes which binary runs.
+/// on `path` wins. Resolving here (not via the child env) means a request's
+/// PATH never changes which binary runs.
 pub fn look_path(name: &str, path: &str) -> Result<PathBuf, String> {
     if name.contains('/') {
         return Ok(PathBuf::from(name));
@@ -143,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn look_path_resolves_and_reports_like_go() {
+    fn look_path_resolves_and_reports_errors() {
         assert_eq!(
             look_path("sh", "/nonexistent:/bin").unwrap(),
             PathBuf::from("/bin/sh")

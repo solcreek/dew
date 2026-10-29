@@ -14,8 +14,8 @@ fn main() {
     std::env::set_var("PATH", DEFAULT_PATH);
 
     // Re-exec'd as the --confine shim: apply the spec and exec the target;
-    // never returns then. After the PATH pin, as in the Go agent, so the shim
-    // resolves (and the target inherits) the agent's PATH.
+    // never returns then. After the PATH pin, so the shim resolves (and the
+    // target inherits) the agent's PATH.
     dew_agent::confine::shim::maybe_run();
 
     let agent = Arc::new(server::Agent::new(std::env::var("DEW_EXEC_USER").ok()));

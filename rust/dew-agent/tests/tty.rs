@@ -1,6 +1,5 @@
-//! TTY exec over a socketpair, matched against the Go agent's runPTY: a real
-//! pty (isatty, window size, controlling terminal), base64 frames both ways,
-//! resizes, and exit status passthrough.
+//! TTY exec over a socketpair: a real pty (isatty, window size, controlling
+//! terminal), base64 frames both ways, resizes, and exit status passthrough.
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -96,7 +95,6 @@ fn run(req: ExecRequest, input: Vec<InputChunk>) -> Session {
     Session { chunks, done }
 }
 
-// Port of TestExecuteStreaming_TTY (the retired Go agent's pty_test.go).
 #[test]
 fn allocates_a_real_tty_with_the_requested_size() {
     let s = run(
@@ -179,7 +177,7 @@ fn resize_applies_before_later_input() {
 }
 
 #[test]
-fn resize_frame_data_is_ignored_like_go() {
+fn resize_frame_data_is_ignored() {
     let mut w = winch(40, 100);
     w.data = STANDARD.encode("zzz\n");
     let s = run(
@@ -269,8 +267,8 @@ fn finishes_after(
 
 #[test]
 fn host_disconnect_hangs_up_an_idle_session() {
-    // An interactive shell waiting for input. The Go agent never notices the
-    // host is gone (it is blocked reading the pty) and leaks the shell.
+    // An interactive shell waiting for input. The agent must notice the host
+    // is gone even while blocked reading the pty, or the shell leaks.
     let req = ExecRequest {
         args: vec![],
         ..tty_req("", 24, 80)
