@@ -74,7 +74,10 @@ are parsed with Go `os/user`'s rules.
   lines.
 - Dropping the host side of a TTY session hangs the terminal up: SIGHUP to
   the session's process group, and the master is closed so a command that
-  ignores SIGHUP gets EIO. In TTY mode an EOF frame only stops reading input
+  ignores SIGHUP gets EIO. One case is not covered: if the command ignores
+  SIGHUP and never reads stdin, the input feeder can block writing into the
+  full input queue while holding a copy of the master, and the session then
+  outlives the disconnect. In TTY mode an EOF frame only stops reading input
   (it doesn't send `^D`), a resize frame's data is ignored, and undecodable
   input is skipped.
 - Connect and expose proxying don't half-close. A transient `accept` error
