@@ -77,17 +77,18 @@ jobs:
           go build -ldflags="-s -w" -o dew ./cmd/dew/
           codesign --entitlements entitlements.plist --force -s - dew
           bash initramfs/build.sh minimal
-          mkdir -p ~/.local/share/dew
-          cp vmlinuz-x86_64 ~/.local/share/dew/vmlinuz
 
       - name: Boot test
         run: |
+          # Boot the kernel and initramfs built above; without --kernel and
+          # --initrd, dew would download the latest release's.
+          DEW="./dew run --kernel vmlinuz-x86_64 --initrd initramfs/initramfs-minimal.cpio.gz --json"
           echo "=== Boot + exec test ==="
-          RESULT=$(./dew run --json -- uname -r)
+          RESULT=$($DEW -- uname -r)
           echo "$RESULT"
           echo "$RESULT" | grep -q "exit_code" || { echo "FAIL: no structured output"; exit 1; }
           echo "=== Filesystem check ==="
-          ./dew run --json -- cat /proc/filesystems | grep -q "ext4" || echo "WARN: ext4 not in /proc/filesystems"
+          $DEW -- cat /proc/filesystems | grep -q "ext4" || echo "WARN: ext4 not in /proc/filesystems"
           echo "=== PASS ==="
 
   verify-arm64:
@@ -114,13 +115,14 @@ jobs:
           go build -ldflags="-s -w" -o dew ./cmd/dew/
           codesign --entitlements entitlements.plist --force -s - dew
           bash initramfs/build.sh minimal
-          mkdir -p ~/.local/share/dew
-          cp vmlinuz-arm64 ~/.local/share/dew/vmlinuz
 
       - name: Boot test
         run: |
+          # Boot the kernel and initramfs built above; without --kernel and
+          # --initrd, dew would download the latest release's.
+          DEW="./dew run --kernel vmlinuz-arm64 --initrd initramfs/initramfs-minimal.cpio.gz --json"
           echo "=== Boot + exec test ==="
-          RESULT=$(./dew run --json -- uname -r)
+          RESULT=$($DEW -- uname -r)
           echo "$RESULT"
           echo "$RESULT" | grep -q "exit_code" || { echo "FAIL: no structured output"; exit 1; }
           echo "=== PASS ==="
