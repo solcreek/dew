@@ -1,6 +1,6 @@
 //! /etc/passwd and /etc/group lookups with the parsing rules of Go's pure
-//! os/user (the Go agent is built CGO_ENABLED=0), so both agents resolve the
-//! same names to the same ids: lines are trimmed, blank lines and `#`
+//! (cgo-free) os/user, which earlier releases' agent used, so names keep
+//! resolving to the same ids: lines are trimmed, blank lines and `#`
 //! comments skipped, names starting with `+`/`-` ignored, numeric id fields
 //! required, and the first matching line wins.
 

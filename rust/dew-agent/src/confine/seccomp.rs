@@ -1,10 +1,9 @@
-//! seccomp classic-BPF programs for --confine (a port of the retired Go
-//! agent's filters, and for SystemCallFilter= the program assembly of
-//! go-seccomp-bpf v1.6.0, which that agent used). testdata/seccomp holds
-//! programs the Go agent emitted before it was removed (migration phase 7);
-//! the tests here rebuild every one, so the filters stay instruction for
-//! instruction what the Go agent enforced. They are frozen: a deliberate
-//! filter change updates them in the same change.
+//! seccomp classic-BPF programs for --confine (for SystemCallFilter=, the
+//! program assembly of go-seccomp-bpf v1.6.0). testdata/seccomp holds
+//! recorded programs, emitted by the former Go agent; the tests here rebuild
+//! every one, so the filters stay instruction for instruction what earlier
+//! releases enforced. They are frozen: a deliberate filter change updates
+//! them in the same change.
 
 use super::syscalls;
 use dew_proto::Confinement;
@@ -210,7 +209,7 @@ pub const SYSCALL_IMPLICIT_ALLOW: &[&str] =
 /// buildSyscallPolicy: the names to match, normalised (trimmed, lower-case),
 /// de-duplicated and limited to the arch's table. Unknown names are dropped
 /// so a unit written for another arch still loads, which also means a typo
-/// in a denylist silently blocks nothing (as in the Go agent).
+/// in a denylist silently blocks nothing.
 pub fn policy_names(arch: &Arch, names: &[String], deny: bool) -> Vec<String> {
     let mut want: Vec<&str> = names.iter().map(String::as_str).collect();
     if !deny {
@@ -359,7 +358,7 @@ impl Program {
     }
 }
 
-/// The SystemCallFilter= program (Go: syscallFilter via go-seccomp-bpf).
+/// The SystemCallFilter= program (assembled as go-seccomp-bpf does).
 /// Denylist: default allow, listed syscalls return EPERM. Allowlist: default
 /// EPERM, listed (plus the implicit exec/exit set) allowed. A foreign arch
 /// takes the default action; on x86_64 the x32 ABI returns ENOSYS.
@@ -456,9 +455,8 @@ mod tests {
 
     const EPERM_RET: u32 = SECCOMP_RET_ERRNO | EPERM;
 
-    // Port of TestResolveAddressFamily / TestResolveFamilies.
     #[test]
-    fn address_families_resolve_like_go() {
+    fn address_families_resolve() {
         assert_eq!(resolve_address_family("AF_INET"), Ok(2));
         assert_eq!(resolve_address_family("  af_unix "), Ok(1));
         assert!(resolve_address_family("AF_BOGUS").is_err());
@@ -488,7 +486,7 @@ mod tests {
         }
     }
 
-    // Port of TestSocketFamilyFilter, plus the same checks on real arches.
+    // Checked on both real arches.
     #[test]
     fn family_filter_behaves() {
         for arch in [&AARCH64, &X86_64] {
@@ -526,9 +524,8 @@ mod tests {
         );
     }
 
-    // Port of TestBuildSyscallPolicy.
     #[test]
-    fn policy_names_like_go() {
+    fn policy_names_are_normalised_and_arch_filtered() {
         let deny = policy_names(&X86_64, &s(&["MKDIR", "open", "not_a_syscall"]), true);
         assert_eq!(deny, s(&["mkdir", "open"]));
         let deny = policy_names(&AARCH64, &s(&["MKDIR", "mkdirat"]), true);
@@ -589,10 +586,10 @@ mod tests {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/seccomp")
     }
 
-    /// Every program the Go agent emitted (both arches) is rebuilt from its
-    /// recorded inputs and must be identical.
+    /// Every recorded program (both arches) is rebuilt from its recorded
+    /// inputs and must be identical.
     #[test]
-    fn matches_go_golden_programs() {
+    fn matches_recorded_golden_programs() {
         let mut checked = 0;
         for e in std::fs::read_dir(golden_dir()).expect("seccomp goldens") {
             let path = e.unwrap().path();
@@ -623,7 +620,7 @@ mod tests {
             assert_eq!(
                 got,
                 want,
-                "{} differs from the Go agent's program",
+                "{} differs from the recorded program",
                 path.display()
             );
             checked += 1;

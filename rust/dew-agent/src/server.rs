@@ -1,5 +1,4 @@
-//! Per-connection request dispatch (mirrors handleConn / handleConnect in
-//! the retired Go agent's main.go).
+//! Per-connection request dispatch.
 
 use crate::conn::Conn;
 use crate::exec::{self, Cred};
@@ -81,7 +80,6 @@ impl Agent {
     }
 
     /// Fail closed: nothing is authorized until the host has sent set_token.
-    /// Same predicate as the retired Go agent's agentauth.IsAuthorized.
     pub fn authorized(&self, given: &str) -> bool {
         self.token.get().is_some_and(|t| t == given)
     }
@@ -228,7 +226,7 @@ where
 }
 
 /// Dial a TCP address inside the guest and proxy bytes both ways until both
-/// directions finish (no half-close, as in the Go agent).
+/// directions finish (no half-close).
 fn handle_connect<C: Conn>(mut vs: C, addr: &str) {
     let tcp = match dial(addr) {
         Ok(t) => t,
@@ -247,7 +245,6 @@ fn handle_connect<C: Conn>(mut vs: C, addr: &str) {
 mod tests {
     use super::*;
 
-    // Same table as the retired Go agent's agentauth tests.
     #[test]
     fn authorization_fails_closed() {
         let cases: &[(&str, Option<&str>, &str, bool)] = &[
@@ -318,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn lookup_error_uses_go_wording() {
+    fn lookup_error_text() {
         let r = dial_within("bad.example:80", Duration::from_secs(1), |_| {
             Err(io::Error::other("no such host"))
         });

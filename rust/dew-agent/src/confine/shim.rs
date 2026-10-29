@@ -1,9 +1,8 @@
-//! The confine shim (mirrors maybeRunConfineShim / runConfineShim in
-//! the retired Go agent's confine.go). A confined exec re-runs the agent binary as
+//! The confine shim. A confined exec re-runs the agent binary as
 //! `[exe, --dew-confine-shim, target, args...]` with the spec in
 //! DEW_CONFINE_SPEC. That fresh process, single-threaded and still root,
 //! applies the spec and then execs the target; any failure exits 126 with
-//! `dew-confine: <reason>` on stderr, as the Go shim does.
+//! `dew-confine: <reason>` on stderr.
 
 use super::apply;
 use super::ids::Db;
@@ -56,8 +55,7 @@ fn run(target: &[OsString]) -> String {
         }
         apply::apply_privilege_drop(&c, &exec_user, &Db::default(), CAP_LAST_CAP)?;
         // Resolve against the shim's PATH, which main has pinned to the
-        // agent's (as the Go agent pins it before its shim runs), before
-        // seccomp, so an allowlist can't EPERM the lookup.
+        // agent's, before seccomp, so an allowlist can't EPERM the lookup.
         let name = String::from_utf8_lossy(prog.as_bytes()).into_owned();
         let path = crate::env::look_path(&name, &std::env::var("PATH").unwrap_or_default())
             .map_err(|e| format!("resolve {name:?}: {e}"))?;
@@ -73,8 +71,8 @@ fn run(target: &[OsString]) -> String {
         // Nothing owned may be freed after the filter goes on.
         drop((name, path));
         unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
-        // Last: seccomp. The only syscall after it is execve, as with the Go
-        // shim's syscall.Exec, so an allowlist need not cover anything else.
+        // Last: seccomp. The only syscall after it is execve, so an allowlist
+        // need not cover anything else.
         apply::apply_seccomp(&c)?;
         Ok(exec)
     };

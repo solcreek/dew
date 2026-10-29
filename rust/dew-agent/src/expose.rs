@@ -1,5 +1,4 @@
-//! Guest-side listeners for `dew up --expose-host` (mirrors
-//! startExposeForwarders / acceptExposeConns in the retired Go agent's main.go).
+//! Guest-side listeners for `dew up --expose-host`.
 //!
 //! For each exposed host port the guest listens on 127.0.0.2:<port>
 //! (host.lo.internal resolves there, so it can't collide with 127.0.0.1
@@ -27,9 +26,8 @@ pub type Handler = Arc<dyn Fn(TcpStream, u16) + Send + Sync>;
 /// CID 2, port 1025).
 pub type HostDialer = Arc<dyn Fn() -> io::Result<File> + Send + Sync>;
 
-/// How long to wait for the host's ReverseDialResponse (the Go agent's
-/// reverseDialRespTimeout): a stalled host listener must not pin the guest
-/// connection forever.
+/// How long to wait for the host's ReverseDialResponse: a stalled host
+/// listener must not pin the guest connection forever.
 pub const REVERSE_DIAL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Tunnel one accepted guest connection to the host (handleExposeConn): dial
@@ -109,7 +107,7 @@ impl Exposes {
     /// Make the running listeners exactly `ports` (the desired full set):
     /// close those no longer wanted, open the new ones, keep the rest
     /// untouched. Ports outside 1..=65535 are ignored; one that fails to
-    /// bind is logged and skipped, as in the Go agent. A re-send with a
+    /// bind is logged and skipped. A re-send with a
     /// smaller set reclaims the dropped ports.
     pub fn reconcile(&self, ports: &[i64]) {
         let desired: BTreeSet<u16> = ports
@@ -202,8 +200,8 @@ fn accept_loop(ln: impl Acceptor, port: u16, stop: &AtomicBool, handler: &Handle
                     e.kind(),
                     io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
                 ) => {}
-            // Transient (e.g. EMFILE): keep the listener, don't spin. The Go
-            // agent's loop returns here and leaves a dead entry in its map.
+            // Transient (e.g. EMFILE): keep the listener, don't spin.
+            // Returning here would leave a dead entry in the map.
             Err(_) => thread::sleep(Duration::from_millis(50)),
         }
     }
@@ -333,9 +331,9 @@ mod tests {
 
     #[test]
     fn accept_errors_keep_the_loop_alive_until_stopped() {
-        // fd exhaustion: every accept() fails. The Go loop returns on the
-        // first error and leaves a dead listener; this one must back off
-        // (not spin), keep retrying, and still exit promptly once stopped.
+        // fd exhaustion: every accept() fails. The loop must not return on
+        // the first error and leave a dead listener; it must back off (not
+        // spin), keep retrying, and still exit promptly once stopped.
         let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let (flag, fake) = (stop.clone(), Emfile(calls.clone()));

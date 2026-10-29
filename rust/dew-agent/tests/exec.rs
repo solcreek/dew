@@ -1,6 +1,5 @@
-//! Behaviour of buffered and streaming exec, matched against what the retired
-//! Go agent did for the same request. Runs on any Unix: the
-//! exec paths take a generic Conn, and a socketpair stands in for vsock.
+//! Behaviour of buffered and streaming exec. Runs on any Unix: the exec
+//! paths take a generic Conn, and a socketpair stands in for vsock.
 
 use dew_agent::exec::{execute, execute_streaming, lookup_user, Cred, MAX_CHUNK};
 use dew_proto::*;
@@ -96,7 +95,7 @@ fn signalled_process_reports_minus_one_without_error() {
 }
 
 #[test]
-fn missing_command_uses_go_wording() {
+fn missing_command_error_text() {
     let r = execute(
         &ExecRequest {
             command: "no-such-cmd-dew".into(),
@@ -139,7 +138,7 @@ fn bare_name_resolves_on_agent_path() {
 
 #[test]
 fn request_path_does_not_change_resolution() {
-    // The Go agent resolves argv[0] against its own PATH, never the child's.
+    // The agent resolves argv[0] against its own PATH, never the child's.
     let mut req = ExecRequest {
         command: "echo".into(),
         args: vec!["ok".into()],
@@ -169,7 +168,7 @@ fn child_env_always_has_a_path() {
 }
 
 #[test]
-fn missing_dir_uses_go_wording() {
+fn missing_dir_error_text() {
     let mut req = sh("true");
     req.dir = "/no/such/dir".into();
     let r = execute(&req, None);
@@ -196,7 +195,7 @@ fn timeout_kills_and_reports_go_duration() {
 #[test]
 fn timeout_kills_grandchildren_holding_the_pipe() {
     // The shell exits at once, but a background child keeps stdout open. The
-    // deadline must still end the exec (the Go agent waits for the child).
+    // deadline must still end the exec.
     let mut req = sh("sleep 5 & echo bg");
     req.timeout_ms = 300;
     let t = Instant::now();
@@ -540,7 +539,7 @@ fn stream_splits_lines_longer_than_max_chunk() {
 
 #[test]
 fn stream_concurrent_stdout_stderr_never_interleaves_frames() {
-    // The case that corrupted 16% of streams in the Go agent before #44.
+    // Regression test for the interleave bug fixed in #44.
     let n = 5000;
     let s = stream(
         streaming(&format!(

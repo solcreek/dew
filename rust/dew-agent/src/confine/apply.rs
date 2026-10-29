@@ -1,7 +1,5 @@
-//! The Linux syscalls that enforce a confinement (mirrors applyReadOnlyFS,
-//! bindReadWrite, applyPrivilegeDrop, addInheritable, applySeccomp and
-//! installSeccompFilter in the retired Go agent). Runs only in the single-threaded
-//! confine shim, as root, just before it execs the target.
+//! The Linux syscalls that enforce a confinement. Runs only in the
+//! single-threaded confine shim, as root, just before it execs the target.
 
 use super::caps::{caps_to_drop, kept_caps, last_capability};
 use super::ids::{resolve_drop_id, Db};
@@ -41,8 +39,8 @@ fn mount(src: &str, target: &str, flags: libc::c_ulong) -> Result<(), String> {
     Ok(())
 }
 
-/// Enter a private mount namespace (the Go agent asks for it at clone time
-/// with CLONE_NEWNS; the shim does it itself, before touching any mount).
+/// Enter a private mount namespace (the shim does it itself, before touching
+/// any mount, rather than asking for CLONE_NEWNS at clone time).
 pub fn unshare_mount_namespace() -> Result<(), String> {
     if unsafe { libc::unshare(libc::CLONE_NEWNS) } < 0 {
         return Err(err("unshare mount namespace"));
@@ -172,7 +170,7 @@ fn errno(what: String, e: io::Error) -> String {
 }
 
 /// The native uid/gid/capability/no_new_privs drop, after the mount work
-/// (which needs root). Order matters, as in the Go agent:
+/// (which needs root). Order matters:
 /// 1. bounding set (needs CAP_SETPCAP, held as root);
 /// 2. keeping caps as non-root: add them to the inheritable set while
 ///    CAP_SETUID is still held, and PR_SET_KEEPCAPS so permitted survives the
@@ -182,7 +180,7 @@ fn errno(what: String, e: io::Error) -> String {
 /// 5. no_new_privs last; a seccomp spec implies it.
 ///
 /// The shim is single-threaded, so the thread that drops privilege is the one
-/// that execs (the Go agent locks its OS thread for the same reason).
+/// that execs (credentials are per-thread in the kernel).
 pub fn apply_privilege_drop(
     c: &Confinement,
     exec_user: &str,
