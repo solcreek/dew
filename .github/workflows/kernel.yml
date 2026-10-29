@@ -77,17 +77,20 @@ jobs:
           go build -ldflags="-s -w" -o dew ./cmd/dew/
           codesign --entitlements entitlements.plist --force -s - dew
           bash initramfs/build.sh minimal
-          mkdir -p ~/.local/share/dew
-          cp vmlinuz-x86_64 ~/.local/share/dew/vmlinuz
 
       - name: Boot test
         run: |
+          # Boot the kernel and initramfs built above; without --kernel and
+          # --initrd, dew would download the latest release's.
+          DEW="./dew run --kernel vmlinuz-x86_64 --initrd initramfs/initramfs-minimal.cpio.gz --json"
           echo "=== Boot + exec test ==="
-          RESULT=$(./dew run --json -- uname -r 2>/dev/null)
+          # Under bash -e a failing dew would exit here before its JSON
+          # error (on stdout) is printed.
+          RESULT=$($DEW -- uname -r) || { echo "$RESULT"; echo "FAIL: dew run failed"; exit 1; }
           echo "$RESULT"
           echo "$RESULT" | grep -q "exit_code" || { echo "FAIL: no structured output"; exit 1; }
           echo "=== Filesystem check ==="
-          ./dew run --json -- cat /proc/filesystems 2>/dev/null | grep -q "ext4" || echo "WARN: ext4 not in /proc/filesystems"
+          $DEW -- cat /proc/filesystems | grep -q "ext4" || echo "WARN: ext4 not in /proc/filesystems"
           echo "=== PASS ==="
 
   verify-arm64:
@@ -114,13 +117,13 @@ jobs:
           go build -ldflags="-s -w" -o dew ./cmd/dew/
           codesign --entitlements entitlements.plist --force -s - dew
           bash initramfs/build.sh minimal
-          mkdir -p ~/.local/share/dew
-          cp vmlinuz-arm64 ~/.local/share/dew/vmlinuz
 
-      - name: Boot test
+      # No boot test here: on the Apple Silicon runners the Virtualization
+      # framework refuses every VM ("Virtualization is not available on this
+      # hardware", VZErrorDomain Code=2, seen 2026-10-29). Boot arm64 images on
+      # an Apple Silicon Mac with scripts/conformance.sh instead.
+      - name: Check kernel format
         run: |
-          echo "=== Boot + exec test ==="
-          RESULT=$(./dew run --json -- uname -r 2>/dev/null)
-          echo "$RESULT"
-          echo "$RESULT" | grep -q "exit_code" || { echo "FAIL: no structured output"; exit 1; }
-          echo "=== PASS ==="
+          # Apple VZ boots an uncompressed ARM64 Image (4K pages) only.
+          file vmlinuz-arm64
+          file vmlinuz-arm64 | grep -q 'Linux kernel ARM64 boot executable Image.*4K pages' || { echo "FAIL: not a raw ARM64 Image"; exit 1; }
