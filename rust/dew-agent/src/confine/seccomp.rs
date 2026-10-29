@@ -586,8 +586,7 @@ mod tests {
     }
 
     fn golden_dir() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("testdata/seccomp")
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/seccomp")
     }
 
     /// Every program the Go agent emitted (both arches) is rebuilt from its
