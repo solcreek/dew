@@ -71,16 +71,16 @@ func TestInitramfsBuildScript_ValidatesDewAgent(t *testing.T) {
 	}
 }
 
-// Migration phase 6: minimal ships the Rust agent; every other profile keeps
-// Go until a release has carried it. DEW_AGENT overrides either way.
+// Migration phase 6: every profile ships the Rust agent; DEW_AGENT=go is the
+// fallback.
 func TestInitramfsBuildScript_DefaultAgentPerProfile(t *testing.T) {
 	for _, tc := range []struct{ profile, agent, want string }{
 		{"minimal", "", "rust"},
-		{"node", "", "go"},
-		{"python", "", "go"},
-		{"standard", "", "go"},
+		{"node", "", "rust"},
+		{"python", "", "rust"},
+		{"standard", "", "rust"},
 		{"minimal", "go", "go"},
-		{"standard", "rust", "rust"},
+		{"standard", "go", "go"},
 	} {
 		out, _ := runBuildScriptPreamble(t, tc.profile, tc.agent)
 		if !strings.Contains(out, "Guest agent: "+tc.want+"\n") {
