@@ -1,5 +1,5 @@
 //! Capability names and the bounding-set plan (mirrors the pure half of
-//! cmd/dew-agent/caps.go). No syscalls here; `apply` performs the drop.
+//! the retired Go agent's caps.go). No syscalls here; `apply` performs the drop.
 
 use dew_proto::Confinement;
 

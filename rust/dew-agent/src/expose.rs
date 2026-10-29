@@ -1,5 +1,5 @@
 //! Guest-side listeners for `dew up --expose-host` (mirrors
-//! startExposeForwarders / acceptExposeConns in cmd/dew-agent/main.go).
+//! startExposeForwarders / acceptExposeConns in the retired Go agent's main.go).
 //!
 //! For each exposed host port the guest listens on 127.0.0.2:<port>
 //! (host.lo.internal resolves there, so it can't collide with 127.0.0.1

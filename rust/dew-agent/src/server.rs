@@ -1,5 +1,5 @@
 //! Per-connection request dispatch (mirrors handleConn / handleConnect in
-//! cmd/dew-agent/main.go).
+//! the retired Go agent's main.go).
 
 use crate::conn::Conn;
 use crate::exec::{self, Cred};
@@ -81,7 +81,7 @@ impl Agent {
     }
 
     /// Fail closed: nothing is authorized until the host has sent set_token.
-    /// Same predicate as internal/agentauth.IsAuthorized.
+    /// Same predicate as the retired Go agent's agentauth.IsAuthorized.
     pub fn authorized(&self, given: &str) -> bool {
         self.token.get().is_some_and(|t| t == given)
     }
@@ -247,7 +247,7 @@ fn handle_connect<C: Conn>(mut vs: C, addr: &str) {
 mod tests {
     use super::*;
 
-    // Same table as internal/agentauth/auth_test.go.
+    // Same table as the retired Go agent's agentauth tests.
     #[test]
     fn authorization_fails_closed() {
         let cases: &[(&str, Option<&str>, &str, bool)] = &[

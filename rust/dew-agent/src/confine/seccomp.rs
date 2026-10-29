@@ -1,8 +1,10 @@
-//! seccomp classic-BPF programs for --confine (mirrors the pure half of
-//! cmd/dew-agent/seccomp.go, and for SystemCallFilter= the program assembly
-//! of go-seccomp-bpf v1.6.0, which the Go agent uses). Programs must match
-//! the Go agent's instruction for instruction; cmd/dew-agent/testdata/seccomp
-//! holds programs emitted by Go, and the tests here rebuild every one.
+//! seccomp classic-BPF programs for --confine (a port of the retired Go
+//! agent's filters, and for SystemCallFilter= the program assembly of
+//! go-seccomp-bpf v1.6.0, which that agent used). testdata/seccomp holds
+//! programs the Go agent emitted before it was removed (migration phase 7);
+//! the tests here rebuild every one, so the filters stay instruction for
+//! instruction what the Go agent enforced. They are frozen: a deliberate
+//! filter change updates them in the same change.
 
 use super::syscalls;
 use dew_proto::Confinement;
@@ -584,8 +586,7 @@ mod tests {
     }
 
     fn golden_dir() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../cmd/dew-agent/testdata/seccomp")
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/seccomp")
     }
 
     /// Every program the Go agent emitted (both arches) is rebuilt from its
@@ -593,7 +594,7 @@ mod tests {
     #[test]
     fn matches_go_golden_programs() {
         let mut checked = 0;
-        for e in std::fs::read_dir(golden_dir()).expect("Go seccomp goldens") {
+        for e in std::fs::read_dir(golden_dir()).expect("seccomp goldens") {
             let path = e.unwrap().path();
             let g: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             let arch = Arch::by_name(g["arch"].as_str().unwrap()).unwrap();

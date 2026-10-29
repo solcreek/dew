@@ -1,5 +1,5 @@
-//! Behaviour of buffered and streaming exec, matched against what the Go
-//! agent (cmd/dew-agent) does for the same request. Runs on any Unix: the
+//! Behaviour of buffered and streaming exec, matched against what the retired
+//! Go agent did for the same request. Runs on any Unix: the
 //! exec paths take a generic Conn, and a socketpair stands in for vsock.
 
 use dew_agent::exec::{execute, execute_streaming, lookup_user, Cred, MAX_CHUNK};

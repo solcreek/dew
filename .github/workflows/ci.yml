@@ -23,32 +23,10 @@ jobs:
       - name: Test
         run: go test ./... -count=1 -v
 
-      - name: Cross-compile guest agent
-        run: |
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dew-agent-linux-amd64 ./cmd/dew-agent/
-          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o dew-agent-linux-arm64 ./cmd/dew-agent/
-          ls -lh dew-agent-linux-*
-
-  # The guest agent is //go:build linux and can't run on the macOS test
-  # job above (go test skips linux-tagged files there). Run its tests
-  # natively on Linux so the agent's behavior — including the exec stdin
-  # wiring — is actually exercised, not just cross-compiled.
-  test-linux-agent:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.25'
-
-      - name: Test guest agent + shared protocol (linux)
-        run: go test -count=1 -v ./cmd/dew-agent/ ./internal/vsock/
-
   # Rust workspace (rust/): the guest-agent migration, see
   # docs/rust-agent-migration.md. dew-proto's golden test decodes the frames
   # the Go encoder wrote to internal/vsock/testdata/golden/, so drift between
-  # the two protocol implementations fails here; test-linux-agent's
+  # the host's protocol and the agent's fails here; the test job's
   # ./internal/vsock run checks those files are current on the Go side.
   rust:
     runs-on: ubuntu-latest
@@ -71,8 +49,7 @@ jobs:
         run: cargo test --locked
 
       # Guest agent binaries for both VM arches: static musl, linked with the
-      # toolchain's rust-lld (rust/.cargo/config.toml). Not shipped yet; this
-      # keeps the cross-build green and tracks the size.
+      # toolchain's rust-lld (rust/.cargo/config.toml). Tracks the size.
       - name: Cross-build guest agent (musl)
         run: |
           for t in aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
@@ -86,25 +63,14 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
-      # The Go agent, so tests/confine.rs can run every --confine case through
-      # both shims and require identical results (x86_64 here; aarch64 is
-      # checked in a dew VM).
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.25'
-
-      - name: Build the Go agent for confine parity
-        working-directory: .
-        run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dew-agent-go" ./cmd/dew-agent/
-
       # Left out of the line floor, because instrumentation cannot see them run:
       # - main.rs and vsock.rs only run inside a guest (AF_VSOCK) and are
       #   exercised end to end.
       # - confine/apply.rs and confine/shim.rs run in the confine shim, a
       #   child that ends in execve: the image is replaced before the profile
       #   is written, so a successful enforcement never records. Their
-      #   behaviour is gated in this same step by tests/confine.rs (root, with
-      #   Go parity), which fail the job if enforcement is wrong.
+      #   behaviour is gated in this same step by tests/confine.rs (root),
+      #   which fail the job if enforcement is wrong.
       # Everything else must stay at or above 95% of lines.
       # `shell: bash` makes Actions run `bash -eo pipefail`; the implicit
       # shell is plain `bash -e`, where `| tee` would swallow the floor's
@@ -113,52 +79,42 @@ jobs:
       # uid drop, seccomp) only runs with privilege. The runner is a
       # disposable VM, and the shim's own mount namespace is itself asserted
       # by the tests.
-      - name: Coverage (as root, with Go parity for --confine)
+      - name: Coverage (as root, for --confine)
         shell: bash
         run: |
           rustup component add llvm-tools
           sudo env "PATH=$PATH" "HOME=$HOME" \
             "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
-            "DEW_GO_AGENT_EXE=$RUNNER_TEMP/dew-agent-go" \
             cargo llvm-cov --locked --workspace --summary-only \
               --ignore-filename-regex '(main|vsock|confine/apply|confine/shim)\.rs$' \
               --fail-under-lines 95 | tee -a "$GITHUB_STEP_SUMMARY"
 
-  # initramfs/build.sh with each guest agent (DEW_AGENT), for both VM arches
-  # (aarch64 is cross-built, as in the release). Only minimal: the agent step
-  # is the same in every profile, and the others add large package installs.
-  # Checks the image carries the agent it was asked for, so the rust arm
-  # can't rot while releases still ship the Go agent.
+  # initramfs/build.sh for both VM arches (aarch64 is cross-built, as in the
+  # release). Only minimal: the agent step is the same in every profile, and
+  # the others add large package installs. Checks the image carries a static
+  # Rust agent for its arch.
   initramfs-agent:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         arch: [x86_64, aarch64]
-        agent: [go, rust]
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.25'
-
       - name: Install pinned Rust toolchain (rust-toolchain.toml)
-        if: matrix.agent == 'rust'
         working-directory: rust
         run: rustup toolchain install
 
       - name: Build minimal initramfs
         env:
           TARGET_ARCH: ${{ matrix.arch }}
-          DEW_AGENT: ${{ matrix.agent }}
         run: bash initramfs/build.sh minimal
 
       - name: Check the baked agent
         shell: bash
         env:
           ARCH: ${{ matrix.arch }}
-          AGENT: ${{ matrix.agent }}
         run: |
           mkdir x && cd x
           gzip -dc ../initramfs/initramfs-minimal.cpio.gz | cpio -id usr/local/bin/dew-agent
@@ -172,9 +128,8 @@ jobs:
           echo "$info" | grep -q "$want" || { echo "::error::not a $ARCH binary"; exit 1; }
           echo "$info" | grep -q 'statically linked\|static-pie linked' || { echo "::error::not static"; exit 1; }
           # Go binaries carry a build-info header; the Rust agent does not.
-          if grep -q 'Go buildinf' "$f"; then got=go; else got=rust; fi
-          [ "$got" = "$AGENT" ] || { echo "::error::asked for $AGENT, image has $got"; exit 1; }
-          echo "dew-agent $AGENT $ARCH: $(stat -c %s "$f") bytes; initramfs $(stat -c %s ../initramfs/initramfs-minimal.cpio.gz) bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+          if grep -q 'Go buildinf' "$f"; then echo "::error::the image has a Go agent"; exit 1; fi
+          echo "dew-agent $ARCH: $(stat -c %s "$f") bytes; initramfs $(stat -c %s ../initramfs/initramfs-minimal.cpio.gz) bytes" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # dew-win is //go:build windows and is skipped by the macOS test job
   # (go test ./... excludes windows-tagged files there). Build and test

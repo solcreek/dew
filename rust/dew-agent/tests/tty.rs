@@ -96,7 +96,7 @@ fn run(req: ExecRequest, input: Vec<InputChunk>) -> Session {
     Session { chunks, done }
 }
 
-// Port of TestExecuteStreaming_TTY (cmd/dew-agent/pty_test.go).
+// Port of TestExecuteStreaming_TTY (the retired Go agent's pty_test.go).
 #[test]
 fn allocates_a_real_tty_with_the_requested_size() {
     let s = run(

@@ -11,12 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Every profile now runs the Rust guest agent.** 0.9.5 moved `minimal`;
   node, python and standard follow. They pass the same conformance suite on
-  both arches, and they gain the three fixes listed under 0.9.5. To build a
-  profile with the Go agent, set `DEW_AGENT=go`, e.g.
-  `DEW_AGENT=go bash initramfs/build.sh standard`.
+  both arches, and they gain the three fixes listed under 0.9.5.
 - The standalone `dew-agent-linux-amd64` and `dew-agent-linux-arm64` release
   assets are now the Rust agent: 0.87 MiB (amd64) and 0.76 MiB (arm64),
   down from 3.0 MiB each.
+
+### Removed
+
+- **The Go guest agent** (`cmd/dew-agent`). `initramfs/build.sh` always bakes
+  the Rust agent and stops with an error if `DEW_AGENT` is set to anything
+  but `rust`. `make agent` builds the Rust agent. The host CLI is unchanged.
+- `initramfs/build-wsl.sh`, which nothing used: releases cut the WSL2 rootfs
+  from the standard image.
 
 ## [0.9.5] - 2026-10-28
 

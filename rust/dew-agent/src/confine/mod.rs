@@ -1,4 +1,4 @@
-//! `--confine` enforcement (Rust port of cmd/dew-agent/{confine,caps,seccomp}.go).
+//! `--confine` enforcement (Rust port of the retired Go agent's confine.go, caps.go and seccomp.go).
 //!
 //! The plans here are pure (names to numbers, which caps to drop, which
 //! identity to take, the BPF programs) so they are tested on any host; the

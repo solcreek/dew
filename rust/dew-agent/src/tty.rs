@@ -1,5 +1,5 @@
 //! TTY exec: the command runs on a pseudo-terminal (mirrors runPTY in
-//! cmd/dew-agent/main.go). One merged output stream, isatty true, job
+//! the retired Go agent's main.go). One merged output stream, isatty true, job
 //! control. Terminal bytes are binary, so InputChunk/OutputChunk `data` is
 //! standard base64 in this mode.
 
