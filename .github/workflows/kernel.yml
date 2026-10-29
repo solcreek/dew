@@ -84,7 +84,9 @@ jobs:
           # --initrd, dew would download the latest release's.
           DEW="./dew run --kernel vmlinuz-x86_64 --initrd initramfs/initramfs-minimal.cpio.gz --json"
           echo "=== Boot + exec test ==="
-          RESULT=$($DEW -- uname -r)
+          # Under bash -e a failing dew would exit here before its JSON
+          # error (on stdout) is printed.
+          RESULT=$($DEW -- uname -r) || { echo "$RESULT"; echo "FAIL: dew run failed"; exit 1; }
           echo "$RESULT"
           echo "$RESULT" | grep -q "exit_code" || { echo "FAIL: no structured output"; exit 1; }
           echo "=== Filesystem check ==="
@@ -122,7 +124,9 @@ jobs:
           # --initrd, dew would download the latest release's.
           DEW="./dew run --kernel vmlinuz-arm64 --initrd initramfs/initramfs-minimal.cpio.gz --json"
           echo "=== Boot + exec test ==="
-          RESULT=$($DEW -- uname -r)
+          # Under bash -e a failing dew would exit here before its JSON
+          # error (on stdout) is printed.
+          RESULT=$($DEW -- uname -r) || { echo "$RESULT"; echo "FAIL: dew run failed"; exit 1; }
           echo "$RESULT"
           echo "$RESULT" | grep -q "exit_code" || { echo "FAIL: no structured output"; exit 1; }
           echo "=== PASS ==="
