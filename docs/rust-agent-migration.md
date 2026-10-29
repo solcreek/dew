@@ -1,8 +1,8 @@
 # Rust guest agent migration
 
-Status: phases 1–5 merged (#53, #54, #56, #57, #59, #60). Phase 6 is next,
-after a patch release that ships the Go agent's `--confine` fixes (#58) on
-their own (2026-10-28).
+Status: phases 1–5 merged (#53, #54, #56, #57, #59, #60). 0.9.4 shipped the
+Go agent's `--confine` fixes (#58) on their own. Phase 6, step one (the
+minimal profile defaults to the Rust agent), is in review (2026-10-28).
 
 ## Why the agent, and only the agent (for now)
 
