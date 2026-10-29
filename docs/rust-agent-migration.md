@@ -2,10 +2,11 @@
 
 Status: phases 1–5 merged (#53, #54, #56, #57, #59, #60). 0.9.4 shipped the
 Go agent's `--confine` fixes (#58) on their own. Phase 6, step one (#62):
-0.9.5 ships the Rust agent in the minimal profile; node, python and
-standard keep the Go agent. The 0.9.5 aarch64 minimal image passes the
-conformance suite (25 pass, verified 2026-10-28). Step two, the Rust agent
-for every profile, waits for 0.9.5 to run without agent regressions.
+0.9.5 ships the Rust agent in the minimal profile. The 0.9.5 aarch64
+minimal image passes the conformance suite (25 pass, verified 2026-10-28).
+Step two, the Rust agent for every profile, is in review (2026-10-28). It
+does not wait a release after 0.9.5 as planned: dew has few users yet, so
+the owner chose to move on.
 
 ## Why the agent, and only the agent (for now)
 
@@ -90,8 +91,12 @@ virtualization. Results with images from `initramfs/build.sh` at 032156f
 | x86_64, Go | 22 pass, 3 skip | 22 pass, 3 skip |
 | x86_64, Rust | 25 pass | 25 pass |
 
-node and python were not run on their own: they boot through the same
-disk-bearing init path as standard. The suite also fails where it should:
+For phase 6 step two, node, python and standard built with the default
+agent (Rust) at 6b3ad78 each pass 25 on both arches, with a 4 GB disk
+(verified 2026-10-28). On aarch64 standard, `dew run` also ran node, npm,
+crun and a `--with redis` service (PONG).
+
+The suite also fails where it should:
 a Go agent built from before #44 fails the interleave stress on its first
 run, and the standard image of release 0.9.1, whose agent predates #44 and #58,
 fails the interleave stress and the uid-range case. Instead of a release

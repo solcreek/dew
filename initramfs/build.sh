@@ -51,15 +51,10 @@ esac
 #   rust - rust/dew-agent, the migration in docs/rust-agent-migration.md.
 #          Needs rustup's cargo: rust/rust-toolchain.toml pins the version
 #          and the musl targets, which Homebrew's cargo ignores.
-# Both speak the same vsock protocol. The default is rust for minimal and
-# go for the other profiles, until the Rust agent has shipped in a release
-# (migration phase 6); DEW_AGENT=go is the fallback for any profile.
+# Both speak the same vsock protocol. The default is rust for every profile
+# (migration phase 6); DEW_AGENT=go is the fallback.
 # Checked here, before anything is downloaded or deleted.
-case "$PROFILE" in
-    minimal) DEFAULT_AGENT=rust ;;
-    *)       DEFAULT_AGENT=go ;;
-esac
-DEW_AGENT="${DEW_AGENT:-$DEFAULT_AGENT}"
+DEW_AGENT="${DEW_AGENT:-rust}"
 case "$DEW_AGENT" in
     go|rust) ;;
     *) echo "unsupported DEW_AGENT: $DEW_AGENT (want go or rust)"; exit 1 ;;
