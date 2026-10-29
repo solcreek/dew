@@ -23,11 +23,11 @@ jobs:
       - name: Test
         run: go test ./... -count=1 -v
 
-  # Rust workspace (rust/): the guest-agent migration, see
-  # docs/rust-agent-migration.md. dew-proto's golden test decodes the frames
-  # the Go encoder wrote to internal/vsock/testdata/golden/, so drift between
-  # the host's protocol and the agent's fails here; the test job's
-  # ./internal/vsock run checks those files are current on the Go side.
+  # Rust workspace (rust/): the guest agent, see docs/guest-agent.md.
+  # dew-proto's golden test decodes the frames the host's Go encoder wrote to
+  # internal/vsock/testdata/golden/, so drift between the host's protocol and
+  # the agent's fails here; the test job's ./internal/vsock run checks those
+  # files are current on the Go side.
   rust:
     runs-on: ubuntu-latest
     defaults:
@@ -92,7 +92,7 @@ jobs:
   # initramfs/build.sh for both VM arches (aarch64 is cross-built, as in the
   # release). Only minimal: the agent step is the same in every profile, and
   # the others add large package installs. Checks the image carries a static
-  # Rust agent for its arch.
+  # agent built for its arch.
   initramfs-agent:
     runs-on: ubuntu-latest
     strategy:
@@ -127,8 +127,6 @@ jobs:
           esac
           echo "$info" | grep -q "$want" || { echo "::error::not a $ARCH binary"; exit 1; }
           echo "$info" | grep -q 'statically linked\|static-pie linked' || { echo "::error::not static"; exit 1; }
-          # Go binaries carry a build-info header; the Rust agent does not.
-          if grep -q 'Go buildinf' "$f"; then echo "::error::the image has a Go agent"; exit 1; fi
           echo "dew-agent $ARCH: $(stat -c %s "$f") bytes; initramfs $(stat -c %s ../initramfs/initramfs-minimal.cpio.gz) bytes" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # dew-win is //go:build windows and is skipped by the macOS test job
