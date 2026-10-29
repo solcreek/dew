@@ -14,8 +14,8 @@ build:
 agent:
 	cd rust && cargo build --locked --release -p dew-agent --target x86_64-unknown-linux-musl
 	cd rust && cargo build --locked --release -p dew-agent --target aarch64-unknown-linux-musl
-	cd rust && cp "$${CARGO_TARGET_DIR:-target}/x86_64-unknown-linux-musl/release/dew-agent" ../$(AGENT)-linux-amd64
-	cd rust && cp "$${CARGO_TARGET_DIR:-target}/aarch64-unknown-linux-musl/release/dew-agent" ../$(AGENT)-linux-arm64
+	cd rust && cp "$${CARGO_TARGET_DIR:-target}/x86_64-unknown-linux-musl/release/dew-agent" "$(abspath $(AGENT))-linux-amd64"
+	cd rust && cp "$${CARGO_TARGET_DIR:-target}/aarch64-unknown-linux-musl/release/dew-agent" "$(abspath $(AGENT))-linux-arm64"
 
 sign: build
 	codesign --entitlements $(ENTITLEMENTS) --force -s - $(BIN)
